@@ -23,6 +23,12 @@
     dest: /usr/local/sbin/emcomm-apply-settings
     mode: "0755"
 
+- name: Install the default-audio helper (makes the radio every app's sound card)
+  ansible.builtin.copy:
+    src: emcomm-audio-default
+    dest: /usr/local/bin/emcomm-audio-default
+    mode: "0755"
+
 - name: Let the station user save settings from the Settings screen
   ansible.builtin.copy:
     content: "{{ station_user }} ALL=(root) NOPASSWD: /usr/local/sbin/emcomm-apply-settings\n"

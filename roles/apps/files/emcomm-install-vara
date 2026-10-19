@@ -85,7 +85,7 @@ echo "== Installing $product =="
 echo "VARA shows an OK box when it's done; tap OK."
 wine "$installer" /SILENT
 if [ -e "$(winepath -u "$exe" 2>/dev/null)" ]; then
-  finish "$product is installed. In VARA, open Settings > SoundCard and pick the radio sound card. Leave PTT to Pat."
+  finish "$product is installed. It uses the default sound card, which is the radio; leave PTT to Pat."
 else
   finish "$product didn't install. Check the messages above." 1
 fi
