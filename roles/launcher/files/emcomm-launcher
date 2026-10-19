@@ -21,7 +21,8 @@ import time
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk, Gdk, Pango  # noqa: E402
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf, GLib, Gtk, Gdk, Pango  # noqa: E402
 
 CONFIG_PATH = os.environ.get("EMCOMM_LAUNCHER_CONFIG", "/etc/emcomm/launcher.json")
 STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
@@ -47,6 +48,9 @@ window, .page { background: #101214; color: #E8E6E1; font-family: 'IBM Plex Sans
 .tile:focus, .navbtn:focus { border: 2px solid #F2A33A; outline: none; }
 .key-hint { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #9AA0A6; }
 .tile:disabled, .tile.not-ready { opacity: 0.5; }
+menu { background: #1A1D21; border: 1px solid #3A4048; padding: 4px 0; }
+menuitem { color: #E8E6E1; font-size: 16px; padding: 12px 18px; }
+menuitem:hover { background: #2A2F35; }
 .tile-code { font-family: 'IBM Plex Mono', monospace; font-size: 28px; font-weight: 600; color: #F2A33A; }
 .tile-name { font-size: 18px; font-weight: 600; color: #E8E6E1; }
 .tile-detail { font-size: 13px; color: #9AA0A6; }
@@ -181,6 +185,51 @@ def format_freq(hz_text):
     mhz, rest = divmod(hz, 1_000_000)
     khz, h = divmod(rest, 1000)
     return f"{mhz}.{khz:03d}.{h:03d}"
+
+
+# ---- tile icons --------------------------------------------------------------
+
+ICONS_DIR = os.environ.get("EMCOMM_ICONS", "/usr/share/emcomm/icons")
+USER_ICONS = os.path.expanduser("~/.local/share/emcomm/icons")  # the operator's own pictures win
+ICON_EXTS = (".svg", ".png", ".jpg")
+ICON_SIZE = 44
+
+
+def user_icon(name):
+    for ext in ICON_EXTS:
+        path = os.path.join(USER_ICONS, name + ext)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def find_icon(name):
+    if not name:
+        return None
+    if user_icon(name):
+        return user_icon(name)
+    for ext in ICON_EXTS:
+        path = os.path.join(ICONS_DIR, name + ext)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def remove_user_icon(name):
+    for ext in ICON_EXTS:
+        try:
+            os.remove(os.path.join(USER_ICONS, name + ext))
+        except FileNotFoundError:
+            pass
+
+
+def mount_usb_sticks():
+    """Mount plugged-in USB sticks (under /media/USER) so their pictures can be picked."""
+    if not shutil.which("udisksctl"):
+        return
+    for link in glob.glob("/dev/disk/by-id/usb-*-part*"):
+        subprocess.run(["udisksctl", "mount", "--no-user-interaction", "-b", os.path.realpath(link)],
+                       capture_output=True, check=False)
 
 
 def run_detached(argv):
@@ -379,10 +428,11 @@ class Launcher(Gtk.Window):
         btn = Gtk.Button()
         btn.get_style_context().add_class("tile")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        code = Gtk.Label(label=app.get("code", ""), xalign=0)
-        code.get_style_context().add_class("tile-code")
+        btn.app = app
+        btn.icon_slot = Gtk.Box()
+        self._set_tile_icon(btn)
         top = Gtk.Box()
-        top.pack_start(code, True, True, 0)
+        top.pack_start(btn.icon_slot, True, True, 0)
         if key:
             hint = Gtk.Label(label=str(key), yalign=0)
             hint.get_style_context().add_class("key-hint")
@@ -395,10 +445,90 @@ class Launcher(Gtk.Window):
         box.pack_start(name, False, False, 0)
         box.pack_start(detail, False, False, 0)
         btn.add(box)
-        btn.app, btn.detail = app, detail
+        btn.detail = detail
         btn.connect("clicked", self._tile_clicked)
+        # Long-press (touch), right-click or the Menu key: change the tile's icon.
+        btn.long_press = Gtk.GestureLongPress.new(btn)
+        btn.long_press.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        btn.long_press.connect("pressed", lambda *_: self._icon_menu(btn))
+        btn.connect("button-press-event", lambda _w, e: e.button == 3 and (self._icon_menu(btn) or True))
+        btn.connect("popup-menu", lambda *_: self._icon_menu(btn) or True)
         self._update_tile(btn)
         return btn
+
+    def _set_tile_icon(self, btn):
+        for child in btn.icon_slot.get_children():
+            btn.icon_slot.remove(child)
+        path = find_icon(btn.app.get("icon", ""))
+        widget = None
+        if path:
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, ICON_SIZE, ICON_SIZE, True)
+                widget = Gtk.Image.new_from_pixbuf(pixbuf)
+            except GLib.Error:
+                widget = None
+        if widget is None:
+            # No icon, or it can't be read: show the short code instead.
+            widget = Gtk.Label(label=btn.app.get("code", ""))
+            widget.get_style_context().add_class("tile-code")
+        widget.set_halign(Gtk.Align.START)
+        btn.icon_slot.pack_start(widget, False, False, 0)
+        btn.icon_slot.show_all()
+
+    def _icon_menu(self, btn):
+        if not btn.app.get("icon"):
+            return
+        menu = Gtk.Menu()
+        change = Gtk.MenuItem(label=f"Change {btn.app['name']} icon…")
+        change.connect("activate", lambda *_: self._choose_icon(btn))
+        menu.append(change)
+        if user_icon(btn.app["icon"]):
+            reset = Gtk.MenuItem(label="Use the standard icon")
+            reset.connect("activate", lambda *_: self._reset_icon(btn))
+            menu.append(reset)
+        menu.show_all()
+        menu.attach_to_widget(btn)
+        menu.popup_at_widget(btn, Gdk.Gravity.CENTER, Gdk.Gravity.NORTH_WEST, None)
+
+    def _choose_icon(self, btn):
+        mount_usb_sticks()
+        dialog = Gtk.FileChooserDialog(title=f"Pick an image for {btn.app['name']}", transient_for=self,
+                                       action=Gtk.FileChooserAction.OPEN)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Use this image", Gtk.ResponseType.OK)
+        images = Gtk.FileFilter()
+        images.set_name("Images (SVG, PNG, JPG)")
+        for pattern in ("*.svg", "*.png", "*.jpg", "*.jpeg", "*.SVG", "*.PNG", "*.JPG", "*.JPEG"):
+            images.add_pattern(pattern)
+        dialog.add_filter(images)
+        for folder in [os.path.expanduser("~/Downloads")] + glob.glob(f"/media/{os.environ.get('USER', '')}/*"):
+            if os.path.isdir(folder):
+                dialog.add_shortcut_folder(folder)
+        dialog.set_size_request(800, 500)
+        response = dialog.run()
+        path = dialog.get_filename()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK or not path:
+            return
+        try:
+            GdkPixbuf.Pixbuf.new_from_file_at_scale(path, ICON_SIZE, ICON_SIZE, True)
+        except GLib.Error:
+            self._message("That file isn't an image the station can show.")
+            return
+        remove_user_icon(btn.app["icon"])
+        os.makedirs(USER_ICONS, exist_ok=True)
+        ext = os.path.splitext(path)[1].lower().replace(".jpeg", ".jpg")
+        shutil.copyfile(path, os.path.join(USER_ICONS, btn.app["icon"] + ext))
+        self._set_tile_icon(btn)
+
+    def _reset_icon(self, btn):
+        remove_user_icon(btn.app["icon"])
+        self._set_tile_icon(btn)
+
+    def _message(self, text):
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
+                                   buttons=Gtk.ButtonsType.OK, text=text)
+        dialog.run()
+        dialog.destroy()
 
     @staticmethod
     def _app_state(app):

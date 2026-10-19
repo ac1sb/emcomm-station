@@ -17,10 +17,13 @@ station_user: radio
 #            to install it (app: its tag in roles/apps).
 #   run:     what the tile starts.
 #   ready:   a file that must exist too, else the tile offers to set it up (VARA).
+#   icon:    image name in /usr/share/emcomm/icons (.svg or .png). Long-press or
+#            right-click a tile to use your own picture instead.
 launcher_apps:
-  - { code: JS8, name: JS8Call, detail: HF messaging, command: js8call, app: js8call, run: [emcomm-start, js8call] }
-  - { code: WL, name: Winlink mail, detail: Pat, command: pat, app: pat, run: [emcomm-start, pat] }
+  - { code: JS8, icon: js8call, name: JS8Call, detail: HF messaging, command: js8call, app: js8call, run: [emcomm-start, js8call] }
+  - { code: WL, icon: winlink, name: Winlink mail, detail: Pat, command: pat, app: pat, run: [emcomm-start, pat] }
   - code: VHF
+    icon: vara-hf
     name: VARA HF
     detail: Winlink modem
     command: wine
@@ -28,14 +31,15 @@ launcher_apps:
     ready: ~/.wine-vara/drive_c/VARA/VARA.exe
     run: [emcomm-start, vara-hf]
   - code: VFM
+    icon: vara-fm
     name: VARA FM
     detail: VHF/UHF modem
     command: wine
     app: vara
     ready: ~/.wine-vara/drive_c/VARA FM/VARAFM.exe
     run: [emcomm-start, vara-fm]
-  - { code: "213", name: Forms, detail: flmsg · ICS-213, command: flmsg, app: flmsg, run: [emcomm-start, flmsg] }
-  - { code: FLD, name: fldigi, detail: Digital modes · flamp, command: fldigi, app: fldigi, run: [emcomm-start, fldigi] }
-  - { code: PKT, name: Packet, detail: Direwolf · AX.25, command: direwolf, app: packet, run: [emcomm-start, packet] }
-  - { code: ARD, name: ARDOP, detail: Open HF modem, command: ardopcf, app: ardop, run: [emcomm-start, ardop] }
-  - { code: FT8, name: WSJT-X, detail: FT8 · band check, command: wsjtx, app: wsjtx, run: [emcomm-start, wsjtx] }
+  - { code: "213", icon: flmsg, name: Forms, detail: flmsg · ICS-213, command: flmsg, app: flmsg, run: [emcomm-start, flmsg] }
+  - { code: FLD, icon: fldigi, name: fldigi, detail: Digital modes · flamp, command: fldigi, app: fldigi, run: [emcomm-start, fldigi] }
+  - { code: PKT, icon: packet, name: Packet, detail: Direwolf · AX.25, command: direwolf, app: packet, run: [emcomm-start, packet] }
+  - { code: ARD, icon: ardop, name: ARDOP, detail: Open HF modem, command: ardopcf, app: ardop, run: [emcomm-start, ardop] }
+  - { code: FT8, icon: wsjtx, name: WSJT-X, detail: FT8 · band check, command: wsjtx, app: wsjtx, run: [emcomm-start, wsjtx] }

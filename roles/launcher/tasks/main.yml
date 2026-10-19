@@ -4,7 +4,16 @@
     name:
       - python3-gi
       - gir1.2-gtk-3.0
+      - librsvg2-common  # draws the .svg tile icons
+      - udisks2  # lets the kiosk user open USB sticks, e.g. to pick a tile icon
     install_recommends: false
+
+- name: Install the tile icons
+  ansible.builtin.copy:
+    src: icons/
+    dest: /usr/share/emcomm/icons/
+    mode: "0644"
+    directory_mode: "0755"
 
 - name: Install the launcher
   ansible.builtin.copy:
