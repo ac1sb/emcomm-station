@@ -198,6 +198,20 @@
           MetricsReportingEnabled: false
           PromotionsEnabled: false
 
+- name: Install the offline library
+  tags: [library]
+  block:
+    - name: Install Kiwix's book server and the web view
+      ansible.builtin.apt:
+        name: [kiwix-tools, gir1.2-webkit2-4.1, udisks2]
+        install_recommends: false
+
+    - name: Install the Library window
+      ansible.builtin.copy:
+        src: emcomm-library
+        dest: /usr/local/bin/emcomm-library
+        mode: "0755"
+
 - name: Install Pat
   tags: [pat]
   block:
