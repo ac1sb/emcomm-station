@@ -1,0 +1,36 @@
+---
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - sudo
+      - openssh-server
+      - usbutils
+      - alsa-utils
+      - pipewire
+      - pipewire-pulse
+      - pipewire-alsa
+      - wireplumber
+      - curl
+      - ca-certificates
+    install_recommends: false
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the station user
+  ansible.builtin.user:
+    name: "{{ station_user }}"
+    shell: /bin/bash
+    groups: [dialout, audio, plugdev, video, sudo]
+    append: true
+
+- name: Enable SSH for remote troubleshooting
+  ansible.builtin.systemd:
+    name: ssh
+    enabled: true
+    state: started
+
+- name: Create the station config directory
+  ansible.builtin.file:
+    path: /etc/emcomm
+    state: directory
+    mode: "0755"

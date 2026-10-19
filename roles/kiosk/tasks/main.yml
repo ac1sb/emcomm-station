@@ -1,0 +1,60 @@
+---
+- name: Install a minimal X session (no desktop environment)
+  ansible.builtin.apt:
+    name:
+      - xserver-xorg-core
+      - xserver-xorg-input-libinput
+      - xserver-xorg-video-all
+      - xinit
+      - x11-xserver-utils
+      - openbox
+      - unclutter
+      - xterm
+      - pavucontrol
+      - fonts-ibm-plex
+    install_recommends: false
+
+- name: Create getty override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/getty@tty1.service.d
+    state: directory
+    mode: "0755"
+
+- name: Auto-login the station user on the first console
+  ansible.builtin.template:
+    src: autologin.conf.j2
+    dest: /etc/systemd/system/getty@tty1.service.d/autologin.conf
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Start X when the station user logs in on tty1
+  ansible.builtin.copy:
+    src: bash_profile
+    dest: "/home/{{ station_user }}/.bash_profile"
+    owner: "{{ station_user }}"
+    group: "{{ station_user }}"
+    mode: "0644"
+
+- name: Run Openbox as the only session
+  ansible.builtin.copy:
+    content: "exec openbox-session\n"
+    dest: "/home/{{ station_user }}/.xinitrc"
+    owner: "{{ station_user }}"
+    group: "{{ station_user }}"
+    mode: "0644"
+
+- name: Create Openbox config directory
+  ansible.builtin.file:
+    path: "/home/{{ station_user }}/.config/openbox"
+    state: directory
+    owner: "{{ station_user }}"
+    group: "{{ station_user }}"
+    mode: "0755"
+
+- name: Openbox autostart (screen always on, launcher)
+  ansible.builtin.copy:
+    src: autostart
+    dest: "/home/{{ station_user }}/.config/openbox/autostart"
+    owner: "{{ station_user }}"
+    group: "{{ station_user }}"
+    mode: "0755"

@@ -1,0 +1,28 @@
+#!/bin/bash
+# Key the transmitter briefly through rigctld to confirm PTT works.
+# Usage: emcomm-ptt-test [seconds]   (1-5, default 2)
+# Transmits into whatever antenna or dummy load is connected.
+set -u
+
+# shellcheck disable=SC1091
+[ -r /etc/emcomm/station.env ] && . /etc/emcomm/station.env
+RIG="${RIGCTLD_HOST:-127.0.0.1}:${RIGCTLD_PORT:-4532}"
+
+secs=${1:-2}
+if ! [[ "$secs" =~ ^[1-5]$ ]]; then
+  echo "seconds must be 1-5" >&2
+  exit 2
+fi
+
+unkey() { rigctl -m 2 -r "$RIG" T 0 >/dev/null 2>&1; }
+# Always unkey, even if interrupted.
+trap unkey EXIT INT TERM
+
+if ! rigctl -m 2 -r "$RIG" T 1; then
+  echo "PTT FAILED: rigctld did not accept the key command" >&2
+  exit 1
+fi
+echo "PTT keyed for ${secs}s..."
+sleep "$secs"
+unkey
+echo "PTT OK (keyed and released)"

@@ -1,0 +1,7 @@
+# Managed by the emcomm-station playbook.
+[ -f ~/.bashrc ] && . ~/.bashrc
+
+# Start the kiosk on the local console only; SSH logins get a normal shell.
+if [ -z "${DISPLAY:-}" ] && [ "$(tty)" = /dev/tty1 ]; then
+  exec startx
+fi

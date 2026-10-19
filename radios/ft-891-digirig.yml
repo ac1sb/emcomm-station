@@ -1,0 +1,14 @@
+---
+# Preset: Yaesu FT-891 with a Digirig Mobile.
+# CAT goes through the radio's own USB port; audio and PTT go through the Digirig
+# on the radio's 6-pin DATA jack. Radio menu: set 05-06 CAT RATE to match cat_baud.
+radio_name: Yaesu FT-891 + Digirig
+rig_model: 1036            # Hamlib RIG_MODEL_FT891
+cat_baud: 38400
+# Radio USB: Silicon Labs CP2105 dual UART; interface 00 is the "Enhanced" (CAT) port.
+cat_match: { vendor: "10c4", product: "ea70", interface: "00" }
+# PTT keyed by RTS on the Digirig's CP2102 serial port.
+ptt_method: RTS
+ptt_match: { vendor: "10c4", product: "ea60" }
+# Digirig sound card (C-Media CM108).
+audio_match: { vendor: "0d8c", product: "0012" }

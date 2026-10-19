@@ -1,0 +1,25 @@
+---
+# First-boot defaults. After the first build, change callsign, grid, radio,
+# baud rate and PTT on the station's Settings screen; re-running the playbook
+# keeps what was set there.
+
+station_callsign: N0CALL
+station_grid: AA00
+# Preset in radios/ (without .yml) to start from: ft-891-digirig, ft-710.
+# Any other Hamlib radio can be picked in Settings.
+station_radio: ft-891-digirig
+
+# Local account that auto-logs in and runs the kiosk.
+station_user: radio
+
+# Apps shown on the home screen. A tile is greyed out until its command is installed.
+launcher_apps:
+  - { code: JS8, name: JS8Call, detail: HF messaging, command: js8call }
+  - { code: WL, name: Winlink mail, detail: Pat, command: emcomm-pat-ui }
+  - { code: VHF, name: VARA HF, detail: Winlink modem, command: emcomm-vara-hf }
+  - { code: VFM, name: VARA FM, detail: VHF/UHF modem, command: emcomm-vara-fm }
+  - { code: "213", name: Forms, detail: flmsg · ICS-213, command: flmsg }
+  - { code: FLD, name: fldigi, detail: Digital modes · flamp, command: fldigi }
+  - { code: PKT, name: Packet, detail: Direwolf · AX.25, command: emcomm-packet }
+  - { code: ARD, name: ARDOP, detail: Open HF modem, command: emcomm-ardop }
+  - { code: FT8, name: WSJT-X, detail: FT8 · band check, command: wsjtx }

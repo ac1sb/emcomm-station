@@ -1,0 +1,10 @@
+---
+- name: Build the Emcomm-CNC station
+  hosts: station
+  become: true
+  roles:
+    - base
+    - radio
+    - diagnostics
+    - kiosk
+    - launcher

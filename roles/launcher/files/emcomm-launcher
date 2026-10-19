@@ -1,0 +1,659 @@
+#!/usr/bin/env python3
+"""Full-screen touch launcher for the Emcomm-CNC station.
+
+Home: app tiles plus station status. Diagnostics: hardware/service status
+and radio tests. Settings: callsign, grid, radio, baud rate and PTT, saved
+through emcomm-apply-settings. The app list comes from
+/etc/emcomm/launcher.json, which the playbook writes.
+"""
+
+import glob
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import tempfile
+import threading
+import time
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib, Gtk, Gdk, Pango  # noqa: E402
+
+CONFIG_PATH = os.environ.get("EMCOMM_LAUNCHER_CONFIG", "/etc/emcomm/launcher.json")
+STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
+PRESETS_DIR = os.environ.get("EMCOMM_PRESETS", "/usr/share/emcomm/radios")
+FAKE_DEVICES = os.environ.get("EMCOMM_FAKE_DEVICES")  # JSON file of devices, for testing without hardware
+APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply-settings").split()
+RIGCTLD = ("127.0.0.1", 4532)
+BAUD_RATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
+PTT_CHOICES = [("CAT", "CAT command"), ("RTS", "RTS line (Digirig)"), ("DTR", "DTR line"), ("NONE", "VOX / none")]
+
+CSS = b"""
+window, .page { background: #101214; color: #E8E6E1; font-family: 'IBM Plex Sans', sans-serif; }
+.topbar { background: #15181B; border-bottom: 1px solid #2A2F35; padding: 0 20px; min-height: 60px; }
+.callsign { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 600; color: #F2A33A; }
+.muted { color: #9AA0A6; }
+.mono { font-family: 'IBM Plex Mono', monospace; }
+.dot-ok { color: #4FC3B8; }
+.dot-off { color: #9AA0A6; }
+.tile, .navbtn, .tile label, .navbtn label { background-image: none; box-shadow: none; text-shadow: none; }
+.tile { background: #1A1D21; border: 1px solid #2A2F35; border-radius: 12px; padding: 16px; }
+.tile:hover { background: #22262B; }
+.tile:focus, .navbtn:focus { border: 2px solid #F2A33A; outline: none; }
+.key-hint { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #9AA0A6; }
+.tile:disabled { opacity: 0.45; }
+.tile-code { font-family: 'IBM Plex Mono', monospace; font-size: 28px; font-weight: 600; color: #F2A33A; }
+.tile-name { font-size: 18px; font-weight: 600; color: #E8E6E1; }
+.tile-detail { font-size: 13px; color: #9AA0A6; }
+.navbtn { background: #15181B; border: 1px solid #2A2F35; border-radius: 10px; color: #E8E6E1;
+          font-size: 16px; min-height: 52px; padding: 0 16px; }
+.danger { border-color: #E5534B; color: #F4B4AF; background: #2A1B1A; }
+.title { font-size: 20px; font-weight: 600; }
+.section { background: #1A1D21; border: 1px solid #2A2F35; border-radius: 12px; padding: 12px 16px; }
+.section-title { font-size: 12px; font-weight: 600; color: #9AA0A6; letter-spacing: 1px; }
+.field-label { font-size: 14px; color: #C9CDD1; }
+combobox button { padding: 0 10px; }
+entry, combobox button { background: #101214; color: #E8E6E1; border: 1px solid #3A4048; border-radius: 8px;
+                         min-height: 44px; font-size: 16px; background-image: none; box-shadow: none; }
+.primary { background: #F2A33A; color: #101214; border: none; font-weight: 600; }
+.error { color: #F4B4AF; }
+.ok { color: #4FC3B8; }
+textview, textview text { background: #1A1D21; color: #E8E6E1; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
+"""
+
+
+def read_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def load_config():
+    return read_json(CONFIG_PATH, {"apps": []})
+
+
+def load_station():
+    return read_json(STATION_PATH, {"callsign": "N0CALL", "grid": "", "radio": ""})
+
+
+def load_presets():
+    """Radio presets as (id, preset), sorted by display name."""
+    presets = []
+    for path in sorted(glob.glob(os.path.join(PRESETS_DIR, "*.json"))):
+        preset = read_json(path, None)
+        if preset:
+            presets.append((os.path.basename(path)[:-5], preset))
+    return sorted(presets, key=lambda p: p[1].get("radio_name", p[0]))
+
+
+def load_hamlib_models():
+    """{manufacturer: [(model number, model name)]} from `rigctl -l`."""
+    try:
+        out = subprocess.run(["rigctl", "-l"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    lines = out.splitlines()
+    if not lines or "Mfg" not in lines[0]:
+        return {}
+    header = lines[0]
+    mfg_at, model_at, ver_at = header.index("Mfg"), header.index("Model"), header.index("Version")
+    models = {}
+    for line in lines[1:]:
+        number = line[:mfg_at].strip()
+        if number.isdigit():
+            mfg, name = line[mfg_at:model_at].strip(), line[model_at:ver_at].strip()
+            models.setdefault(mfg, []).append((int(number), name))
+    return models
+
+
+def udev_props(args):
+    try:
+        out = subprocess.run(["udevadm", "info", "-q", "property", *args],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+
+def usb_match(props, with_interface):
+    match = {"vendor": props.get("ID_VENDOR_ID", "").lower(), "product": props.get("ID_MODEL_ID", "").lower()}
+    if not (match["vendor"] and match["product"]):
+        return None
+    if props.get("ID_SERIAL_SHORT"):
+        match["serial"] = props["ID_SERIAL_SHORT"]
+    if with_interface and props.get("ID_USB_INTERFACE_NUM"):
+        match["interface"] = props["ID_USB_INTERFACE_NUM"]
+    return match
+
+
+def describe_match(match):
+    text = f"USB {match['vendor']}:{match['product']}"
+    if "interface" in match:
+        text += f" port {int(match['interface'])}"
+    return text
+
+
+def detect_devices():
+    """([(label, match)] for USB serial ports, [(label, match)] for USB sound cards) plugged in now."""
+    if FAKE_DEVICES:
+        fake = read_json(FAKE_DEVICES, {})
+        return ([tuple(p) for p in fake.get("serial", [])], [tuple(c) for c in fake.get("sound", [])])
+    ports = []
+    for link in sorted(glob.glob("/dev/serial/by-id/*")):
+        props = udev_props(["-n", link])
+        match = usb_match(props, with_interface=True)
+        if match:
+            name = props.get("ID_MODEL", "").replace("_", " ") or os.path.basename(link)
+            ports.append((f"{describe_match(match)} · {os.path.basename(os.path.realpath(link))} · {name}", match))
+    cards = []
+    for path in sorted(glob.glob("/sys/class/sound/card[0-9]*")):
+        props = udev_props(["-p", path])
+        match = usb_match(props, with_interface=False)
+        if match:
+            name = props.get("ID_MODEL", "").replace("_", " ") or os.path.basename(path)
+            cards.append((f"{describe_match(match)} · {name}", match))
+    return ports, cards
+
+
+def rigctld_query(host, port, command, timeout=1.0):
+    """Send one rigctld command and return the first reply line, or None."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            s.sendall(command.encode() + b"\n")
+            data = s.recv(256).decode(errors="replace")
+            return data.splitlines()[0].strip() if data else None
+    except OSError:
+        return None
+
+
+def format_freq(hz_text):
+    try:
+        hz = int(hz_text)
+    except (TypeError, ValueError):
+        return None
+    mhz, rest = divmod(hz, 1_000_000)
+    khz, h = divmod(rest, 1000)
+    return f"{mhz}.{khz:03d}.{h:03d}"
+
+
+def run_detached(argv):
+    subprocess.Popen(argv, start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class Launcher(Gtk.Window):
+    def __init__(self, config):
+        super().__init__(title="Emcomm-CNC")
+        self.config = config
+        self.station = load_station()
+        self.presets = load_presets()
+        self.models = load_hamlib_models()
+        self.choices = {}
+        self._filling = False
+        self.set_default_size(1024, 600)
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        root.get_style_context().add_class("page")
+        self.add(root)
+        root.pack_start(self._topbar(), False, False, 0)
+
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        self.stack.add_named(self._home_page(), "home")
+        self.stack.add_named(self._diag_page(), "diagnostics")
+        self.stack.add_named(self._settings_page(), "settings")
+        root.pack_start(self.stack, True, True, 0)
+
+        self._tick_clock()
+        GLib.timeout_add_seconds(1, self._tick_clock)
+        self._poll_status()
+        GLib.timeout_add_seconds(5, self._poll_status)
+        self.connect("key-press-event", self._on_key)
+
+    # ---- keyboard ------------------------------------------------------
+
+    def _on_key(self, _widget, event):
+        """Esc/F1 Home, F2 Diagnostics, F3 Settings, 1-9 open a tile on Home."""
+        pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home",
+                 Gdk.KEY_F2: "diagnostics", Gdk.KEY_F3: "settings"}
+        if event.keyval in pages:
+            self.stack.set_visible_child_name(pages[event.keyval])
+            return True
+        if self.stack.get_visible_child_name() == "home" and Gdk.KEY_1 <= event.keyval <= Gdk.KEY_9:
+            index = event.keyval - Gdk.KEY_1
+            if index < len(self.tiles) and self.tiles[index].get_sensitive():
+                self.tiles[index].clicked()
+            return True
+        return False
+
+    # ---- top bar -------------------------------------------------------
+
+    def _topbar(self):
+        bar = Gtk.Box(spacing=20)
+        bar.get_style_context().add_class("topbar")
+        self.call_label = Gtk.Label()
+        self.call_label.get_style_context().add_class("callsign")
+        bar.pack_start(self.call_label, False, False, 0)
+        self.grid_label = Gtk.Label()
+        self.grid_label.get_style_context().add_class("muted")
+        bar.pack_start(self.grid_label, False, False, 0)
+        self._show_station()
+
+        self.clock = Gtk.Label()
+        self.clock.get_style_context().add_class("mono")
+        bar.pack_end(self.clock, False, False, 0)
+        self.audio_status = Gtk.Label()
+        bar.pack_end(self.audio_status, False, False, 0)
+        self.rig_status = Gtk.Label()
+        bar.pack_end(self.rig_status, False, False, 0)
+        return bar
+
+    def _show_station(self):
+        self.call_label.set_text(self.station.get("callsign", ""))
+        self.grid_label.set_text(f"Grid {self.station.get('grid', '')}")
+
+    def _tick_clock(self):
+        self.clock.set_text(time.strftime("%H:%M UTC", time.gmtime()))
+        return True
+
+    def _poll_status(self):
+        def work():
+            freq = format_freq(rigctld_query(*RIGCTLD, "f"))
+            audio = os.path.exists("/proc/asound/rigaudio")
+            GLib.idle_add(self._show_status, freq, audio)
+
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def _show_status(self, freq, audio):
+        if freq:
+            self.rig_status.set_markup(f"<span foreground='#4FC3B8'>●</span>  Rig  <tt>{freq}</tt>")
+        else:
+            self.rig_status.set_markup("<span foreground='#9AA0A6'>○</span>  Rig not connected")
+        dot = "<span foreground='#4FC3B8'>●</span>" if audio else "<span foreground='#9AA0A6'>○</span>"
+        self.audio_status.set_markup(f"{dot}  Radio audio")
+        return False
+
+    # ---- home ----------------------------------------------------------
+
+    def _home_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=20)
+        grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
+        self.tiles = []
+        for i, app in enumerate(self.config.get("apps", [])):
+            tile = self._tile(app, i + 1 if i < 9 else None)
+            self.tiles.append(tile)
+            grid.attach(tile, i % 3, i // 3, 1, 1)
+        page.pack_start(grid, True, True, 0)
+
+        nav = Gtk.Box(spacing=12, homogeneous=True)
+        nav.pack_start(self._navbtn("Diagnostics  F2", lambda *_: self.stack.set_visible_child_name("diagnostics")), True, True, 0)
+        nav.pack_start(self._navbtn("Settings  F3", lambda *_: self.stack.set_visible_child_name("settings")), True, True, 0)
+        nav.pack_start(self._navbtn("Power", self._power_dialog), True, True, 0)
+        page.pack_end(nav, False, False, 0)
+        return page
+
+    def _tile(self, app, key=None):
+        btn = Gtk.Button()
+        btn.get_style_context().add_class("tile")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        code = Gtk.Label(label=app.get("code", ""), xalign=0)
+        code.get_style_context().add_class("tile-code")
+        top = Gtk.Box()
+        top.pack_start(code, True, True, 0)
+        if key:
+            hint = Gtk.Label(label=str(key), yalign=0)
+            hint.get_style_context().add_class("key-hint")
+            top.pack_end(hint, False, False, 0)
+        name = Gtk.Label(label=app.get("name", ""), xalign=0)
+        name.get_style_context().add_class("tile-name")
+        installed = shutil.which(app.get("command", "")) is not None
+        detail = Gtk.Label(label=app.get("detail", "") if installed else "Not installed yet", xalign=0)
+        detail.get_style_context().add_class("tile-detail")
+        box.pack_start(top, True, True, 0)
+        box.pack_start(name, False, False, 0)
+        box.pack_start(detail, False, False, 0)
+        btn.add(box)
+        btn.set_sensitive(installed)
+        btn.connect("clicked", lambda *_: run_detached([app["command"]]))
+        return btn
+
+    def _navbtn(self, label, handler, extra_class=None):
+        btn = Gtk.Button(label=label)
+        btn.get_style_context().add_class("navbtn")
+        if extra_class:
+            btn.get_style_context().add_class(extra_class)
+        btn.connect("clicked", handler)
+        return btn
+
+    def _power_dialog(self, *_):
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                   text="Shut down the station?")
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Restart", 1, "Shut down", 2)
+        response = dialog.run()
+        dialog.destroy()
+        if response == 1:
+            run_detached(["systemctl", "reboot"])
+        elif response == 2:
+            run_detached(["systemctl", "poweroff"])
+
+    # ---- settings ------------------------------------------------------
+
+    def _field(self, label, widget):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        lbl = Gtk.Label(label=label, xalign=0)
+        lbl.get_style_context().add_class("field-label")
+        lbl.set_mnemonic_widget(widget)
+        box.pack_start(lbl, False, False, 0)
+        box.pack_start(widget, False, False, 0)
+        return box
+
+    def _section(self, title):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.get_style_context().add_class("section")
+        heading = Gtk.Label(label=title.upper(), xalign=0)
+        heading.get_style_context().add_class("section-title")
+        box.pack_start(heading, False, False, 0)
+        return box
+
+    def _settings_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
+        title = Gtk.Label(label="Station settings", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        header.pack_end(self._navbtn("Rescan devices", lambda *_: self._rescan_devices()), False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        cols = Gtk.Box(spacing=16)
+
+        operator = self._section("Operator")
+        operator.set_size_request(280, -1)
+        self.callsign_entry = Gtk.Entry(max_length=12)
+        self.grid_entry = Gtk.Entry(max_length=6)
+        self.preset_combo = Gtk.ComboBoxText()
+        self.preset_combo.append("", "None")
+        for preset_id, preset in self.presets:
+            self.preset_combo.append(preset_id, preset.get("radio_name", preset_id))
+        self.preset_combo.connect("changed", self._preset_changed)
+        operator.pack_start(self._field("Callsign", self.callsign_entry), False, False, 0)
+        operator.pack_start(self._field("Grid square", self.grid_entry), False, False, 0)
+        operator.pack_start(self._field("Preset (fills in the radio)", self.preset_combo), False, False, 0)
+        self.settings_message = Gtk.Label(xalign=0, wrap=True)
+        self.settings_message.set_max_width_chars(30)
+        operator.pack_end(self.settings_message, False, False, 0)
+        cols.pack_start(operator, False, False, 0)
+
+        radio = self._section("Radio")
+        grid = Gtk.Grid(column_spacing=12, row_spacing=6, column_homogeneous=True)
+        self.mfg_combo = Gtk.ComboBoxText()
+        for mfg in sorted(self.models, key=str.lower):
+            self.mfg_combo.append(mfg, mfg)
+        self.mfg_combo.connect("changed", self._mfg_changed)
+        self.model_combo = Gtk.ComboBoxText()
+        self.model_combo.connect("changed", self._model_changed)
+        self.cat_combo = Gtk.ComboBoxText()
+        self.baud_combo = Gtk.ComboBoxText()
+        for baud in BAUD_RATES:
+            self.baud_combo.append(baud, baud)
+        self.ptt_combo = Gtk.ComboBoxText()
+        for value, label in PTT_CHOICES:
+            self.ptt_combo.append(value, label)
+        self.ptt_combo.connect("changed", lambda *_: self._ptt_changed())
+        self.ptt_port_combo = Gtk.ComboBoxText()
+        self.audio_combo = Gtk.ComboBoxText()
+        grid.attach(self._field("Manufacturer", self.mfg_combo), 0, 0, 1, 1)
+        grid.attach(self._field("Model (Hamlib)", self.model_combo), 1, 0, 1, 1)
+        grid.attach(self._field("CAT port", self.cat_combo), 0, 1, 1, 1)
+        grid.attach(self._field("Baud rate (match the radio)", self.baud_combo), 1, 1, 1, 1)
+        grid.attach(self._field("PTT", self.ptt_combo), 0, 2, 1, 1)
+        grid.attach(self._field("PTT port", self.ptt_port_combo), 1, 2, 1, 1)
+        grid.attach(self._field("Sound card", self.audio_combo), 0, 3, 2, 1)
+        for combo in (self.preset_combo, self.mfg_combo, self.model_combo, self.cat_combo, self.baud_combo,
+                      self.ptt_combo, self.ptt_port_combo, self.audio_combo):
+            # Long device names are cut off with "…" instead of widening the screen.
+            for cell in combo.get_cells():
+                cell.set_property("ellipsize", Pango.EllipsizeMode.END)
+                cell.set_property("width-chars", 8)
+        radio.pack_start(grid, False, False, 0)
+        cols.pack_start(radio, True, True, 0)
+        page.pack_start(cols, True, True, 0)
+
+        buttons = Gtk.Box(spacing=12, homogeneous=True)
+        buttons.pack_start(self._navbtn("Undo changes", lambda *_: self._fill_settings()), True, True, 0)
+        save = self._navbtn("Save and restart rig control", self._save_settings, "primary")
+        buttons.pack_start(save, True, True, 0)
+        page.pack_end(buttons, False, False, 0)
+
+        self.serial_ports, self.sound_cards = detect_devices()
+        self._fill_settings()
+        page.connect("map", lambda *_: self._fill_settings())
+        return page
+
+    # Each port/sound-card combo keeps its matches in self.choices[combo]: id -> match.
+
+    def _fill_match_combo(self, combo, detected, current, fixed=()):
+        """Fill combo with fixed entries, detected devices and (if not plugged in) the saved one."""
+        combo.remove_all()
+        choices = {}
+        for choice_id, label in fixed:
+            combo.append(choice_id, label)
+            choices[choice_id] = choice_id
+        for i, (label, match) in enumerate(detected):
+            combo.append(f"d{i}", label)
+            choices[f"d{i}"] = match
+        selected = next((cid for cid, m in choices.items() if m == current), None)
+        if selected is None and isinstance(current, dict):
+            # A preset's match (no serial number) still picks the plugged-in device it describes.
+            selected = next((cid for cid, m in choices.items()
+                             if isinstance(m, dict) and current.items() <= m.items()), None)
+        if selected is None and isinstance(current, dict):
+            combo.append("saved", f"{describe_match(current)} (not plugged in)")
+            choices["saved"] = current
+            selected = "saved"
+        self.choices[combo] = choices
+        combo.set_active_id(selected if selected is not None else (fixed[0][0] if fixed else None))
+
+    def _chosen(self, combo):
+        return self.choices.get(combo, {}).get(combo.get_active_id())
+
+    def _fill_radio(self, values):
+        """Show a radio setup (saved settings or a preset) in the Radio section."""
+        model = values.get("rig_model")
+        mfg = next((m for m, models in self.models.items() if any(n == model for n, _ in models)), None)
+        self._model_to_select = model
+        self.mfg_combo.set_active_id(mfg)
+        self._mfg_changed(self.mfg_combo)
+        self.baud_combo.set_active_id(str(values.get("cat_baud", 38400)))
+        self._fill_match_combo(self.cat_combo, self.serial_ports, values.get("cat_match"))
+        self.ptt_combo.set_active_id(values.get("ptt_method", "CAT"))
+        self._fill_match_combo(self.ptt_port_combo, self.serial_ports, values.get("ptt_match") or "cat",
+                               fixed=[("cat", "Same as CAT port")])
+        self._fill_match_combo(self.audio_combo, self.sound_cards, values.get("audio_match") or "",
+                               fixed=[("", "Choose later")])
+        self._ptt_changed()
+
+    def _fill_settings(self):
+        st = self.station
+        self._filling = True
+        self.callsign_entry.set_text("" if st.get("callsign") == "N0CALL" else st.get("callsign", ""))
+        self.grid_entry.set_text(st.get("grid", ""))
+        preset_id = next((pid for pid, p in self.presets if p.get("radio_name") == st.get("radio_name")), "")
+        self.preset_combo.set_active_id(preset_id)
+        self._fill_radio(st)
+        self._filling = False
+        self.settings_message.set_text("")
+
+    def _rescan_devices(self):
+        self.serial_ports, self.sound_cards = detect_devices()
+        current = {"cat_match": self._chosen(self.cat_combo), "ptt_match": self._chosen(self.ptt_port_combo),
+                   "audio_match": self._chosen(self.audio_combo)}
+        self._fill_match_combo(self.cat_combo, self.serial_ports, current["cat_match"])
+        self._fill_match_combo(self.ptt_port_combo, self.serial_ports, current["ptt_match"],
+                               fixed=[("cat", "Same as CAT port")])
+        self._fill_match_combo(self.audio_combo, self.sound_cards, current["audio_match"],
+                               fixed=[("", "Choose later")])
+        found = len(self.serial_ports) + len(self.sound_cards)
+        self._set_message(f"Found {len(self.serial_ports)} serial port(s) and {len(self.sound_cards)} USB sound card(s)."
+                          if found else "No USB radio devices found. Plug in the radio and rescan.", found > 0)
+
+    def _preset_changed(self, combo):
+        preset = dict(self.presets).get(combo.get_active_id())
+        if preset and not self._filling:
+            self._fill_radio(preset)
+
+    def _mfg_changed(self, combo):
+        self.model_combo.remove_all()
+        for number, name in sorted(self.models.get(combo.get_active_id(), []), key=lambda m: m[1].lower()):
+            self.model_combo.append(str(number), name)
+        want = getattr(self, "_model_to_select", None)
+        self.model_combo.set_active_id(str(want) if want else None)
+        self._model_to_select = None
+
+    def _model_changed(self, combo):
+        # Picking a model by hand means the setup no longer matches a preset.
+        preset = dict(self.presets).get(self.preset_combo.get_active_id())
+        if preset and combo.get_active_id() and int(combo.get_active_id()) != preset.get("rig_model"):
+            self.preset_combo.set_active_id("")
+
+    def _ptt_changed(self):
+        self.ptt_port_combo.set_sensitive(self.ptt_combo.get_active_id() in ("RTS", "DTR"))
+
+    def _save_settings(self, *_):
+        preset = dict(self.presets).get(self.preset_combo.get_active_id())
+        model_id = self.model_combo.get_active_id()
+        if preset:
+            radio_name = preset["radio_name"]
+        else:
+            radio_name = f"{self.mfg_combo.get_active_text() or ''} {self.model_combo.get_active_text() or ''}"
+            radio_name = re.sub(r"[^A-Za-z0-9 +/()._-]", "", radio_name).strip()[:60]
+        new = {
+            "callsign": self.callsign_entry.get_text().strip().upper(),
+            "grid": self.grid_entry.get_text().strip(),
+            "radio_name": radio_name,
+            "rig_model": int(model_id) if model_id else None,
+            "cat_baud": int(self.baud_combo.get_active_id() or 38400),
+            "cat_match": self._chosen(self.cat_combo),
+            "ptt_method": self.ptt_combo.get_active_id(),
+            "ptt_match": self._chosen(self.ptt_port_combo),
+            "audio_match": self._chosen(self.audio_combo) or None,
+        }
+        self._set_message("Saving…", None)
+
+        def work():
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump(new, f)
+                path = f.name
+            try:
+                result = subprocess.run(APPLY_CMD + [path], stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True, timeout=60)
+                ok, text = result.returncode == 0, result.stdout.strip()
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                ok, text = False, f"Settings not saved: {exc}"
+            finally:
+                os.unlink(path)
+            GLib.idle_add(self._saved, ok, text)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _saved(self, ok, text):
+        self._set_message(text, ok)
+        if ok:
+            self.station = load_station()
+            self._show_station()
+            self.callsign_entry.set_text(self.station.get("callsign", ""))
+            self.grid_entry.set_text(self.station.get("grid", ""))
+        return False
+
+    def _set_message(self, text, ok):
+        ctx = self.settings_message.get_style_context()
+        ctx.remove_class("ok")
+        ctx.remove_class("error")
+        if ok is not None:
+            ctx.add_class("ok" if ok else "error")
+        self.settings_message.set_text(text)
+
+    # ---- diagnostics ---------------------------------------------------
+
+    def _diag_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
+        title = Gtk.Label(label="Diagnostics", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        header.pack_end(self._navbtn("Refresh", lambda *_: self._run_into_output(["emcomm-diag", "all"])), False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        body = Gtk.Box(spacing=16)
+        self.output = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                   left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.CHAR)
+        scroller = Gtk.ScrolledWindow()
+        scroller.add(self.output)
+        body.pack_start(scroller, True, True, 0)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        actions.set_size_request(240, -1)
+        actions.pack_start(self._navbtn("Read frequency", lambda *_: self._run_into_output(["emcomm-diag", "rig"])), False, False, 0)
+        actions.pack_start(self._navbtn("PTT test (2 s)", self._confirm_ptt, "danger"), False, False, 0)
+        actions.pack_start(self._navbtn("Audio levels", lambda *_: run_detached(["xterm", "-fa", "IBM Plex Mono", "-fs", "12", "-e", "alsamixer", "-c", "rigaudio"])), False, False, 0)
+        actions.pack_start(self._navbtn("Rig control log", lambda *_: run_detached(["xterm", "-fa", "IBM Plex Mono", "-fs", "11", "-e", "journalctl", "-f", "-u", "rigctld"])), False, False, 0)
+        actions.pack_start(self._navbtn("Terminal", lambda *_: run_detached(["xterm", "-fa", "IBM Plex Mono", "-fs", "12"])), False, False, 0)
+        body.pack_start(actions, False, False, 0)
+        page.pack_start(body, True, True, 0)
+
+        page.connect("map", lambda *_: self._run_into_output(["emcomm-diag", "all"]))
+        return page
+
+    def _confirm_ptt(self, *_):
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                                   buttons=Gtk.ButtonsType.OK_CANCEL,
+                                   text="Key the transmitter for 2 seconds?")
+        dialog.format_secondary_text("Make sure an antenna or dummy load is connected.")
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.OK:
+            self._run_into_output(["emcomm-ptt-test", "2"])
+
+    def _run_into_output(self, argv):
+        buf = self.output.get_buffer()
+        buf.set_text(f"$ {' '.join(argv)}\n")
+
+        def work():
+            try:
+                result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        text=True, timeout=30)
+                text = result.stdout
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                text = f"failed: {exc}\n"
+            GLib.idle_add(lambda: buf.insert(buf.get_end_iter(), text) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+
+def main():
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
+                                             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    win = Launcher(load_config())
+    win.connect("destroy", Gtk.main_quit)
+    if not os.environ.get("EMCOMM_LAUNCHER_WINDOWED"):
+        win.fullscreen()
+    win.show_all()
+    if win.station.get("callsign", "N0CALL") == "N0CALL":
+        # First boot: ask for callsign and radio before anything else.
+        win.stack.set_visible_child_name("settings")
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,17 @@
+# Managed by the emcomm-station playbook.
+# Radio-specific arguments come from /etc/emcomm/rigctld.env, which
+# emcomm-apply-settings writes from the Settings screen.
+[Unit]
+Description=Hamlib rig control
+BindsTo=dev-rig\x2dcat.device
+After=dev-rig\x2dcat.device
+
+[Service]
+User={{ station_user }}
+EnvironmentFile=/etc/emcomm/rigctld.env
+ExecStart=/usr/bin/rigctld $RIGCTLD_ARGS --listen-addr=127.0.0.1 --port=4532
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

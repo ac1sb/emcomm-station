@@ -1,0 +1,26 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install checkers
+        run: pip install ansible-core ansible-lint shellcheck-py pyyaml
+      - name: Playbook syntax
+        run: ansible-playbook site.yml --syntax-check
+      - name: Ansible lint
+        run: ansible-lint
+      - name: Shell scripts
+        run: shellcheck roles/diagnostics/files/emcomm-diag roles/diagnostics/files/emcomm-ptt-test
+      - name: Python compiles
+        run: python -m py_compile roles/launcher/files/emcomm-launcher roles/radio/files/emcomm-apply-settings
+      - name: Settings helper tests
+        run: python tests/test_apply_settings.py
