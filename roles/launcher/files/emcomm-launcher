@@ -89,11 +89,13 @@ entry, combobox button { background: $bg; color: $text; border: 1px solid $input
 .freq { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: $accent; }
 .freq-row { padding: 6px 4px; border-bottom: 1px solid $line; }
 list, list row { background: $surface; color: $text; }
-dialog, dialog box, dialog label { background: $surface; color: $text; }
-dialog button { background: $bar; color: $text; border: 1px solid $line; border-radius: 8px;
+dialog, dialog box, dialog label,
+messagedialog, messagedialog box, messagedialog label { background: $surface; color: $text; }
+dialog button, messagedialog button { background: $bar; color: $text; border: 1px solid $line; border-radius: 8px;
                 background-image: none; box-shadow: none; text-shadow: none; min-height: 40px; }
-dialog button:hover { background: $hover; }
-dialog button box, dialog button label { background: transparent; }
+dialog button:hover, messagedialog button:hover { background: $hover; }
+dialog button box, dialog button label,
+messagedialog button box, messagedialog button label { background: transparent; }
 dialog check { background: $bg; border: 1px solid $input_line; }
 textview, textview text { background: $surface; color: $text; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
 """)
@@ -543,6 +545,16 @@ def wifi_state():
     return None, "no Wi-Fi adapter", ""
 
 
+def has_default_route():
+    """Whether any interface has a default route (/proc/net/route: destination 0, interface up)."""
+    try:
+        with open("/proc/net/route", encoding="ascii") as f:
+            rows = [line.split() for line in f.readlines()[1:]]
+    except OSError:
+        return False
+    return any(len(r) > 3 and r[1] == "00000000" and int(r[3], 16) & 1 for r in rows)
+
+
 def wifi_networks():
     """Visible networks, strongest first: [{ssid, signal, secure, in_use}], one per name."""
     ok, out = nmcli("-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan", "yes")
@@ -880,7 +892,9 @@ class Launcher(Gtk.Window):
         if ssid:
             return f"Wi-Fi {ssid}", True
         ok, out = nmcli("-t", "-f", "STATE", "general", timeout=5)
-        connected = ok and out.strip().startswith("connected")
+        # NetworkManager counts only its own devices; the wired port the Debian installer
+        # set up stays with ifupdown, so a default route counts too.
+        connected = (ok and out.strip().startswith("connected")) or has_default_route()
         return ("Network" if connected else "No network"), connected
 
     def _show_status(self, freq, audio, net=None, gps="absent"):
@@ -952,9 +966,12 @@ class Launcher(Gtk.Window):
         btn.detail = detail
         btn.connect("clicked", self._tile_clicked)
         # Long-press (touch), right-click or the Menu key: change the tile's icon.
+        # The menu opens when the finger lifts: one opened under the finger closes on release.
         btn.long_press = Gtk.GestureLongPress.new(btn)
         btn.long_press.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        btn.long_press.connect("pressed", lambda *_: self._icon_menu(btn))
+        btn.long_pressed = False
+        btn.long_press.connect("pressed", lambda g, *_: self._tile_long_pressed(btn, g))
+        btn.long_press.connect("end", lambda *_: self._tile_long_press_end(btn))
         btn.connect("button-press-event", lambda _w, e: e.button == 3 and (self._icon_menu(btn) or True))
         btn.connect("popup-menu", lambda *_: self._icon_menu(btn) or True)
         self._update_tile(btn)
@@ -1004,6 +1021,17 @@ class Launcher(Gtk.Window):
         widget.set_halign(Gtk.Align.START)
         btn.icon_slot.pack_start(widget, False, False, 0)
         btn.icon_slot.show_all()
+
+    @staticmethod
+    def _tile_long_pressed(btn, gesture):
+        # Claim the press, so lifting the finger doesn't also tap the tile.
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        btn.long_pressed = True
+
+    def _tile_long_press_end(self, btn):
+        if btn.long_pressed:
+            btn.long_pressed = False
+            GLib.idle_add(lambda: self._icon_menu(btn) and False)
 
     def _icon_menu(self, btn):
         if not btn.app.get("icon"):
@@ -1243,8 +1271,22 @@ class Launcher(Gtk.Window):
 
         self.serial_ports, self.sound_cards = detect_devices()
         self._fill_settings()
-        page.connect("map", lambda *_: self._fill_settings())
+        page.connect("map", lambda *_: self._settings_shown())
         return page
+
+    def _settings_form(self):
+        """What the Settings page shows now, to tell whether it's been edited."""
+        return (self.callsign_entry.get_text(), self.grid_entry.get_text(), self.preset_combo.get_active_id(),
+                self.model_combo.get_active_id(), self.baud_combo.get_active_id(), self.ptt_combo.get_active_id(),
+                *(self._chosen(c) for c in (self.cat_combo, self.ptt_port_combo, self.audio_combo, self.gps_combo)))
+
+    def _settings_shown(self):
+        """Show the saved settings and the devices plugged in now, unless there are unsaved
+        changes (say, after a trip to the Wi-Fi page), which are kept."""
+        station, form = self._settings_filled
+        if self.station is not station or self._settings_form() == form:
+            self.serial_ports, self.sound_cards = detect_devices()
+            self._fill_settings()
 
     # Each port/sound-card combo keeps its matches in self.choices[combo]: id -> match.
 
@@ -1299,6 +1341,7 @@ class Launcher(Gtk.Window):
         self._fill_radio(st)
         self._fill_match_combo(self.gps_combo, self.serial_ports, st.get("gps_match") or "", fixed=GPS_FIXED)
         self._filling = False
+        self._settings_filled = (self.station, self._settings_form())
         self.settings_message.set_text("")
 
     def _rescan_devices(self):

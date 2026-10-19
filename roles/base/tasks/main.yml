@@ -21,8 +21,17 @@
   ansible.builtin.user:
     name: "{{ station_user }}"
     shell: /bin/bash
-    groups: [dialout, audio, plugdev, video, sudo]
+    # systemd-journal: Diagnostics shows rigctld's log and recent USB events.
+    groups: [dialout, audio, plugdev, video, systemd-journal]
     append: true
+
+# The station user has no password and isn't meant to use sudo (see README,
+# Accounts); earlier builds put it in the sudo group.
+- name: Take the station user out of the sudo group
+  ansible.builtin.command: gpasswd -d {{ station_user }} sudo
+  register: base_sudo_group
+  changed_when: base_sudo_group.rc == 0
+  failed_when: false
 
 # NetworkManager lets the user at the station's screen join Wi-Fi from the
 # launcher's Wi-Fi page (polkit's standard rules for the active local session).
