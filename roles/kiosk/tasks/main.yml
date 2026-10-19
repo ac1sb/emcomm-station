@@ -11,8 +11,16 @@
       - unclutter
       - xterm
       - pavucontrol
-      - fonts-ibm-plex
+      - fonts-dejavu-core
     install_recommends: false
+
+# IBM Plex is the launcher's preferred font, but not every Debian release ships
+# it. Without it the launcher falls back to DejaVu.
+- name: Install the launcher font if this release has it
+  ansible.builtin.apt:
+    name: fonts-ibm-plex
+    install_recommends: false
+  failed_when: false
 
 - name: Create getty override directory
   ansible.builtin.file:
