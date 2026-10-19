@@ -23,7 +23,10 @@ environment.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
 - **Launcher:** the home screen above. Works by touch, mouse or keyboard: Tab moves
   between buttons, 1–9 open tiles, Esc/F1 goes Home, F2 Diagnostics, F3 Settings,
-  F4 Logs. A tile for an app that isn't installed says "tap to install".
+  F4 Logs. A tile for an app that isn't installed says "tap to install". To use
+  your own picture on a tile, long-press it (or right-click, or press the Menu key)
+  and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
+  icon" puts it back.
 - **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, flmsg (ICS-213 forms), Pat for
   Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf) and Direwolf for
   packet. Every app reaches the radio through `rigctld`, so CAT and PTT are set up

@@ -8,8 +8,8 @@
 set -u
 
 case "${1:-}" in
-  hf) product="VARA HF"; exe='C:\VARA\VARA.exe' ;;
-  fm) product="VARA FM"; exe='C:\VARA FM\VARAFM.exe' ;;
+  hf) product="VARA HF"; known=v4.9.0; exe='C:\VARA\VARA.exe' ;;
+  fm) product="VARA FM"; known=v4.4.0; exe='C:\VARA FM\VARAFM.exe' ;;
   *) echo "usage: $0 hf|fm" >&2; exit 2 ;;
 esac
 
@@ -54,11 +54,14 @@ installer=$(find_installer) || { mount_usb_sticks; installer=$(find_installer); 
 
 if [ -z "$installer" ]; then
   echo "No $product setup file in Downloads or on a USB stick; downloading it from Winlink."
-  name=$(curl -fsSL "$DOWNLOADS" | grep -o "$product v[0-9.]* setup\.zip" | sort -V | tail -n 1)
-  [ -n "$name" ] || finish "Couldn't download $product. Copy its setup .zip to a USB stick or ~/Downloads and tap the tile again." 1
+  # The folder listing names the newest version, but Winlink's server sometimes
+  # refuses it; then fall back to the last version known to be there.
+  name=$(curl -fsSL "$DOWNLOADS" 2>/dev/null | grep -o "$product v[0-9.]* setup\.zip" | sort -V | tail -n 1)
+  [ -n "$name" ] || name="$product $known setup.zip"
   echo "Downloading $name"
   installer="$work/$name"
-  curl -fL --progress-bar -o "$installer" "$DOWNLOADS${name// /%20}" || finish "Download failed." 1
+  curl -fL --progress-bar -o "$installer" "$DOWNLOADS${name// /%20}" ||
+    finish "Couldn't download $product. On another computer, download it from winlink.org (Downloads > VARA Products), copy the .zip to a USB stick, plug it in here and tap the tile again." 1
 fi
 echo "Using $installer"
 
