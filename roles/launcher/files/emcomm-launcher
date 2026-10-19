@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Full-screen touch launcher for the emcomm station.
+"""Full-screen touch launcher for the Emcomm-CNC station.
 
 Home: app tiles plus station status. Diagnostics: hardware/service status
 and radio tests. Settings: callsign, grid, radio, baud rate and PTT, saved
@@ -119,7 +119,7 @@ def run_detached(argv):
 
 class Launcher(Gtk.Window):
     def __init__(self, config):
-        super().__init__(title="EmComm Station")
+        super().__init__(title="Emcomm-CNC")
         self.config = config
         self.station = load_station()
         self.profiles = load_profiles()

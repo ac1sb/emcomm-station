@@ -1,4 +1,6 @@
-# emcomm-station
+# Emcomm-CNC
+
+*Emcomm command and control.*
 
 Turns a fresh minimal Debian 13 install into a dedicated emcomm station: it boots
 straight into a full-screen touch launcher for the radio apps, with no desktop
