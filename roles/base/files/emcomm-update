@@ -22,12 +22,20 @@ case "${1:-}" in
   *) usage ;;
 esac
 
-dir=$(cat "$SOURCE_FILE")
-# Only run a playbook that only root can change.
-if [ ! -f "$dir/site.yml" ] || [ "$(stat -c %u "$dir")" != 0 ] || [ -n "$(find "$dir" -maxdepth 0 -perm /022)" ]; then
-  echo "The station's playbook at $dir is missing or not owned by root." >&2
+refuse() {
+  echo "Can't update: $1" >&2
+  echo "Log in as root (su -) and run: cd $dir && git pull && ansible-playbook site.yml" >&2
   exit 1
-fi
+}
+
+dir=$(cat "$SOURCE_FILE")
+[ -f "$dir/site.yml" ] || refuse "there's no playbook at $dir."
+# Only run a playbook the station user can't change: owned by root and not
+# writable by anyone outside root's group.
+read -r owner group mode < <(stat -c '%u %g %a' "$dir")
+[ "$owner" = 0 ] || refuse "$dir belongs to user id $owner, not root."
+(( 8#$mode & 8#002 )) && refuse "$dir can be changed by any user (mode $mode)."
+(( (8#$mode & 8#020) && group != 0 )) && refuse "$dir can be changed by group id $group (mode $mode)."
 cd "$dir"
 
 if [ -z "$app" ]; then
