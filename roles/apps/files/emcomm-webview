@@ -3,7 +3,10 @@
 window with a Close button, so the station doesn't need a full web browser.
 Files that can't be shown are saved to ~/Downloads.
 
-  emcomm-webview URL [TITLE]
+  emcomm-webview [--close-after-download] URL [TITLE]
+
+With --close-after-download the window closes by itself once a file is saved,
+so a setup script waiting on the download carries straight on.
 """
 
 import os
@@ -16,9 +19,17 @@ gi.require_version("WebKit2", "4.1")
 from gi.repository import Gdk, GLib, Gtk, WebKit2  # noqa: E402
 
 DOWNLOADS = os.path.expanduser("~/Downloads")
+CSS = b"""
+.banner { font-size: 20px; font-weight: bold; padding: 14px; }
+.banner.busy { background: #1F5FA8; color: #FFFFFF; }
+.banner.done { background: #2E7D32; color: #FFFFFF; }
+.banner.failed { background: #B3261E; color: #FFFFFF; }
+"""
 
 
 def main(argv):
+    close_after_download = "--close-after-download" in argv
+    argv = [a for a in argv if a != "--close-after-download"]
     if not argv:
         print(__doc__.strip(), file=sys.stderr)
         return 2
@@ -44,7 +55,23 @@ def main(argv):
     bar.pack_start(status, True, True, 0)
     bar.pack_end(close, False, False, 0)
     box.pack_start(bar, False, False, 0)
+    # A big coloured strip across the top while a file downloads, so it can't be missed.
+    banner = Gtk.Label(wrap=True)
+    banner.get_style_context().add_class("banner")
+    box.pack_start(banner, False, False, 0)
     box.pack_start(view, True, True, 0)
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
+                                             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def show_banner(kind, text):
+        ctx = banner.get_style_context()
+        for name in ("busy", "done", "failed"):
+            ctx.remove_class(name)
+        ctx.add_class(kind)
+        banner.set_text(text)
+        banner.show()
 
     def decide_policy(_view, decision, kind):
         # Download anything the window can't display, such as a .zip.
@@ -57,10 +84,25 @@ def main(argv):
         os.makedirs(DOWNLOADS, exist_ok=True)
         path = os.path.join(DOWNLOADS, os.path.basename(suggested_name))
         download.set_destination(GLib.filename_to_uri(path, None))
-        status.set_text(f"Downloading {os.path.basename(path)}…")
-        download.connect("finished", lambda *_: status.set_text(
-            f"Saved {os.path.basename(path)} to Downloads. Close this window to carry on."))
-        download.connect("failed", lambda _d, err: status.set_text(f"Download failed: {err.message}"))
+        name = os.path.basename(path)
+        show_banner("busy", f"Downloading {name}…")
+        failed = []
+
+        def finished(*_):
+            if failed:
+                return
+            if close_after_download:
+                show_banner("done", f"✓ Saved {name}. Carrying on…")
+                GLib.timeout_add_seconds(2, win.destroy)
+            else:
+                show_banner("done", f"✓ Saved {name} to Downloads.")
+
+        def on_failed(_download, err):
+            failed.append(err)
+            show_banner("failed", f"Download failed: {err.message}. Tap Reload and try again.")
+
+        download.connect("failed", on_failed)
+        download.connect("finished", finished)
         return True
 
     view.connect("decide-policy", decide_policy)
@@ -71,6 +113,7 @@ def main(argv):
                 lambda _w, e: e.keyval == Gdk.KEY_Escape and (win.destroy() or True))
     view.load_uri(url)
     win.show_all()
+    banner.hide()
     win.maximize()
     Gtk.main()
     return 0
