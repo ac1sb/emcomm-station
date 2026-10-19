@@ -44,6 +44,13 @@ environment.
   frequencies** with a name and note, for local nets and repeaters. The lists are
   CSV files (`MHz,Mode,Name,Note`) in `/usr/share/emcomm/reference`; a file of the
   same name in `~/.local/share/emcomm/reference` replaces the standard one.
+- **Nearest Winlink gateways** (on the Reference page): every gateway channel from
+  Pat's list, nearest to your grid first, with distance, bearing, mode and hours.
+  Pick VARA HF, ARDOP, VARA FM or Packet to narrow it, and **Tune** puts the radio
+  on the gateway's dial frequency (centre minus 1.5 kHz on HF, as Pat does). It
+  works offline from Pat's saved list; **Update list** downloads a fresh one when
+  the station has internet. The nearest HF gateway isn't always the easiest to
+  reach: within about 300 miles, NVIS on 80 m or 40 m (or 60 m) works best.
 - **Map** (tile): an offline map (countries, states, US counties, highways and towns
   from Natural Earth) with Maidenhead grid squares, your station, every Winlink
   gateway (blue HF, green VHF/UHF; tap one for its dial frequencies, modes and
@@ -74,6 +81,8 @@ environment.
 ![Wi-Fi](docs/wifi.png)
 
 ![Map](docs/map.png)
+
+![Nearest Winlink gateways](docs/gateways.png)
 
 ## Using the apps
 
