@@ -19,9 +19,4 @@
     mode: "0644"
   vars:
     launcher_config:
-      callsign: "{{ station_callsign }}"
-      grid: "{{ station_grid }}"
-      radio: "{{ radio_name }}"
-      rigctld_host: "{{ rigctld_host }}"
-      rigctld_port: "{{ rigctld_port }}"
       apps: "{{ launcher_apps }}"

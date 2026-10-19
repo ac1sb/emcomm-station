@@ -4,29 +4,56 @@
     name: libhamlib-utils
     install_recommends: false
 
-- name: Check PTT settings
-  ansible.builtin.assert:
-    that:
-      - ptt_method in ['RTS', 'DTR', 'CAT']
-      - ptt_method == 'CAT' or (ptt_udev_match | length > 0)
-    fail_msg: "{{ station_radio }}: ptt_method must be RTS, DTR or CAT, and RTS/DTR need ptt_udev_match."
+- name: Create the radio profile directory
+  ansible.builtin.file:
+    path: /usr/share/emcomm/radios
+    state: directory
+    mode: "0755"
 
-- name: Give the radio's devices stable names
-  ansible.builtin.template:
-    src: 99-emcomm-radio.rules.j2
-    dest: /etc/udev/rules.d/99-emcomm-radio.rules
+- name: Install radio profiles
+  ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.file', item) | from_yaml | to_nice_json }}\n"
+    dest: "/usr/share/emcomm/radios/{{ item | basename | splitext | first }}.json"
     mode: "0644"
-  notify: Reload udev
+  loop: "{{ query('ansible.builtin.fileglob', playbook_dir + '/radios/*.yml') }}"
+
+- name: Install the settings helper
+  ansible.builtin.copy:
+    src: emcomm-apply-settings
+    dest: /usr/local/sbin/emcomm-apply-settings
+    mode: "0755"
+
+- name: Let the station user save settings from the Settings screen
+  ansible.builtin.copy:
+    content: "{{ station_user }} ALL=(root) NOPASSWD: /usr/local/sbin/emcomm-apply-settings\n"
+    dest: /etc/sudoers.d/emcomm-settings
+    mode: "0440"
+    validate: visudo -cf %s
+
+- name: Write first-boot settings (kept if they already exist)
+  ansible.builtin.copy:
+    content: "{{ first_boot_settings | to_nice_json }}\n"
+    dest: /etc/emcomm/station.json
+    mode: "0644"
+    force: false
+  vars:
+    first_boot_settings:
+      callsign: "{{ station_callsign }}"
+      grid: "{{ station_grid }}"
+      radio: "{{ station_radio }}"
 
 - name: Install the rigctld service
   ansible.builtin.template:
     src: rigctld.service.j2
     dest: /etc/systemd/system/rigctld.service
     mode: "0644"
-  notify: Restart rigctld
 
 - name: Enable rigctld (it starts when the radio's CAT port appears)
   ansible.builtin.systemd:
     name: rigctld
     enabled: true
     daemon_reload: true
+
+- name: Apply the current settings (udev rules, rigctld arguments)
+  ansible.builtin.command: /usr/local/sbin/emcomm-apply-settings
+  changed_when: false

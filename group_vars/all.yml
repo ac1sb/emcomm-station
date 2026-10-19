@@ -1,19 +1,15 @@
 ---
-# Station settings. Edit these, then re-run the playbook.
+# First-boot defaults. After the first build, change callsign, grid, radio,
+# baud rate and PTT on the station's Settings screen; re-running the playbook
+# keeps what was set there.
 
 station_callsign: N0CALL
-station_grid: AA00aa
-
-# Which file in radios/ describes the connected radio.
-# Available: ft-891-digirig, ft-710
+station_grid: AA00
+# A file in radios/ (without .yml): ft-891-digirig, ft-710
 station_radio: ft-891-digirig
 
 # Local account that auto-logs in and runs the kiosk.
 station_user: radio
-
-# Hamlib rigctld listens here; every app talks to the radio through it.
-rigctld_host: 127.0.0.1
-rigctld_port: 4532
 
 # Apps shown on the home screen. A tile is greyed out until its command is installed.
 launcher_apps:

@@ -2,8 +2,6 @@
 - name: Build the emcomm station
   hosts: station
   become: true
-  vars_files:
-    - "radios/{{ station_radio }}.yml"
   roles:
     - base
     - radio

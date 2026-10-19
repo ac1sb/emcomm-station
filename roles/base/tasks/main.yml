@@ -34,9 +34,3 @@
     path: /etc/emcomm
     state: directory
     mode: "0755"
-
-- name: Write station settings for scripts and the launcher
-  ansible.builtin.template:
-    src: station.env.j2
-    dest: /etc/emcomm/station.env
-    mode: "0644"

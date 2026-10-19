@@ -2,8 +2,9 @@
 """Full-screen touch launcher for the emcomm station.
 
 Home: app tiles plus station status. Diagnostics: hardware/service status
-and radio tests. Settings come from /etc/emcomm/launcher.json, which the
-playbook writes from group_vars/all.yml.
+and radio tests. Settings: callsign, grid, radio, baud rate and PTT, saved
+through emcomm-apply-settings. The app list comes from
+/etc/emcomm/launcher.json, which the playbook writes.
 """
 
 import json
@@ -11,6 +12,7 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -20,6 +22,12 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk, Gdk  # noqa: E402
 
 CONFIG_PATH = os.environ.get("EMCOMM_LAUNCHER_CONFIG", "/etc/emcomm/launcher.json")
+STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
+PROFILES_DIR = os.environ.get("EMCOMM_PROFILES", "/usr/share/emcomm/radios")
+APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply-settings").split()
+RIGCTLD = ("127.0.0.1", 4532)
+BAUD_RATES = ["4800", "9600", "19200", "38400", "57600", "115200"]
+PTT_CHOICES = [("RTS", "RTS (Digirig)"), ("DTR", "DTR"), ("CAT", "CAT"), ("NONE", "VOX / none")]
 
 CSS = b"""
 window, .page { background: #101214; color: #E8E6E1; font-family: 'IBM Plex Sans', sans-serif; }
@@ -40,17 +48,47 @@ window, .page { background: #101214; color: #E8E6E1; font-family: 'IBM Plex Sans
           font-size: 16px; min-height: 52px; padding: 0 16px; }
 .danger { border-color: #E5534B; color: #F4B4AF; background: #2A1B1A; }
 .title { font-size: 20px; font-weight: 600; }
+.section { background: #1A1D21; border: 1px solid #2A2F35; border-radius: 12px; padding: 16px; }
+.section-title { font-size: 12px; font-weight: 600; color: #9AA0A6; letter-spacing: 1px; }
+.field-label { font-size: 14px; color: #C9CDD1; }
+entry, combobox button { background: #101214; color: #E8E6E1; border: 1px solid #3A4048; border-radius: 8px;
+                         min-height: 44px; font-size: 16px; background-image: none; box-shadow: none; }
+.primary { background: #F2A33A; color: #101214; border: none; font-weight: 600; }
+.error { color: #F4B4AF; }
+.ok { color: #4FC3B8; }
 textview, textview text { background: #1A1D21; color: #E8E6E1; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
 """
 
 
-def load_config():
+def read_json(path, default):
     try:
-        with open(CONFIG_PATH, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
-        return {"callsign": "N0CALL", "grid": "", "radio": "", "rigctld_host": "127.0.0.1",
-                "rigctld_port": 4532, "apps": []}
+        return default
+
+
+def load_config():
+    return read_json(CONFIG_PATH, {"apps": []})
+
+
+def load_station():
+    return read_json(STATION_PATH, {"callsign": "N0CALL", "grid": "", "radio": ""})
+
+
+def load_profiles():
+    """Radio profiles as (id, profile), sorted by display name."""
+    profiles = []
+    try:
+        names = sorted(os.listdir(PROFILES_DIR))
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".json"):
+            profile = read_json(os.path.join(PROFILES_DIR, name), None)
+            if profile:
+                profiles.append((name[:-5], profile))
+    return sorted(profiles, key=lambda p: p[1].get("radio_name", p[0]))
 
 
 def rigctld_query(host, port, command, timeout=1.0):
@@ -83,6 +121,8 @@ class Launcher(Gtk.Window):
     def __init__(self, config):
         super().__init__(title="EmComm Station")
         self.config = config
+        self.station = load_station()
+        self.profiles = load_profiles()
         self.set_default_size(1024, 600)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -93,6 +133,7 @@ class Launcher(Gtk.Window):
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self.stack.add_named(self._home_page(), "home")
         self.stack.add_named(self._diag_page(), "diagnostics")
+        self.stack.add_named(self._settings_page(), "settings")
         root.pack_start(self.stack, True, True, 0)
 
         self._tick_clock()
@@ -105,12 +146,13 @@ class Launcher(Gtk.Window):
     def _topbar(self):
         bar = Gtk.Box(spacing=20)
         bar.get_style_context().add_class("topbar")
-        call = Gtk.Label(label=self.config.get("callsign", ""))
-        call.get_style_context().add_class("callsign")
-        bar.pack_start(call, False, False, 0)
-        grid = Gtk.Label(label=f"Grid {self.config.get('grid', '')}")
-        grid.get_style_context().add_class("muted")
-        bar.pack_start(grid, False, False, 0)
+        self.call_label = Gtk.Label()
+        self.call_label.get_style_context().add_class("callsign")
+        bar.pack_start(self.call_label, False, False, 0)
+        self.grid_label = Gtk.Label()
+        self.grid_label.get_style_context().add_class("muted")
+        bar.pack_start(self.grid_label, False, False, 0)
+        self._show_station()
 
         self.clock = Gtk.Label()
         self.clock.get_style_context().add_class("mono")
@@ -121,16 +163,17 @@ class Launcher(Gtk.Window):
         bar.pack_end(self.rig_status, False, False, 0)
         return bar
 
+    def _show_station(self):
+        self.call_label.set_text(self.station.get("callsign", ""))
+        self.grid_label.set_text(f"Grid {self.station.get('grid', '')}")
+
     def _tick_clock(self):
         self.clock.set_text(time.strftime("%H:%M UTC", time.gmtime()))
         return True
 
     def _poll_status(self):
-        host = self.config.get("rigctld_host", "127.0.0.1")
-        port = int(self.config.get("rigctld_port", 4532))
-
         def work():
-            freq = format_freq(rigctld_query(host, port, "f"))
+            freq = format_freq(rigctld_query(*RIGCTLD, "f"))
             audio = os.path.exists("/proc/asound/rigaudio")
             GLib.idle_add(self._show_status, freq, audio)
 
@@ -157,6 +200,7 @@ class Launcher(Gtk.Window):
 
         nav = Gtk.Box(spacing=12, homogeneous=True)
         nav.pack_start(self._navbtn("Diagnostics", lambda *_: self.stack.set_visible_child_name("diagnostics")), True, True, 0)
+        nav.pack_start(self._navbtn("Settings", lambda *_: self.stack.set_visible_child_name("settings")), True, True, 0)
         nav.pack_start(self._navbtn("Power", self._power_dialog), True, True, 0)
         page.pack_end(nav, False, False, 0)
         return page
@@ -198,6 +242,143 @@ class Launcher(Gtk.Window):
             run_detached(["systemctl", "reboot"])
         elif response == 2:
             run_detached(["systemctl", "poweroff"])
+
+    # ---- settings ------------------------------------------------------
+
+    def _field(self, label, widget):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        lbl = Gtk.Label(label=label, xalign=0)
+        lbl.get_style_context().add_class("field-label")
+        lbl.set_mnemonic_widget(widget)
+        box.pack_start(lbl, False, False, 0)
+        box.pack_start(widget, False, False, 0)
+        return box
+
+    def _section(self, title):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.get_style_context().add_class("section")
+        heading = Gtk.Label(label=title.upper(), xalign=0)
+        heading.get_style_context().add_class("section-title")
+        box.pack_start(heading, False, False, 0)
+        return box
+
+    def _settings_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
+        title = Gtk.Label(label="Station settings", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        cols = Gtk.Box(spacing=16, homogeneous=True)
+
+        operator = self._section("Operator")
+        self.callsign_entry = Gtk.Entry(max_length=12)
+        self.grid_entry = Gtk.Entry(max_length=6)
+        operator.pack_start(self._field("Callsign", self.callsign_entry), False, False, 0)
+        operator.pack_start(self._field("Grid square", self.grid_entry), False, False, 0)
+        self.settings_message = Gtk.Label(xalign=0, wrap=True)
+        self.settings_message.set_max_width_chars(40)
+        operator.pack_end(self.settings_message, False, False, 0)
+        cols.pack_start(operator, True, True, 0)
+
+        radio = self._section("Radio")
+        self.radio_combo = Gtk.ComboBoxText()
+        for radio_id, profile in self.profiles:
+            self.radio_combo.append(radio_id, profile.get("radio_name", radio_id))
+        self.radio_combo.connect("changed", self._radio_changed)
+        self.baud_combo = Gtk.ComboBoxText()
+        for baud in BAUD_RATES:
+            self.baud_combo.append(baud, baud)
+        self.ptt_combo = Gtk.ComboBoxText()
+        for value, label in PTT_CHOICES:
+            self.ptt_combo.append(value, label)
+        radio.pack_start(self._field("Radio", self.radio_combo), False, False, 0)
+        row = Gtk.Box(spacing=12, homogeneous=True)
+        row.pack_start(self._field("CAT baud rate", self.baud_combo), True, True, 0)
+        row.pack_start(self._field("PTT", self.ptt_combo), True, True, 0)
+        radio.pack_start(row, False, False, 0)
+        hint = Gtk.Label(label="The baud rate must match the radio's CAT RATE menu.", xalign=0, wrap=True)
+        hint.set_max_width_chars(40)
+        hint.get_style_context().add_class("tile-detail")
+        radio.pack_start(hint, False, False, 0)
+        cols.pack_start(radio, True, True, 0)
+        page.pack_start(cols, True, True, 0)
+
+        buttons = Gtk.Box(spacing=12, homogeneous=True)
+        buttons.pack_start(self._navbtn("Undo changes", lambda *_: self._fill_settings()), True, True, 0)
+        save = self._navbtn("Save and restart rig control", self._save_settings, "primary")
+        buttons.pack_start(save, True, True, 0)
+        page.pack_end(buttons, False, False, 0)
+
+        self._fill_settings()
+        page.connect("map", lambda *_: self._fill_settings())
+        return page
+
+    def _profile(self, radio_id):
+        return dict(self.profiles).get(radio_id, {})
+
+    def _fill_settings(self):
+        st = self.station
+        self.callsign_entry.set_text("" if st.get("callsign") == "N0CALL" else st.get("callsign", ""))
+        self.grid_entry.set_text(st.get("grid", ""))
+        self.radio_combo.set_active_id(st.get("radio") or (self.profiles[0][0] if self.profiles else None))
+        profile = self._profile(self.radio_combo.get_active_id())
+        self.baud_combo.set_active_id(str(st.get("cat_baud", profile.get("cat_baud", 38400))))
+        self.ptt_combo.set_active_id(st.get("ptt_method", profile.get("ptt_method", "CAT")))
+        self.settings_message.set_text("")
+
+    def _radio_changed(self, combo):
+        # A different radio starts from that profile's own baud rate and PTT.
+        profile = self._profile(combo.get_active_id())
+        if profile and combo.get_active_id() != self.station.get("radio"):
+            self.baud_combo.set_active_id(str(profile.get("cat_baud", 38400)))
+            self.ptt_combo.set_active_id(profile.get("ptt_method", "CAT"))
+
+    def _save_settings(self, *_):
+        new = {
+            "callsign": self.callsign_entry.get_text().strip().upper(),
+            "grid": self.grid_entry.get_text().strip(),
+            "radio": self.radio_combo.get_active_id(),
+            "cat_baud": int(self.baud_combo.get_active_id() or 38400),
+            "ptt_method": self.ptt_combo.get_active_id(),
+        }
+        self._set_message("Saving…", None)
+
+        def work():
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump(new, f)
+                path = f.name
+            try:
+                result = subprocess.run(APPLY_CMD + [path], stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True, timeout=60)
+                ok, text = result.returncode == 0, result.stdout.strip()
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                ok, text = False, f"Settings not saved: {exc}"
+            finally:
+                os.unlink(path)
+            GLib.idle_add(self._saved, ok, text)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _saved(self, ok, text):
+        self._set_message(text, ok)
+        if ok:
+            self.station = load_station()
+            self._show_station()
+            self.callsign_entry.set_text(self.station.get("callsign", ""))
+            self.grid_entry.set_text(self.station.get("grid", ""))
+        return False
+
+    def _set_message(self, text, ok):
+        ctx = self.settings_message.get_style_context()
+        ctx.remove_class("ok")
+        ctx.remove_class("error")
+        if ok is not None:
+            ctx.add_class("ok" if ok else "error")
+        self.settings_message.set_text(text)
 
     # ---- diagnostics ---------------------------------------------------
 
@@ -268,6 +449,9 @@ def main():
     if not os.environ.get("EMCOMM_LAUNCHER_WINDOWED"):
         win.fullscreen()
     win.show_all()
+    if win.station.get("callsign", "N0CALL") == "N0CALL":
+        # First boot: ask for callsign and radio before anything else.
+        win.stack.set_visible_child_name("settings")
     Gtk.main()
 
 

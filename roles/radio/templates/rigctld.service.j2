@@ -1,21 +1,15 @@
-# Managed by the emcomm-station playbook ({{ radio_name }}).
+# Managed by the emcomm-station playbook.
+# Radio-specific arguments come from /etc/emcomm/rigctld.env, which
+# emcomm-apply-settings writes from the Settings screen.
 [Unit]
-Description=Hamlib rig control for {{ radio_name }}
+Description=Hamlib rig control
 BindsTo=dev-rig\x2dcat.device
 After=dev-rig\x2dcat.device
 
 [Service]
 User={{ station_user }}
-ExecStart=/usr/bin/rigctld \
-  --model={{ rig_model }} \
-  --rig-file=/dev/rig-cat \
-  --serial-speed={{ cat_baud }} \
-{% if ptt_method != 'CAT' %}
-  --ptt-file=/dev/rig-ptt \
-{% endif %}
-  --ptt-type={{ ptt_method }} \
-  --listen-addr={{ rigctld_host }} \
-  --port={{ rigctld_port }}
+EnvironmentFile=/etc/emcomm/rigctld.env
+ExecStart=/usr/bin/rigctld $RIGCTLD_ARGS --listen-addr=127.0.0.1 --port=4532
 Restart=on-failure
 RestartSec=5
 
