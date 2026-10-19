@@ -3,13 +3,14 @@
 # Usage: emcomm-install-vara hf|fm
 #
 # Uses a VARA setup .zip or .exe from ~/Downloads or a USB stick if there is
-# one, otherwise downloads the current version from Winlink. The Wine prefix
-# (~/.wine-vara) is created the first time, with the Windows parts VARA needs.
+# one, otherwise opens Winlink's download page so the operator can fetch it.
+# The Wine prefix (~/.wine-vara) is created the first time, with the Windows
+# parts VARA needs.
 set -u
 
 case "${1:-}" in
-  hf) product="VARA HF"; known=v4.9.0; exe='C:\VARA\VARA.exe' ;;
-  fm) product="VARA FM"; known=v4.4.0; exe='C:\VARA FM\VARAFM.exe' ;;
+  hf) product="VARA HF"; exe='C:\VARA\VARA.exe' ;;
+  fm) product="VARA FM"; exe='C:\VARA FM\VARAFM.exe' ;;
   *) echo "usage: $0 hf|fm" >&2; exit 2 ;;
 esac
 
@@ -53,15 +54,14 @@ echo "== Setting up $product =="
 installer=$(find_installer) || { mount_usb_sticks; installer=$(find_installer); } || installer=""
 
 if [ -z "$installer" ]; then
-  echo "No $product setup file in Downloads or on a USB stick; downloading it from Winlink."
-  # The folder listing names the newest version, but Winlink's server sometimes
-  # refuses it; then fall back to the last version known to be there.
-  name=$(curl -fsSL "$DOWNLOADS" 2>/dev/null | grep -o "$product v[0-9.]* setup\.zip" | sort -V | tail -n 1)
-  [ -n "$name" ] || name="$product $known setup.zip"
-  echo "Downloading $name"
-  installer="$work/$name"
-  curl -fL --progress-bar -o "$installer" "$DOWNLOADS${name// /%20}" ||
-    finish "Couldn't download $product. On another computer, download it from winlink.org (Downloads > VARA Products), copy the .zip to a USB stick, plug it in here and tap the tile again." 1
+  # Winlink's server refuses scripted downloads, so open its download page for
+  # the operator to tap the file; the window saves it to ~/Downloads.
+  echo "No $product setup file in Downloads or on a USB stick."
+  echo "Opening Winlink's download page: tap \"$product ... setup.zip\", wait for"
+  echo "\"Saved\" at the top, then close that window."
+  emcomm-webview "$DOWNLOADS" "Winlink downloads" >/dev/null 2>&1
+  installer=$(find_installer) ||
+    finish "No $product setup file yet. Download it from winlink.org (Downloads > VARA Products), on this station or another computer, put the .zip in Downloads or on a USB stick, and tap the tile again." 1
 fi
 echo "Using $installer"
 

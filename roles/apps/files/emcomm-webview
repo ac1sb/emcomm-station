@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Show a local web app (Pat's mailbox) in a full-screen window with a Close
-button, so the station doesn't need a full web browser.
+"""Show a web page (Pat's mailbox, Winlink's VARA downloads) in a full-screen
+window with a Close button, so the station doesn't need a full web browser.
+Files that can't be shown are saved to ~/Downloads.
 
   emcomm-webview URL [TITLE]
 """
 
+import os
 import sys
 
 import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("WebKit2", "4.1")
-from gi.repository import Gdk, Gtk, WebKit2  # noqa: E402
+from gi.repository import Gdk, GLib, Gtk, WebKit2  # noqa: E402
+
+DOWNLOADS = os.path.expanduser("~/Downloads")
 
 
 def main(argv):
@@ -36,10 +40,32 @@ def main(argv):
     close.connect("clicked", lambda *_: win.destroy())
     for btn in (back, reload_btn):
         bar.pack_start(btn, False, False, 0)
-    bar.pack_start(Gtk.Label(label=title), True, True, 0)
+    status = Gtk.Label(label=title)
+    bar.pack_start(status, True, True, 0)
     bar.pack_end(close, False, False, 0)
     box.pack_start(bar, False, False, 0)
     box.pack_start(view, True, True, 0)
+
+    def decide_policy(_view, decision, kind):
+        # Download anything the window can't display, such as a .zip.
+        if kind == WebKit2.PolicyDecisionType.RESPONSE and not decision.is_mime_type_supported():
+            decision.download()
+            return True
+        return False
+
+    def save_to_downloads(download, suggested_name):
+        os.makedirs(DOWNLOADS, exist_ok=True)
+        path = os.path.join(DOWNLOADS, os.path.basename(suggested_name))
+        download.set_destination(GLib.filename_to_uri(path, None))
+        status.set_text(f"Downloading {os.path.basename(path)}…")
+        download.connect("finished", lambda *_: status.set_text(
+            f"Saved {os.path.basename(path)} to Downloads. Close this window to carry on."))
+        download.connect("failed", lambda _d, err: status.set_text(f"Download failed: {err.message}"))
+        return True
+
+    view.connect("decide-policy", decide_policy)
+    view.get_context().connect("download-started",
+                               lambda _ctx, download: download.connect("decide-destination", save_to_downloads))
 
     win.connect("key-press-event",
                 lambda _w, e: e.keyval == Gdk.KEY_Escape and (win.destroy() or True))
