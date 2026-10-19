@@ -257,6 +257,7 @@ class Launcher(Gtk.Window):
         self.models = load_hamlib_models()
         self.choices = {}
         self._filling = False
+        self.default_audio_card = None
         self.set_default_size(1024, 600)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -327,10 +328,22 @@ class Launcher(Gtk.Window):
         def work():
             freq = format_freq(rigctld_query(*RIGCTLD, "f"))
             audio = os.path.exists("/proc/asound/rigaudio")
+            self._default_audio_to_radio(audio)
             GLib.idle_add(self._show_status, freq, audio)
 
         threading.Thread(target=work, daemon=True).start()
         return True
+
+    def _default_audio_to_radio(self, audio):
+        """Each time the radio's sound card appears, make it the default audio device.
+        Retried on later polls until PipeWire has picked the card up."""
+        card = os.path.realpath("/proc/asound/rigaudio") if audio else None
+        if card and card != self.default_audio_card and shutil.which("emcomm-audio-default"):
+            result = subprocess.run(["emcomm-audio-default"], capture_output=True, check=False)
+            if result.returncode == 0:
+                self.default_audio_card = card
+        elif not card:
+            self.default_audio_card = None
 
     def _show_status(self, freq, audio):
         if freq:

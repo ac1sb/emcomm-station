@@ -42,6 +42,11 @@ show_audio() {
   else
     echo "radio sound card: rigaudio NOT found"
   fi
+  local dev
+  for dev in SINK:speaker SOURCE:microphone; do
+    printf 'default %s: %s\n' "${dev#*:}" \
+      "$(wpctl inspect "@DEFAULT_AUDIO_${dev%%:*}@" 2>/dev/null | sed -n 's/.*node.description = "\(.*\)"/\1/p')"
+  done
 }
 
 show_services() {

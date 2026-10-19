@@ -47,14 +47,16 @@ environment.
 
 - **Winlink over VARA:** tap VARA HF (or FM) first. The first tap sets up Wine and
   downloads VARA from Winlink, or uses a VARA setup .zip from a USB stick or
-  `~/Downloads`. In VARA's Settings > SoundCard, pick the radio's sound card. Then
+  `~/Downloads`. VARA uses the default sound card, which is the radio. Then
   open Winlink mail (Pat), which keys the radio through `rigctld`. On first use, set
   your Winlink password in Pat's configuration page.
 - **Winlink over ARDOP or packet:** start ARDOP or Packet from their tiles, then use
   Pat as above.
 - **JS8Call and WSJT-X** start with your callsign, grid and rig control filled in
-  (radio "Hamlib NET rigctl", PTT by CAT). Pick the radio's sound card in their
-  audio settings once.
+  (radio "Hamlib NET rigctl", PTT by CAT).
+- **Audio:** whenever the radio's sound card is plugged in, the station makes it the
+  default speaker and microphone, so apps left on their "default" sound device use
+  the radio. (`emcomm-audio-default` does this; Diagnostics shows the current default.)
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 
