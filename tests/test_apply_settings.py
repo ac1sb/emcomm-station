@@ -1,4 +1,4 @@
-"""Render settings for every radio profile into a scratch tree and check the output.
+"""Render settings into a scratch tree and check the udev rules and rigctld arguments.
 
 Run: python3 tests/test_apply_settings.py
 """
@@ -14,21 +14,19 @@ import yaml
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HELPER = os.path.join(REPO, "roles/radio/files/emcomm-apply-settings")
-RADIOS = os.path.join(REPO, "radios")
+
+
+def preset(name, **changes):
+    with open(os.path.join(REPO, "radios", name + ".yml")) as f:
+        settings = yaml.safe_load(f)
+    settings.update({"callsign": "AC1SB", "grid": "FN31"}, **changes)
+    return settings
 
 
 class ApplySettingsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = self.tmp.name
-        profiles = os.path.join(self.root, "usr/share/emcomm/radios")
-        os.makedirs(profiles)
-        for name in os.listdir(RADIOS):
-            if name.endswith(".yml"):
-                with open(os.path.join(RADIOS, name)) as f:
-                    data = yaml.safe_load(f)
-                with open(os.path.join(profiles, name[:-4] + ".json"), "w") as f:
-                    json.dump(data, f)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -45,12 +43,14 @@ class ApplySettingsTest(unittest.TestCase):
         with open(os.path.join(self.root, rel)) as f:
             return f.read()
 
-    def test_ft891_digirig(self):
-        r = self.run_helper({"callsign": "ac1sb", "grid": "fn31pr", "radio": "ft-891-digirig"})
+    def test_ft891_digirig_preset(self):
+        r = self.run_helper(preset("ft-891-digirig", callsign="ac1sb", grid="fn31pr"))
         self.assertEqual(r.returncode, 0, r.stderr)
         rules = self.read("etc/udev/rules.d/99-emcomm-radio.rules")
-        self.assertIn('ATTRS{idProduct}=="ea70"', rules)
+        self.assertIn('ENV{ID_MODEL_ID}=="ea70"', rules)
+        self.assertIn('ENV{ID_USB_INTERFACE_NUM}=="00"', rules)
         self.assertIn('SYMLINK+="rig-ptt"', rules)
+        self.assertIn('ENV{ID_VENDOR_ID}=="0d8c"', rules)
         self.assertIn('ATTR{id}="rigaudio"', rules)
         env = self.read("etc/emcomm/rigctld.env")
         self.assertIn("--model=1036", env)
@@ -62,33 +62,58 @@ class ApplySettingsTest(unittest.TestCase):
         self.assertEqual(saved["grid"], "FN31pr")
         self.assertIn("STATION_CALLSIGN=AC1SB", self.read("etc/emcomm/station.env"))
 
-    def test_ft710_baud_override(self):
-        r = self.run_helper({"callsign": "AC1SB", "grid": "FN31", "radio": "ft-710", "cat_baud": 9600})
+    def test_ft710_preset_no_audio_yet(self):
+        r = self.run_helper(preset("ft-710", cat_baud=9600))
         self.assertEqual(r.returncode, 0, r.stderr)
         env = self.read("etc/emcomm/rigctld.env")
         self.assertIn("--model=1049", env)
         self.assertIn("--serial-speed=9600", env)
         self.assertIn("--ptt-type=CAT", env)
         self.assertNotIn("--ptt-file", env)
-        self.assertNotIn("rig-ptt", self.read("etc/udev/rules.d/99-emcomm-radio.rules"))
+        rules = self.read("etc/udev/rules.d/99-emcomm-radio.rules")
+        self.assertNotIn("rig-ptt", rules)
+        self.assertNotIn("rigaudio", rules)
+
+    def test_any_hamlib_radio_with_detected_devices(self):
+        settings = {
+            "callsign": "AC1SB", "grid": "FN31", "radio_name": "Icom IC-7300", "rig_model": 3073,
+            "cat_baud": 19200,
+            "cat_match": {"vendor": "10C4", "product": "EA60", "serial": "IC-7300_03001234"},
+            "ptt_method": "RTS", "ptt_match": "cat",
+            "audio_match": {"vendor": "08bb", "product": "2901", "serial": ""},
+        }
+        r = self.run_helper(settings)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rules = self.read("etc/udev/rules.d/99-emcomm-radio.rules")
+        self.assertIn('ENV{ID_SERIAL_SHORT}=="IC-7300_03001234"', rules)
+        self.assertIn('ENV{ID_VENDOR_ID}=="10c4"', rules)
+        self.assertNotIn("rig-ptt", rules)
+        env = self.read("etc/emcomm/rigctld.env")
+        self.assertIn("--model=3073", env)
+        self.assertIn("--ptt-file=/dev/rig-cat", env)
 
     def test_rejects_bad_input(self):
         bad = [
-            {"callsign": "NOT A CALL", "grid": "FN31", "radio": "ft-710"},
-            {"callsign": "AC1SB", "grid": "ZZ99", "radio": "ft-710"},
-            {"callsign": "AC1SB", "grid": "FN31", "radio": "../../etc/passwd"},
-            {"callsign": "AC1SB", "grid": "FN31", "radio": "ft-710", "cat_baud": 1234},
-            {"callsign": "AC1SB", "grid": "FN31", "radio": "ft-710", "ptt_method": "RTS"},
+            preset("ft-710", callsign="NOT A CALL"),
+            preset("ft-710", grid="ZZ99"),
+            preset("ft-710", rig_model="abc"),
+            preset("ft-710", cat_baud=1234),
+            preset("ft-710", ptt_method="RTS", ptt_match=None),
+            preset("ft-710", cat_match=None),
+            preset("ft-710", cat_match={"vendor": "10c4", "product": "ea70\", RUN+=\"/bin/sh"}),
+            preset("ft-710", cat_match={"vendor": "10c4", "product": "ea70", "serial": "a\"b"}),
+            preset("ft-710", cat_match={"vendor": "10c4", "product": "ea70", "driver": "x"}),
+            preset("ft-710", radio_name="Evil\"; RUN+=\"x"),
         ]
         for settings in bad:
             with self.subTest(settings=settings):
                 r = self.run_helper(settings)
-                self.assertEqual(r.returncode, 1)
+                self.assertEqual(r.returncode, 1, r.stdout)
                 self.assertIn("Settings not saved", r.stderr)
                 self.assertFalse(os.path.exists(os.path.join(self.root, "etc/emcomm/station.json")))
 
     def test_check_only_writes_nothing(self):
-        r = self.run_helper({"callsign": "AC1SB", "grid": "FN31", "radio": "ft-710"}, "--check")
+        r = self.run_helper(preset("ft-710"), "--check")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.root, "etc/emcomm")))
 

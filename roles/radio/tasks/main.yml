@@ -4,13 +4,13 @@
     name: libhamlib-utils
     install_recommends: false
 
-- name: Create the radio profile directory
+- name: Create the radio preset directory
   ansible.builtin.file:
     path: /usr/share/emcomm/radios
     state: directory
     mode: "0755"
 
-- name: Install radio profiles
+- name: Install radio presets
   ansible.builtin.copy:
     content: "{{ lookup('ansible.builtin.file', item) | from_yaml | to_nice_json }}\n"
     dest: "/usr/share/emcomm/radios/{{ item | basename | splitext | first }}.json"
@@ -37,10 +37,9 @@
     mode: "0644"
     force: false
   vars:
-    first_boot_settings:
-      callsign: "{{ station_callsign }}"
-      grid: "{{ station_grid }}"
-      radio: "{{ station_radio }}"
+    first_boot_settings: >-
+      {{ lookup('ansible.builtin.file', playbook_dir + '/radios/' + station_radio + '.yml') | from_yaml
+         | combine({'callsign': station_callsign, 'grid': station_grid}) }}
 
 - name: Install the rigctld service
   ansible.builtin.template:

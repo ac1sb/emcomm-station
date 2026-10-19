@@ -1,16 +1,14 @@
 ---
-# Yaesu FT-710 on a single USB cable: the radio has a built-in sound card and serial ports.
-# Radio menu: set CAT RATE to 38400 to match cat_baud.
+# Preset: Yaesu FT-710 on its single USB cable (built-in sound card and serial ports).
+# Radio menu: set CAT RATE to match cat_baud.
 radio_name: Yaesu FT-710
 rig_model: 1049            # Hamlib RIG_MODEL_FT710
 cat_baud: 38400
-
-# Radio USB: Silicon Labs CP2105 dual UART. Interface 00 is the "Enhanced" port (CAT).
-cat_udev_match: 'ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea70", ENV{ID_USB_INTERFACE_NUM}=="00"'
-
-# PTT over CAT, so no separate PTT port is needed.
+# Radio USB: Silicon Labs CP2105 dual UART; interface 00 is the "Enhanced" (CAT) port.
+cat_match: { vendor: "10c4", product: "ea70", interface: "00" }
+# PTT over CAT, so no separate PTT port.
 ptt_method: CAT
-ptt_udev_match: ""
-
-# The radio's built-in USB sound card (TI codec, reports itself as "USB Audio CODEC").
-audio_udev_match: 'ATTRS{product}=="USB Audio CODEC"'
+ptt_match: null
+# The radio's built-in sound card: pick it under Sound card in Settings once the
+# radio is plugged in (its USB ID isn't pinned here yet).
+audio_match: null

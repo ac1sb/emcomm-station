@@ -1,26 +1,31 @@
-# Radio profiles
+# Radio presets
 
-Each file here describes one radio setup. The playbook installs all of them, and
-you pick one on the station's Settings screen. Baud rate and PTT method can also be
-changed there; the values in the profile are the defaults.
+Any radio Hamlib supports can be set up from the station's Settings screen:
+pick the manufacturer and model, then the CAT port, PTT and sound card from the
+devices that are plugged in. No file here is needed for that.
 
-To add a radio, copy the closest profile and change:
+The files in this folder are optional **presets**: tested combinations that fill
+in all of those fields at once, so a radio can be set up before it's plugged in.
+Pick one under Preset in Settings.
 
-| Key | What it is | How to find it |
-|---|---|---|
-| `rig_model` | Hamlib model number | `rigctl -l \| grep -i <model>` |
-| `radio_name` | Name shown in Settings | |
-| `cat_baud` | Default CAT serial speed | Must match the radio's CAT RATE menu |
-| `cat_udev_match` | udev match for the CAT serial port | Diagnostics → USB devices, or `udevadm info /dev/ttyUSB0` |
-| `ptt_method` | `RTS`, `DTR` or `CAT` | `CAT` if the radio keys over CAT; `RTS` for Digirig |
-| `ptt_udev_match` | udev match for the PTT serial port (RTS/DTR only) | Digirig: `10c4:ea60` |
-| `audio_udev_match` | udev match for the sound card | Diagnostics → USB devices |
+To add a preset, copy one of these and change:
 
-The USB IDs in the shipped profiles are the usual ones for these devices.
-Check them against Diagnostics on first boot. If a device shows up under a different ID, update the profile, re-run the playbook, and save in Settings again.
+| Key | What it is |
+|---|---|
+| `radio_name` | Name shown in Settings |
+| `rig_model` | Hamlib model number (`rigctl -l`) |
+| `cat_baud` | CAT serial speed; must match the radio's CAT RATE menu |
+| `cat_match` | USB match for the CAT serial port: `vendor`, `product`, optional `serial` and `interface` |
+| `ptt_method` | `RTS`, `DTR`, `CAT` or `NONE` (VOX) |
+| `ptt_match` | USB match for a separate PTT port (RTS/DTR), `cat` to key RTS/DTR on the CAT port, or `null` |
+| `audio_match` | USB match for the sound card, or `null` to pick it in Settings |
 
-The station creates stable names, so apps never depend on USB plug order:
+USB IDs (`vendor`, `product`) are the 4-digit hex numbers Diagnostics shows next to
+each USB device.
+
+Whatever is chosen, the station gives the devices stable names so apps never depend
+on USB plug order:
 
 - `/dev/rig-cat`: CAT serial port
-- `/dev/rig-ptt`: PTT serial port (RTS/DTR profiles only)
+- `/dev/rig-ptt`: PTT serial port (when PTT uses a separate port)
 - ALSA card `rigaudio`: the radio's sound card

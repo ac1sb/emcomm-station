@@ -11,14 +11,15 @@ environment.
 ## What's in it so far
 
 - **Base system:** a `radio` user, SSH for remote troubleshooting, PipeWire audio.
-- **Settings screen:** callsign, grid, radio, CAT baud rate and PTT method, set on
-  the station itself. It opens automatically on first boot. Saving re-applies the
-  radio setup and restarts rig control; no files to edit.
-- **Radio profiles** (`radios/`): Yaesu FT-891 with a Digirig, and Yaesu FT-710.
-  The selected profile gives the radio's devices stable names (`/dev/rig-cat`,
-  `/dev/rig-ptt`, ALSA card `rigaudio`), and a Hamlib `rigctld` service starts when
-  the radio is plugged in. Every app talks to the radio through `rigctld` on
-  `127.0.0.1:4532`.
+- **Settings screen:** callsign, grid and the radio, set on the station itself and
+  opened automatically on first boot. Any radio Hamlib supports can be picked by
+  manufacturer and model; the CAT port, PTT port and sound card are picked from the
+  USB devices that are plugged in, with a Rescan button. Saving gives those devices
+  stable names (`/dev/rig-cat`, `/dev/rig-ptt`, ALSA card `rigaudio`) and restarts
+  Hamlib's `rigctld`, which every app uses to reach the radio on `127.0.0.1:4532`.
+  `rigctld` starts by itself whenever the radio is plugged in.
+- **Presets** (`radios/`): Yaesu FT-891 with a Digirig, and Yaesu FT-710. Optional
+  shortcuts that fill in every radio field at once, even before the radio is plugged in.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
 - **Launcher:** the home screen above. Tiles stay greyed out until the app is installed.
   Works by touch, mouse or keyboard: Tab moves between buttons, 1–9 open tiles,
@@ -48,8 +49,9 @@ come next.
    reboot
    ```
 
-3. The station boots into Settings. Enter your callsign and grid, pick your radio,
-   check the baud rate matches the radio's CAT RATE menu, and save.
+3. Plug in the radio. The station boots into Settings: enter your callsign and grid,
+   pick a preset or your radio's manufacturer and model, pick the CAT port and sound
+   card, check the baud rate matches the radio's CAT RATE menu, and save.
 4. Plug in the radio and open Diagnostics to check the radio, sound card and PTT.
 
 Re-run the playbook any time to update the station. It only changes what's
@@ -63,9 +65,10 @@ A VM is fine for checking the build, the kiosk and the launcher. Snapshot it bef
 the first run. For on-air testing use real hardware: USB audio passed through to a
 VM tends to drop samples, which VARA and FT8 don't tolerate.
 
-## Adding a radio
+## Adding a preset
 
-See [radios/README.md](radios/README.md).
+No file is needed to use a radio. To add a one-tap preset, see
+[radios/README.md](radios/README.md).
 
 ## Development
 

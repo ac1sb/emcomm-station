@@ -5,7 +5,8 @@
 
 station_callsign: N0CALL
 station_grid: AA00
-# A file in radios/ (without .yml): ft-891-digirig, ft-710
+# Preset in radios/ (without .yml) to start from: ft-891-digirig, ft-710.
+# Any other Hamlib radio can be picked in Settings.
 station_radio: ft-891-digirig
 
 # Local account that auto-logs in and runs the kiosk.
