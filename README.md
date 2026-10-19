@@ -49,8 +49,8 @@ environment.
 ## Using the apps
 
 - **Winlink over VARA:** tap VARA HF (or FM) first. The first tap sets up Wine and
-  downloads VARA from Winlink, or uses a VARA setup .zip from a USB stick or
-  `~/Downloads`. VARA uses the default sound card, which is the radio. Then
+  installs VARA from a setup .zip in `~/Downloads` or on a USB stick; if there isn't
+  one, it opens Winlink's download page so you can tap the file. VARA uses the default sound card, which is the radio. Then
   open Winlink mail (Pat), which keys the radio through `rigctld`. On first use, set
   your Winlink password in Pat's configuration page.
 - **Winlink over ARDOP or packet:** start ARDOP or Packet from their tiles, then use
@@ -146,10 +146,12 @@ seconds (connect an antenna or dummy load first).
 
 ### 6. Set up the apps
 
-- **VARA HF / VARA FM:** tap the tile. The first time, it sets up Wine and downloads
-  VARA from Winlink, which takes several minutes. If the download fails, download the
-  VARA setup .zip from winlink.org on another computer, copy it to a USB stick, plug
-  it into the station and tap the tile again.
+- **VARA HF / VARA FM:** tap the tile. The first time, Winlink's download page
+  opens: tap "VARA HF … setup.zip" (or VARA FM), wait for "Saved … to Downloads" at
+  the top, and close the window. Setup carries on by itself (Wine takes several
+  minutes the first time). Winlink doesn't allow scripted downloads, which is why
+  this step is yours. Without internet on the station, download the .zip on another
+  computer, put it on a USB stick, plug it in and tap the tile.
 - **Winlink mail (Pat):** open it and, on Pat's configuration page, enter your
   Winlink password. Callsign, grid and rig control are already filled in.
 - **JS8Call, WSJT-X, Forms, Packet and ARDOP** are ready to use. fldigi needs its rig

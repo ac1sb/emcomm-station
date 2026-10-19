@@ -92,7 +92,7 @@
 
     - name: Install Wine
       ansible.builtin.apt:
-        name: [wine, "wine32:i386", cabextract, unzip, udisks2]
+        name: [wine, "wine32:i386", cabextract, unzip, udisks2, gir1.2-webkit2-4.1]
         update_cache: true
         install_recommends: false
 
