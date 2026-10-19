@@ -23,7 +23,7 @@ environment.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
 - **Launcher:** the home screen above. Works by touch, mouse or keyboard: Tab moves
   between buttons, 1–9 open tiles, Esc/F1 goes Home, F2 Diagnostics, F3 Settings,
-  F4 Logs, F5 Reference. A tile for an app that isn't installed says "tap to install". To use
+  F4 Logs, F5 Reference, F6 Wi-Fi. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
   icon" puts it back. **Light mode** / **Dark mode** in Settings switches the colours
@@ -44,6 +44,11 @@ environment.
   frequencies** with a name and note, for local nets and repeaters. The lists are
   CSV files (`MHz,Mode,Name,Note`) in `/usr/share/emcomm/reference`; a file of the
   same name in `~/.local/share/emcomm/reference` replaces the standard one.
+- **Wi-Fi** (F6, the **Wi-Fi** button in Settings, or tap the network status at the
+  top): lists nearby networks by signal strength; tap **Connect** and type the
+  password. The station remembers networks it has joined. If the Debian installer
+  set up Wi-Fi itself (installing over Wi-Fi), the page says so: remove the Wi-Fi
+  lines from `/etc/network/interfaces` and restart to manage it here instead.
 - **Update station** (in Settings): downloads the latest Emcomm-CNC and installs
   anything missing, with progress on screen. No terminal or password needed.
 - **Diagnostics:** USB devices with vendor:product IDs, radio ports, sound cards,
@@ -59,6 +64,8 @@ environment.
 ![Logs](docs/logs.png)
 
 ![Reference](docs/reference.png)
+
+![Wi-Fi](docs/wifi.png)
 
 ## Using the apps
 
