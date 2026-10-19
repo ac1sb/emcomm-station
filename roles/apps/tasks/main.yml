@@ -44,6 +44,41 @@
     install_recommends: false
   tags: [packet]
 
+- name: Install Xastir and Direwolf for APRS
+  ansible.builtin.apt:
+    name: [xastir, direwolf]
+    install_recommends: false
+  tags: [aprs]
+
+# Both clients are small, so installing either tile installs both.
+- name: Install Meshtastic and MeshCore clients
+  tags: [meshtastic, meshcore]
+  vars:
+    apps_mesh_clients:
+      meshtastic: { package: "contact=={{ apps_contact_version }}", command: contact }
+      meshcore: { package: "meshcore-cli=={{ apps_meshcore_cli_version }}", command: meshcore-cli }
+  block:
+    - name: Install Python's venv support
+      ansible.builtin.apt:
+        name: python3-venv
+        install_recommends: false
+
+    # Each client gets its own Python environment under /opt/emcomm, so pip
+    # never touches Debian's own Python packages.
+    - name: Install the client
+      ansible.builtin.pip:
+        name: "{{ item.value.package }}"
+        virtualenv: "/opt/emcomm/{{ item.key }}"
+        virtualenv_command: python3 -m venv
+      loop: "{{ apps_mesh_clients | dict2items }}"
+
+    - name: Put the client on the PATH
+      ansible.builtin.file:
+        src: "/opt/emcomm/{{ item.key }}/bin/{{ item.value.command }}"
+        dest: "/usr/local/bin/{{ item.value.command }}"
+        state: link
+      loop: "{{ apps_mesh_clients | dict2items }}"
+
 - name: Install Pat
   tags: [pat]
   block:

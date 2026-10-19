@@ -3,6 +3,8 @@
 
   emcomm-app-setup pat       callsign, grid and rig control in Pat's config
   emcomm-app-setup direwolf  write the Direwolf config and print its path
+  emcomm-app-setup xastir    callsign and position from the grid in Xastir's config;
+                             first run only: APRS through Direwolf's AGW port
   emcomm-app-setup js8call   first run only: callsign, grid and rig control
   emcomm-app-setup wsjtx     first run only: callsign, grid and rig control
 
@@ -85,6 +87,67 @@ def setup_direwolf(station):
     return path
 
 
+def grid_to_latlon(grid):
+    """Centre of a Maidenhead grid square (4 or 6 characters), or None."""
+    grid = grid.strip()
+    if len(grid) not in (4, 6) or not grid[:2].isalpha() or not grid[2:4].isdigit():
+        return None
+    lon = (ord(grid[0].upper()) - ord("A")) * 20 - 180 + int(grid[2]) * 2
+    lat = (ord(grid[1].upper()) - ord("A")) * 10 - 90 + int(grid[3])
+    if len(grid) == 6:
+        if not grid[4:].isalpha():
+            return None
+        lon += (ord(grid[4].lower()) - ord("a")) * 5 / 60 + 2.5 / 60
+        lat += (ord(grid[5].lower()) - ord("a")) * 2.5 / 60 + 1.25 / 60
+    else:
+        lon, lat = lon + 1, lat + 0.5
+    if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+        return None
+    return lat, lon
+
+
+def aprs_degrees(value, width, pos, neg):
+    """Degrees as APRS writes them: DDMM.mmm with a hemisphere letter."""
+    hemi = pos if value >= 0 else neg
+    value = abs(value)
+    deg = int(value)
+    minutes = (value - deg) * 60
+    return f"{deg:0{width}d}{minutes:06.3f}{hemi}"
+
+
+def setup_xastir(station):
+    path = os.path.join(HOME, ".xastir/config/xastir.cnf")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+    values = {}
+    if station.get("callsign"):
+        values["STATION_CALLSIGN"] = station["callsign"].upper()
+    pos = grid_to_latlon(station.get("grid", ""))
+    if pos:
+        values["STATION_LAT"] = aprs_degrees(pos[0], 2, "N", "S")
+        values["STATION_LONG"] = aprs_degrees(pos[1], 3, "E", "W")
+    if not any(line.startswith("DEVICE0_TYPE:") for line in lines):
+        # Type 12 is "Networked AGWPE": Direwolf's AGW port, which emcomm-start
+        # opens before Xastir starts. Direwolf keys the radio through rigctld.
+        values.update({
+            "DEVICE0_TYPE": "12",
+            "DEVICE0_HOST": "localhost",
+            "DEVICE0_SPEED": "8000",
+            "DEVICE0_RADIO_PORT": "0",
+            "DEVICE0_INTERFACE_COMMENT": "Radio (Direwolf)",
+            "DEVICE0_UNPROTO1": "WIDE1-1,WIDE2-1",
+            "DEVICE0_TXMT": "1",
+            "DEVICE0_ONSTARTUP": "1",
+            "DEVICE0_RECONN": "1",
+        })
+    kept = [line for line in lines if line.split(":", 1)[0] not in values]
+    write(path, "\n".join(kept + [f"{k}:{v}" for k, v in values.items()]) + "\n")
+    return path
+
+
 def setup_qt_ini(station, name):
     path = os.path.join(HOME, ".config", name)
     if os.path.exists(path):
@@ -111,6 +174,8 @@ def main(argv):
         path = setup_pat(station)
     elif app == "direwolf":
         path = setup_direwolf(station)
+    elif app == "xastir":
+        path = setup_xastir(station)
     elif app == "js8call":
         path = setup_qt_ini(station, "JS8Call.ini")
     elif app == "wsjtx":

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Start a radio app from a launcher tile, with its settings filled in from the
 # station settings first.
-# Usage: emcomm-start js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop
+# Usage: emcomm-start js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore
 set -u
 
 STATE="$HOME/.local/state/emcomm"
@@ -10,6 +10,38 @@ TERM_OPTS=(-fa "IBM Plex Mono" -fs 12 -geometry 110x30)
 export WINEPREFIX="$HOME/.wine-vara" WINEARCH=win32 WINEDEBUG=-all
 
 listening() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+# USB serial devices that aren't the radio's CAT or PTT port: a Meshtastic or
+# MeshCore node.
+node_ports() {
+  local dev rig
+  rig=" $(readlink -f /dev/rig-cat 2>/dev/null) $(readlink -f /dev/rig-ptt 2>/dev/null) "
+  for dev in /dev/serial/by-id/*; do
+    [ -e "$dev" ] || continue
+    [[ "$rig" == *" $(readlink -f "$dev") "* ]] && continue
+    echo "$dev"
+  done
+}
+
+# Pick the node's serial port, asking if there's more than one. Runs in a terminal.
+pick_node_port() {
+  local ports
+  mapfile -t ports < <(node_ports)
+  case ${#ports[@]} in
+    0) echo "No $1 radio found. Plug it in by USB and tap the tile again." >&2; return 1 ;;
+    1) echo "${ports[0]}" ;;
+    *) echo "More than one USB device is plugged in. Which is the $1 radio?" >&2
+       select port in "${ports[@]##*/}"; do
+         [ -n "$port" ] && { echo "/dev/serial/by-id/$port"; return 0; }
+       done
+       return 1 ;;
+  esac
+}
+
+in_terminal() {
+  local title=$1; shift
+  exec xterm "${TERM_OPTS[@]}" -T "$title" -e bash -c '"$@" || read -r -p "Press Enter to close. " _' _ "$@"
+}
 
 case "${1:-}" in
   js8call|wsjtx)
@@ -44,8 +76,33 @@ case "${1:-}" in
     exec xterm "${TERM_OPTS[@]}" -T "ARDOP modem" -e ardopcf --logdir "$STATE" \
       8515 plughw:CARD=rigaudio,DEV=0 plughw:CARD=rigaudio,DEV=0
     ;;
+  aprs)
+    # Xastir sends and hears APRS through Direwolf. Start Direwolf for it unless
+    # Packet already has it running, and stop it afterwards so other apps can
+    # use the sound card.
+    emcomm-app-setup xastir >/dev/null
+    modem=""
+    if ! listening 8000; then
+      direwolf -t 0 -c "$(emcomm-app-setup direwolf)" >"$STATE/direwolf-aprs.log" 2>&1 &
+      modem=$!
+      for _ in $(seq 20); do listening 8000 && break; sleep 0.5; done
+    fi
+    xastir
+    [ -n "$modem" ] && kill "$modem" 2>/dev/null
+    exit 0
+    ;;
+  meshtastic)
+    [ -t 1 ] || in_terminal "Meshtastic" "$0" meshtastic
+    port=$(pick_node_port Meshtastic) || exit 1
+    exec contact --port "$port"
+    ;;
+  meshcore)
+    [ -t 1 ] || in_terminal "MeshCore" "$0" meshcore
+    port=$(pick_node_port MeshCore) || exit 1
+    exec meshcore-cli -s "$port"
+    ;;
   *)
-    echo "usage: $0 js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop" >&2
+    echo "usage: $0 js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore" >&2
     exit 2
     ;;
 esac

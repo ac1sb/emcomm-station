@@ -86,6 +86,27 @@ class AppSetupTest(unittest.TestCase):
         self.run_helper("js8call")
         self.assertEqual(self.read(path), "[Configuration]\nMyCall=CHANGED\n")
 
+    def test_xastir_position_from_grid_and_agwpe_port(self):
+        cnf = self.read(self.run_helper("xastir"))
+        self.assertIn("STATION_CALLSIGN:AC1SB\n", cnf)
+        self.assertIn("STATION_LAT:4143.750N\n", cnf)
+        self.assertIn("STATION_LONG:07242.500W\n", cnf)
+        self.assertIn("DEVICE0_TYPE:12\n", cnf)
+        self.assertIn("DEVICE0_SPEED:8000\n", cnf)
+
+    def test_xastir_keeps_operator_interfaces(self):
+        path = os.path.join(self.home, ".xastir/config/xastir.cnf")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as f:
+            f.write("STATION_CALLSIGN:N0CALL\nDEVICE0_TYPE:1\nDEVICE0_SPEED:9600\nMAP_BGCOLOR:3\n")
+        self.set_station(callsign="w1aw", grid="FN31")
+        cnf = self.read(self.run_helper("xastir")).splitlines()
+        self.assertIn("STATION_CALLSIGN:W1AW", cnf)
+        self.assertNotIn("STATION_CALLSIGN:N0CALL", cnf)
+        self.assertIn("DEVICE0_SPEED:9600", cnf)
+        self.assertIn("MAP_BGCOLOR:3", cnf)
+        self.assertNotIn("DEVICE0_TYPE:12", cnf)
+
 
 if __name__ == "__main__":
     unittest.main()
