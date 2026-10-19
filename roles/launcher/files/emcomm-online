@@ -2,11 +2,10 @@
 """Online services for the station's Online page, saved so the last answer
 still shows when the station is offline.
 
-  emcomm-online refresh [--force] [SOURCE...]  fetch alerts, space, bands, heard, repeaters
+  emcomm-online refresh [--force] [SOURCE...]  fetch alerts, space, bands, heard
                                                (default: alerts space bands)
   emcomm-online lookup CALL                    callsign lookup (QRZ, else HamQTH) and the
                                                station's last aprs.fi position, as JSON
-  emcomm-online areas                          places RepeaterBook lists, one per line
 
 Each source is saved to ~/.cache/emcomm/online/SOURCE.json as
 {"updated": time of the last good fetch, "tried": time of the last try,
@@ -16,7 +15,7 @@ within each service's rules (PSKReporter asks for one query per five minutes).
 
 Logins and keys come from ~/.config/emcomm/accounts.json, which the Online
 page's Accounts button writes: email, qrz_user, qrz_password, hamqth_user,
-hamqth_password, aprsfi_key, repeaterbook_token, repeater_area.
+hamqth_password, aprsfi_key.
 """
 
 import datetime
@@ -37,11 +36,11 @@ STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 ACCOUNTS_PATH = os.environ.get("EMCOMM_ACCOUNTS", os.path.expanduser("~/.config/emcomm/accounts.json"))
 CACHE_DIR = os.environ.get("EMCOMM_ONLINE_CACHE", os.path.expanduser("~/.cache/emcomm/online"))
 
-SOURCES = ["alerts", "space", "bands", "heard", "repeaters"]
+SOURCES = ["alerts", "space", "bands", "heard"]
 DEFAULT_SOURCES = ["alerts", "space", "bands"]
 # Seconds before a source is fetched again; a forced refresh (the Refresh button)
 # still waits FORCED_MIN_AGE.
-MIN_AGE = {"alerts": 300, "space": 900, "bands": 3600, "heard": 300, "repeaters": 7 * 24 * 3600}
+MIN_AGE = {"alerts": 300, "space": 900, "bands": 3600, "heard": 300}
 FORCED_MIN_AGE = {"heard": 300}
 FORCED_DEFAULT = 30
 HEARD_WINDOW = 6 * 3600  # PSKReporter reports from the last six hours
@@ -52,28 +51,10 @@ SWPC_FLUX = "https://services.swpc.noaa.gov/products/summary/10cm-flux.json"
 SWPC_SCALES = "https://services.swpc.noaa.gov/products/noaa-scales.json"
 HAMQSL = "https://www.hamqsl.com/solarxml.php"
 PSKREPORTER = "https://retrieve.pskreporter.info/query"
-REPEATERBOOK_NA = "https://www.repeaterbook.com/api/export.php"
-REPEATERBOOK_ROW = "https://www.repeaterbook.com/api/exportROW.php"
 QRZ = "https://xmldata.qrz.com/xml/current/"
 HAMQTH = "https://www.hamqth.com/xml.php"
 APRSFI = "https://api.aprs.fi/api/get"
 
-# RepeaterBook's North American list is by state (FIPS code) or country.
-US_STATES = {
-    "Alabama": "01", "Alaska": "02", "Arizona": "04", "Arkansas": "05", "California": "06",
-    "Colorado": "08", "Connecticut": "09", "Delaware": "10", "District of Columbia": "11",
-    "Florida": "12", "Georgia": "13", "Hawaii": "15", "Idaho": "16", "Illinois": "17",
-    "Indiana": "18", "Iowa": "19", "Kansas": "20", "Kentucky": "21", "Louisiana": "22",
-    "Maine": "23", "Maryland": "24", "Massachusetts": "25", "Michigan": "26", "Minnesota": "27",
-    "Mississippi": "28", "Missouri": "29", "Montana": "30", "Nebraska": "31", "Nevada": "32",
-    "New Hampshire": "33", "New Jersey": "34", "New Mexico": "35", "New York": "36",
-    "North Carolina": "37", "North Dakota": "38", "Ohio": "39", "Oklahoma": "40", "Oregon": "41",
-    "Pennsylvania": "42", "Rhode Island": "44", "South Carolina": "45", "South Dakota": "46",
-    "Tennessee": "47", "Texas": "48", "Utah": "49", "Vermont": "50", "Virginia": "51",
-    "Washington": "53", "West Virginia": "54", "Wisconsin": "55", "Wyoming": "56",
-    "Puerto Rico": "72",
-}
-NORTH_AMERICA = ["Canada", "Mexico"]
 
 
 class OnlineError(Exception):
@@ -304,45 +285,6 @@ def parse_pskreporter(root):
     return sorted(latest.values(), key=lambda r: -r["time"])
 
 
-def norm(key):
-    return re.sub(r"[^a-z0-9]", "", str(key).lower())
-
-
-def parse_repeaters(doc):
-    """RepeaterBook's export, trimmed to what the Online page and map show."""
-    results = doc.get("results") if isinstance(doc, dict) else doc
-    if isinstance(doc, dict) and not results and doc.get("message"):
-        raise OnlineError(str(doc["message"]))
-    out = []
-    for raw in results or []:
-        r = {norm(k): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
-
-        def yes(*keys):
-            return any(str(r.get(k, "")).lower() in ("yes", "1", "true") for k in keys)
-
-        freq = to_float(r.get("frequency"))
-        if not freq:
-            continue
-        modes = [name for name, keys in (("FM", ("fmanalog", "analogcapable")), ("DMR", ("dmr",)),
-                                         ("D-Star", ("dstar",)), ("Fusion", ("systemfusion", "ysf")),
-                                         ("P25", ("apcop25", "p25")), ("NXDN", ("nxdn",)), ("M17", ("m17",)))
-                 if yes(*keys)]
-        links = [f"{name} {r[key]}" for name, key in (("EchoLink", "echolinknode"), ("AllStar", "allstarnode"),
-                                                      ("IRLP", "irlpnode"), ("WIRES", "wiresnode"))
-                 if r.get(key) not in (None, "", "0", 0)]
-        out.append({
-            "freq": freq, "input": to_float(r.get("inputfreq")), "tone": r.get("pl") or "",
-            "tsq": r.get("tsq") or "", "call": r.get("callsign") or "",
-            "city": r.get("nearestcity") or r.get("location") or "", "landmark": r.get("landmark") or "",
-            "county": r.get("county") or "", "state": r.get("state") or r.get("region") or "",
-            "lat": to_float(r.get("lat")), "lon": to_float(r.get("long", r.get("lng"))),
-            "use": r.get("use") or "", "status": r.get("operationalstatus") or "",
-            "modes": modes or ["FM"], "nets": [n for n in ("ARES", "RACES", "SKYWARN", "CANWARN") if yes(norm(n))],
-            "links": links, "notes": r.get("notes") or "",
-        })
-    return out
-
-
 def parse_qrz(root):
     """(session fields, callsign fields) from a QRZ XML answer."""
     return xml_fields(find(root, "Session")), xml_fields(find(root, "Callsign"))
@@ -401,28 +343,8 @@ def fetch_heard():
     return parse_pskreporter(get_xml(PSKREPORTER, params))
 
 
-def repeaterbook_query(area):
-    area = (area or "").strip()
-    if area in US_STATES:
-        return REPEATERBOOK_NA, {"state_id": US_STATES[area]}
-    if area in NORTH_AMERICA:
-        return REPEATERBOOK_NA, {"country": area}
-    return REPEATERBOOK_ROW, {"country": area}
-
-
-def fetch_repeaters():
-    acc = accounts()
-    token, area = (acc.get("repeaterbook_token") or "").strip(), (acc.get("repeater_area") or "").strip()
-    if not token:
-        raise OnlineError("Add your RepeaterBook token under Accounts.")
-    if not area:
-        raise OnlineError("Pick your state or country under Accounts.")
-    url, params = repeaterbook_query(area)
-    return parse_repeaters(get_json(url, params, headers={"X-RB-App-Token": token}))
-
-
 FETCHERS = {"alerts": fetch_alerts, "space": fetch_space, "bands": fetch_bands,
-            "heard": fetch_heard, "repeaters": fetch_repeaters}
+            "heard": fetch_heard}
 
 
 def cache_path(name):
@@ -578,9 +500,6 @@ def distance_bearing(a, b):
 def main(argv):
     if argv[:1] == ["lookup"] and len(argv) == 2:
         print(json.dumps(lookup(argv[1])))
-        return 0
-    if argv[:1] == ["areas"]:
-        print("\n".join(sorted(US_STATES) + NORTH_AMERICA))
         return 0
     if argv[:1] == ["refresh"]:
         force = "--force" in argv

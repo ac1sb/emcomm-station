@@ -1,6 +1,6 @@
 // Station map: offline Natural Earth base map, Maidenhead grid, this station,
-// Winlink gateways, stations heard, stations that heard us (PSKReporter) and
-// repeaters (RepeaterBook). Data comes from window.BASEMAP
+// Winlink gateways, stations heard and stations that heard us (PSKReporter).
+// Data comes from window.BASEMAP
 // (emcomm-map-prepare) and window.MAPDATA (emcomm-map).
 (function () {
   "use strict";
@@ -129,20 +129,6 @@
         .addTo(heardMe);
     });
   }
-  var repeaters = L.layerGroup().addTo(map);
-  function drawRepeaters() {
-    repeaters.clearLayers();
-    if (!document.getElementById("show-repeaters").checked) return;
-    (D.repeaters || []).forEach(function (r) {
-      var shift = r.input ? Math.round((r.input - r.freq) * 1000) / 1000 : null;
-      L.circleMarker([r.lat, r.lon], { radius: 5, weight: 1.5, color: "#FFFFFF", fillColor: "#0E7490", fillOpacity: 0.95 })
-        .bindPopup("<b>" + esc(r.call) + "</b> · " + esc(r.city) + "<br>" + r.freq.toFixed(3) + " MHz" +
-                   (shift ? " (" + (shift > 0 ? "+" : "") + shift + ")" : "") +
-                   (r.tone ? " · tone " + esc(r.tone) : "") + "<br>" +
-                   esc((r.modes || []).concat(r.nets || []).join(", ")) + "<br>RepeaterBook")
-        .addTo(repeaters);
-    });
-  }
   function ago(t) {
     if (!t) return "";
     var m = Math.round((Date.now() / 1000 - t) / 60);
@@ -160,12 +146,11 @@
   });
   document.getElementById("show-heard").addEventListener("change", drawHeard);
   document.getElementById("show-heard-me").addEventListener("change", drawHeardMe);
-  document.getElementById("show-repeaters").addEventListener("change", drawRepeaters);
   document.getElementById("show-grid").addEventListener("change", drawGrid);
   document.getElementById("home").addEventListener("click", function () { map.setView(home, 7); });
   document.getElementById("note").textContent =
     (D.gatewaysUpdated ? "Gateway list " + D.gatewaysUpdated : "No gateway list yet");
 
   map.on("zoomend moveend", function () { detail(); drawGrid(); });
-  detail(); drawGrid(); drawRepeaters(); drawGateways(); drawHeard(); drawHeardMe();
+  detail(); drawGrid(); drawGateways(); drawHeard(); drawHeardMe();
 })();

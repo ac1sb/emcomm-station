@@ -302,7 +302,8 @@ NOTES_PATH = os.path.expanduser("~/.local/share/emcomm/contacts.log")
 REFERENCE_DIR = os.environ.get("EMCOMM_REFERENCE", "/usr/share/emcomm/reference")
 USER_REFERENCE = os.path.expanduser("~/.local/share/emcomm/reference")
 MY_FREQS = os.path.join(USER_REFERENCE, "My frequencies.csv")
-FREQ_FIELDS = ["MHz", "Mode", "Name", "Note"]
+# Offset (MHz, e.g. -0.6) and Tone (CTCSS Hz) are for repeaters and may be blank.
+FREQ_FIELDS = ["MHz", "Mode", "Name", "Note", "Offset", "Tone"]
 MODES = ["USB", "LSB", "FM", "AM", "CW", "PKTUSB", "PKTLSB", "PKTFM"]
 
 
@@ -388,21 +389,39 @@ def reference_sections():
     return [("My frequencies", MY_FREQS), ("Nearest Winlink gateways", GATEWAYS)] + sections
 
 
+def to_float(text):
+    try:
+        return float((text or "").strip().replace("+", ""))
+    except ValueError:
+        return None
+
+
 def read_freqs(path):
     """Rows of a frequency list; rows without a usable frequency are skipped."""
     rows = []
     try:
         with open(path, encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
-                try:
-                    mhz = float(row.get("MHz") or "")
-                except ValueError:
+                mhz = to_float(row.get("MHz"))
+                if mhz is None:
                     continue
                 rows.append({"MHz": mhz, "Mode": (row.get("Mode") or "").strip().upper(),
-                             "Name": (row.get("Name") or "").strip(), "Note": (row.get("Note") or "").strip()})
+                             "Name": (row.get("Name") or "").strip(), "Note": (row.get("Note") or "").strip(),
+                             "Offset": to_float(row.get("Offset")), "Tone": to_float(row.get("Tone"))})
     except OSError:
         pass
     return rows
+
+
+def offset_text(offset):
+    return "simplex" if offset == 0 else f"{offset:+.3f}".rstrip("0").rstrip(".") + " MHz"
+
+
+def freq_detail(row):
+    """Offset, tone and note, for under a frequency's name."""
+    parts = [offset_text(row["Offset"]) if row.get("Offset") is not None else "",
+             f"tone {row['Tone']:g}" if row.get("Tone") else "", row["Note"]]
+    return " · ".join(filter(None, parts))
 
 
 def write_freqs(path, rows):
@@ -411,7 +430,9 @@ def write_freqs(path, rows):
         out = csv.DictWriter(f, FREQ_FIELDS)
         out.writeheader()
         for row in rows:
-            out.writerow({**row, "MHz": f"{row['MHz']:.6f}".rstrip("0").rstrip(".")})
+            out.writerow({**row, "MHz": f"{row['MHz']:.6f}".rstrip("0").rstrip("."),
+                          "Offset": "" if row.get("Offset") is None else f"{row['Offset']:+g}",
+                          "Tone": f"{row['Tone']:g}" if row.get("Tone") else ""})
 
 
 def nmcli_fields(line):
@@ -489,19 +510,16 @@ ONLINE_CMD = os.environ.get("EMCOMM_ONLINE", "emcomm-online")
 ONLINE_CACHE = os.environ.get("EMCOMM_ONLINE_CACHE", os.path.expanduser("~/.cache/emcomm/online"))
 ACCOUNTS_PATH = os.environ.get("EMCOMM_ACCOUNTS", os.path.expanduser("~/.config/emcomm/accounts.json"))
 ONLINE_SECTIONS = {"alerts": "Weather alerts", "space": "Propagation", "heard": "Who heard me",
-                   "repeaters": "Repeaters", "lookup": "Callsign lookup"}
-ONLINE_SOURCES = {"alerts": ["alerts"], "space": ["space", "bands"], "heard": ["heard"],
-                  "repeaters": ["repeaters"], "lookup": []}
+                   "lookup": "Callsign lookup"}
+ONLINE_SOURCES = {"alerts": ["alerts"], "space": ["space", "bands"], "heard": ["heard"], "lookup": []}
 BACKGROUND_SOURCES = ["alerts", "space", "bands"]
 BANDS = [("160 m", 1.8, 2), ("80 m", 3.5, 4), ("60 m", 5.3, 5.41), ("40 m", 7, 7.3), ("30 m", 10.1, 10.15),
          ("20 m", 14, 14.35), ("17 m", 18.068, 18.168), ("15 m", 21, 21.45), ("12 m", 24.89, 24.99),
          ("10 m", 28, 29.7), ("6 m", 50, 54), ("2 m", 144, 148), ("1.25 m", 222, 225), ("70 cm", 420, 450)]
-REPEATER_BANDS = ["All bands", "10 m", "6 m", "2 m", "1.25 m", "70 cm"]
 # (key, label, hidden while typing)
-ACCOUNT_FIELDS = [("email", "Contact email", False), ("repeater_area", "Repeaters for (state or country)", False),
-                  ("qrz_user", "QRZ username", False), ("qrz_password", "QRZ password", True),
+ACCOUNT_FIELDS = [("qrz_user", "QRZ username", False), ("qrz_password", "QRZ password", True),
                   ("hamqth_user", "HamQTH username", False), ("hamqth_password", "HamQTH password", True),
-                  ("aprsfi_key", "aprs.fi API key", True), ("repeaterbook_token", "RepeaterBook token", True)]
+                  ("email", "Contact email", False), ("aprsfi_key", "aprs.fi API key", True)]
 
 
 def online_record(name):
@@ -549,31 +567,20 @@ def record_status(record, what):
     return f"{what}, updated {ago(record['updated'])}"
 
 
-def repeater_offset(rep):
-    """Input minus output in Hz, or None when RepeaterBook doesn't list the input."""
-    if not rep.get("input"):
-        return None
-    return round((rep["input"] - rep["freq"]) * 1_000_000)
-
-
-def tune_repeater(rep):
-    """Put the radio on a repeater: output frequency, FM, shift and tone.
+def tune_split(mhz, offset_mhz, tone):
+    """Tune an FM repeater: output frequency, FM, transmit offset and CTCSS tone.
     Returns None if the radio didn't take the frequency, else what it didn't take."""
-    if not tune_radio(rep["freq"], "FM"):
+    if not tune_radio(mhz, "FM"):
         return None
     missed = []
-    offset = repeater_offset(rep)
-    if offset is not None:
+    if offset_mhz is not None:
+        offset = round(offset_mhz * 1_000_000)
         shift = "+" if offset > 0 else "-" if offset < 0 else "0"
         took = rigctld_query(*RIGCTLD, f"R {shift}") == "RPRT 0"
         if took and offset:
             took = rigctld_query(*RIGCTLD, f"O {abs(offset)}") == "RPRT 0"
         if not took:
             missed.append("offset")
-    try:
-        tone = float(rep.get("tone") or "")
-    except ValueError:
-        tone = None
     if tone:
         if rigctld_query(*RIGCTLD, f"C {round(tone * 10)}") == "RPRT 0":
             rigctld_query(*RIGCTLD, "U TONE 1")
@@ -1482,12 +1489,6 @@ class Launcher(Gtk.Window):
         self.online_combo.set_active_id("alerts")
         self.online_combo.connect("changed", lambda *_: self._show_online(fetch=True))
         header.pack_start(self.online_combo, False, False, 0)
-        self.rep_band = Gtk.ComboBoxText()
-        for band in REPEATER_BANDS:
-            self.rep_band.append(band, band)
-        self.rep_band.set_active_id("All bands")
-        self.rep_band.connect("changed", lambda *_: self._show_online())
-        header.pack_start(self.rep_band, False, False, 0)
         header.pack_end(self._navbtn("Accounts", self._edit_accounts), False, False, 0)
         self.online_refresh_btn = self._navbtn("Refresh", lambda *_: self._online_refresh(force=True))
         header.pack_end(self.online_refresh_btn, False, False, 0)
@@ -1526,11 +1527,10 @@ class Launcher(Gtk.Window):
     def _show_online(self, fetch=False):
         section = self.online_combo.get_active_id()
         self.lookup_row.set_visible(section == "lookup")
-        self.rep_band.set_visible(section == "repeaters")
-        self.online_map_btn.set_visible(section in ("heard", "repeaters") and bool(shutil.which("emcomm-map")))
+        self.online_map_btn.set_visible(section == "heard" and bool(shutil.which("emcomm-map")))
         self.online_refresh_btn.set_visible(section != "lookup")
         {"alerts": self._online_alerts, "space": self._online_space, "heard": self._online_heard,
-         "repeaters": self._online_repeaters, "lookup": self._online_lookup}[section]()
+         "lookup": self._online_lookup}[section]()
         if fetch and ONLINE_SOURCES[section]:
             # Quick when the saved answer is recent: emcomm-online only fetches what's due.
             self._online_refresh()
@@ -1714,57 +1714,6 @@ class Launcher(Gtk.Window):
             rows.append(self._info_row(band, f"{h['call']}  ·  {h['grid']}", " · ".join(filter(None, details))))
         self._fill_online_list(rows)
 
-    def _online_repeaters(self):
-        record = online_record("repeaters")
-        reps = record.get("data") or []
-        band = self.rep_band.get_active_id()
-        here = grid_to_latlon(self.station.get("grid", ""))
-        shown = []
-        for rep in reps:
-            if band != "All bands" and band_name(rep["freq"]) != band:
-                continue
-            miles, bearing = (distance_bearing(here, (rep["lat"], rep["lon"]))
-                              if here and rep.get("lat") is not None else (float("inf"), None))
-            shown.append((miles, bearing, rep))
-        shown.sort(key=lambda r: (r[0], r[2]["freq"]))
-        area = read_json(ACCOUNTS_PATH, {}).get("repeater_area", "")
-        status = record_status(record, f"{len(reps)} repeaters in {area} from RepeaterBook, nearest first")
-        self.online_status.set_text(status)
-        rows = []
-        for miles, bearing, rep in shown[:150]:
-            offset = repeater_offset(rep)
-            details = [("simplex" if offset == 0 else f"{offset / 1e6:+.3f}".rstrip("0").rstrip(".") + " MHz")
-                       if offset is not None else "",
-                       f"tone {rep['tone']}" if rep["tone"] else "no tone",
-                       f"{miles:,.0f} mi at {bearing:03.0f}°" if bearing is not None else "",
-                       ", ".join(rep["modes"]), ", ".join(rep["nets"]), ", ".join(rep["links"]),
-                       rep["use"].lower() if rep["use"] and rep["use"].upper() != "OPEN" else "",
-                       rep["status"] if rep["status"] and rep["status"] != "On-air" else ""]
-            place = ", ".join(filter(None, [rep["city"], rep["landmark"]]))
-            rows.append(self._info_row(f"{rep['freq']:.3f}", f"{rep['call']}  ·  {place}",
-                                       " · ".join(filter(None, details)),
-                                       [("Tune", lambda *_, r=rep: self._tune_repeater(r)),
-                                        ("Save", lambda *_, r=rep, d=details: self._save_repeater(r, d))]))
-        self._fill_online_list(rows)
-
-    def _tune_repeater(self, rep):
-        missed = tune_repeater(rep)
-        if missed is None:
-            self.online_status.set_text(f"The radio didn't take {rep['freq']:.3f} MHz FM; it may not cover "
-                                        "that band, or isn't connected.")
-        elif missed:
-            self.online_status.set_text(f"Radio on {rep['freq']:.3f} MHz FM. Set the {' and '.join(missed)} "
-                                        "on the radio; it didn't take them from here.")
-        else:
-            self.online_status.set_text(f"Radio on {rep['freq']:.3f} MHz FM with offset and tone set.")
-
-    def _save_repeater(self, rep, details):
-        rows = read_freqs(MY_FREQS)
-        rows.append({"MHz": rep["freq"], "Mode": "FM", "Name": f"{rep['call']} {rep['city']}".strip(),
-                     "Note": " · ".join(filter(None, details[:2]))})
-        write_freqs(MY_FREQS, rows)
-        self.online_status.set_text(f"Saved {rep['call']} to My frequencies on the Reference page.")
-
     def _online_lookup(self):
         acc = read_json(ACCOUNTS_PATH, {})
         services = [name for name, key in (("QRZ", "qrz_user"), ("HamQTH", "hamqth_user"), ("aprs.fi", "aprsfi_key"))
@@ -1842,31 +1791,19 @@ class Launcher(Gtk.Window):
         grid = Gtk.Grid(column_spacing=16, row_spacing=10, column_homogeneous=True)
         widgets = {}
         for i, (key, label, secret) in enumerate(ACCOUNT_FIELDS):
-            if key == "repeater_area":
-                widget = Gtk.ComboBoxText.new_with_entry()
-                try:
-                    areas = subprocess.run([ONLINE_CMD, "areas"], capture_output=True, text=True,
-                                           timeout=10).stdout.split("\n")
-                except OSError:
-                    areas = []
-                for area in filter(None, areas):
-                    widget.append_text(area)
-                entry = widget.get_child()
-            else:
-                widget = entry = Gtk.Entry(visibility=not secret)
+            entry = Gtk.Entry(visibility=not secret)
             entry.set_text(acc.get(key, ""))
             widgets[key] = entry
-            grid.attach(self._field(label, widget), i % 2, i // 2, 1, 1)
+            grid.attach(self._field(label, entry), i % 2, i // 2, 1, 1)
         box.pack_start(grid, False, False, 0)
         show = Gtk.CheckButton(label="Show passwords and keys")
         show.connect("toggled", lambda b: [widgets[k].set_visibility(b.get_active())
                                            for k, _l, secret in ACCOUNT_FIELDS if secret])
         box.pack_start(show, False, False, 0)
         hint = Gtk.Label(xalign=0, wrap=True, label=(
-            "The email is sent to NOAA, PSKReporter and RepeaterBook so they know who to contact about the "
-            "station's requests. QRZ gives full records to XML subscribers; HamQTH is free (hamqth.com). "
-            "The aprs.fi key is under My account on aprs.fi. For RepeaterBook, request access at "
-            "repeaterbook.com/api/token_request.php, then paste your token here. These stay on this station."))
+            "QRZ gives full records to XML subscribers; HamQTH is free (hamqth.com). The email is sent to "
+            "NOAA and PSKReporter so they know who to contact about the station's requests. The aprs.fi key "
+            "is under My account on aprs.fi. These stay on this station."))
         hint.set_max_width_chars(100)
         hint.get_style_context().add_class("muted")
         box.pack_start(hint, False, False, 0)
@@ -1877,7 +1814,6 @@ class Launcher(Gtk.Window):
         dialog.destroy()
         if response != Gtk.ResponseType.OK:
             return
-        repeaters_changed = any(values[k] != acc.get(k, "") for k in ("repeaterbook_token", "repeater_area"))
         acc.update(values)
         os.makedirs(os.path.dirname(ACCOUNTS_PATH), exist_ok=True)
         # Only the station user can read the logins.
@@ -1885,10 +1821,7 @@ class Launcher(Gtk.Window):
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(acc, f, indent=1)
         os.replace(ACCOUNTS_PATH + ".tmp", ACCOUNTS_PATH)
-        if repeaters_changed and self.online_combo.get_active_id() == "repeaters":
-            self._online_refresh(force=True)
-        else:
-            self._show_online()
+        self._show_online()
 
     # ---- reference -----------------------------------------------------
 
@@ -2034,8 +1967,9 @@ class Launcher(Gtk.Window):
         name = Gtk.Label(label=row["Name"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
         name.get_style_context().add_class("tile-name")
         text.pack_start(name, False, False, 0)
-        if row["Note"]:
-            note = Gtk.Label(label=row["Note"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        detail = freq_detail(row)
+        if detail:
+            note = Gtk.Label(label=detail, xalign=0, ellipsize=Pango.EllipsizeMode.END)
             note.get_style_context().add_class("tile-detail")
             text.pack_start(note, False, False, 0)
         box.pack_start(text, True, True, 0)
@@ -2046,6 +1980,17 @@ class Launcher(Gtk.Window):
 
     def _tune(self, row):
         label = f"{row['MHz']:g} MHz {row['Mode']}".strip()
+        if row.get("Offset") is not None or row.get("Tone"):
+            missed = tune_split(row["MHz"], row.get("Offset"), row.get("Tone"))
+            if missed is None:
+                self.ref_status.set_text(f"The radio didn't take {row['MHz']:g} MHz FM; it may not cover that "
+                                         "band, or isn't connected.")
+            elif missed:
+                self.ref_status.set_text(f"Radio on {row['MHz']:g} MHz FM. Set the {' and '.join(missed)} on "
+                                         "the radio; it didn't take them from here.")
+            else:
+                self.ref_status.set_text(f"Radio on {row['MHz']:g} MHz FM, {freq_detail({**row, 'Note': ''})}")
+            return
         if tune_radio(row["MHz"], row["Mode"]):
             self.ref_status.set_text(f"Radio on {label}")
         else:
@@ -2062,13 +2007,16 @@ class Launcher(Gtk.Window):
             mode.append(m, m.replace("PKT", "DATA-"))
         name = Gtk.Entry(placeholder_text="County ARES net")
         note = Gtk.Entry(placeholder_text="Sundays 19:00 local")
+        offset = Gtk.Entry(placeholder_text="Repeaters only: -0.6, +5 or 0 for simplex")
+        tone = Gtk.Entry(placeholder_text="Repeaters only: CTCSS tone, e.g. 100.0")
         # Start from where the radio is now.
         hz = rigctld_query(*RIGCTLD, "f")
         if hz and hz.isdigit():
             mhz.set_text(f"{int(hz) / 1_000_000:.6f}".rstrip("0").rstrip("."))
         current_mode = rigctld_query(*RIGCTLD, "m")
         mode.set_active_id(current_mode if current_mode in MODES else "USB")
-        for i, (label, widget) in enumerate((("MHz", mhz), ("Mode", mode), ("Name", name), ("Note", note))):
+        for i, (label, widget) in enumerate((("MHz", mhz), ("Mode", mode), ("Name", name), ("Note", note),
+                                             ("Offset MHz", offset), ("Tone Hz", tone))):
             grid.attach(Gtk.Label(label=label, xalign=0), 0, i, 1, 1)
             widget.set_hexpand(True)
             grid.attach(widget, 1, i, 1, 1)
@@ -2081,8 +2029,13 @@ class Launcher(Gtk.Window):
                 mhz.grab_focus()
                 continue
             rows = read_freqs(MY_FREQS)
+            shift, ctcss = to_float(offset.get_text()), to_float(tone.get_text())
+            if (offset.get_text().strip() and shift is None) or (tone.get_text().strip() and not ctcss):
+                (offset if shift is None and offset.get_text().strip() else tone).grab_focus()
+                continue
             rows.append({"MHz": value, "Mode": mode.get_active_id(),
-                         "Name": name.get_text().strip() or f"{value:g} MHz", "Note": note.get_text().strip()})
+                         "Name": name.get_text().strip() or f"{value:g} MHz", "Note": note.get_text().strip(),
+                         "Offset": shift, "Tone": ctcss})
             write_freqs(MY_FREQS, rows)
             self._load_reference_sections(select=MY_FREQS)
             break

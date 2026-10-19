@@ -67,15 +67,6 @@ PSK = """<?xml version="1.0" encoding="UTF-8"?>
    frequency="7078000" flowStartSeconds="1760898000" mode="JS8" />
 </receptionReports>"""
 
-REPEATERS = {"count": 2, "results": [
-    {"State ID": "25", "Rptr ID": 1, "Frequency": "146.94000", "Input Freq": "146.34000", "PL": "100.0",
-     "TSQ": "", "Nearest City": "Boston", "Landmark": "Prudential", "County": "Suffolk", "State": "Massachusetts",
-     "Lat": "42.3471", "Long": "-71.0825", "Callsign": "W1BOS", "Use": "OPEN", "Operational Status": "On-air",
-     "ARES": "Yes", "RACES": "No", "SKYWARN": "Yes", "EchoLink Node": "12345", "AllStar Node": "",
-     "FM Analog": "Yes", "DMR": "No", "D-Star": "No", "System Fusion": "Yes", "Notes": ""},
-    {"Frequency": "", "Callsign": "BROKEN"},
-]}
-
 QRZ_LOGIN = """<?xml version="1.0" ?><QRZDatabase version="1.34" xmlns="http://xmldata.qrz.com">
 <Session><Key>abc123</Key><Count>1</Count><SubExp>non-subscriber</SubExp></Session></QRZDatabase>"""
 QRZ_FOUND = """<?xml version="1.0" ?><QRZDatabase version="1.34" xmlns="http://xmldata.qrz.com">
@@ -122,21 +113,6 @@ class Parsers(unittest.TestCase):
         self.assertEqual(heard[0]["snr"], -5)
         self.assertEqual(heard[0]["freq"], 14075200)
         self.assertIsNone(heard[1]["snr"])
-
-    def test_repeaters(self):
-        reps = online.parse_repeaters(REPEATERS)
-        self.assertEqual(len(reps), 1)
-        r = reps[0]
-        self.assertEqual((r["freq"], r["input"], r["tone"]), (146.94, 146.34, "100.0"))
-        self.assertEqual(r["modes"], ["FM", "Fusion"])
-        self.assertEqual(r["nets"], ["ARES", "SKYWARN"])
-        self.assertEqual(r["links"], ["EchoLink 12345"])
-        self.assertAlmostEqual(r["lon"], -71.0825)
-
-    def test_repeaterbook_area(self):
-        self.assertEqual(online.repeaterbook_query("Massachusetts")[1], {"state_id": "25"})
-        self.assertEqual(online.repeaterbook_query("Canada"), (online.REPEATERBOOK_NA, {"country": "Canada"}))
-        self.assertEqual(online.repeaterbook_query("Germany"), (online.REPEATERBOOK_ROW, {"country": "Germany"}))
 
     def test_aprsfi(self):
         pos = online.parse_aprsfi({"result": "ok", "found": 1, "entries": [
@@ -197,12 +173,6 @@ class Refresh(WithHome):
         online.refresh("heard", force=True, now=1301)
         self.assertEqual(len(calls), 2)
 
-    def test_repeaters_need_a_token(self):
-        record = online.refresh("repeaters", now=10**9)
-        self.assertIn("RepeaterBook token", record["error"])
-        self.set_accounts(repeaterbook_token="rbuapp_x")
-        record = online.refresh("repeaters", now=10**9 + 60)
-        self.assertIn("state or country", record["error"])
 
 
 class Lookup(WithHome):

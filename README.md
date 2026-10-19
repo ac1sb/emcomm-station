@@ -41,9 +41,14 @@ environment.
   SATERN, 60 m channels, simplex calling, APRS), and JS8Call and FT8 dial
   frequencies. **Tune** puts the radio on that frequency and mode. **Add
   frequency** saves the radio's current frequency (or one you type) to **My
-  frequencies** with a name and note, for local nets and repeaters. The lists are
-  CSV files (`MHz,Mode,Name,Note`) in `/usr/share/emcomm/reference`; a file of the
-  same name in `~/.local/share/emcomm/reference` replaces the standard one.
+  frequencies** with a name and note, for local nets and repeaters. For a repeater,
+  also give its offset (for example -0.6, or +5 on 70 cm) and CTCSS tone; **Tune**
+  then sets the radio to FM with that offset and tone, on radios and bands that
+  support it. The lists are CSV files (`MHz,Mode,Name,Note,Offset,Tone`; Offset and
+  Tone may be left out) in `/usr/share/emcomm/reference`; a file of the same name in
+  `~/.local/share/emcomm/reference` replaces the standard one. My frequencies is
+  `~/.local/share/emcomm/reference/My frequencies.csv`, so a list made on a computer
+  can be copied in from a USB stick.
 - **Nearest Winlink gateways** (on the Reference page): every gateway channel from
   Pat's list, nearest to your grid first, with distance, bearing, mode and hours.
   Pick VARA HF, ARDOP, VARA FM or Packet to narrow it, and **Tune** puts the radio
@@ -56,9 +61,8 @@ environment.
   gateway (blue HF, green VHF/UHF; tap one for its dial frequencies, modes and
   hours) and stations heard on JS8Call and WSJT-X with their grids. The gateway
   list is Pat's: it works offline from the copy built into Pat, and is refreshed
-  when it's over a week old and the station is online. It also shows what the
-  Online page last saved: stations that heard you (purple, with a line to each)
-  and the nearest 300 repeaters.
+  when it's over a week old and the station is online. It also shows the stations
+  that heard you (purple, with a line to each), as the Online page last saved them.
 - **Online** (F7): data from internet services, saved so the last answer still
   shows offline. Each section says when it was last updated.
   - **Weather alerts** for your grid from the National Weather Service (US only),
@@ -70,19 +74,14 @@ environment.
   - **Who heard me:** stations that reported your signal to PSKReporter in the last
     six hours, with distance, band, mode and SNR. Transmit FT8, JS8 or another
     digital mode first; reports come from stations that are online.
-  - **Repeaters** near you from RepeaterBook, nearest first, filtered by band.
-    **Tune** sets frequency, FM, offset and tone (for radios that cover the band);
-    **Save** adds it to My frequencies.
   - **Callsign lookup:** name, address, grid, distance and licence from QRZ (or
     HamQTH if there's no QRZ login), plus the last APRS position from aprs.fi.
     Callsigns looked up before still show offline.
-  - **Accounts:** a contact email (sent to NOAA, PSKReporter and RepeaterBook so they
-    know who's asking), QRZ and HamQTH logins, the aprs.fi API key, the RepeaterBook
-    token and your state or country. They're saved in
+  - **Accounts:** QRZ and HamQTH logins, a contact email (sent to NOAA and
+    PSKReporter so they know who's asking) and the aprs.fi API key. They're saved in
     `~/.config/emcomm/accounts.json`, readable only by the station user. Alerts,
     propagation and PSKReporter need no account. QRZ gives full records only to
-    XML Logbook Data subscribers. For RepeaterBook, request API access at
-    <https://www.repeaterbook.com/api/token_request.php> (see below).
+    XML Logbook Data subscribers.
 - **Browser** (tile): Chromium, with a Ham radio bookmarks bar (World Radio League,
   QRZ, PSKReporter, aprs.fi, RepeaterBook, NWS, space weather, Winlink, WebSDR,
   LoTW). The list is `apps_browser_bookmarks` in `roles/apps/defaults/main.yml`.
@@ -114,8 +113,6 @@ environment.
 ![Nearest Winlink gateways](docs/gateways.png)
 
 ![Online: weather alerts](docs/online-alerts.png)
-
-![Online: repeaters](docs/online-repeaters.png)
 
 ![Online: propagation](docs/online-propagation.png)
 
@@ -149,27 +146,6 @@ environment.
 
 Running more than one sound-card app at a time doesn't work: close one before
 opening the next.
-
-### Getting a RepeaterBook token
-
-RepeaterBook's API needs approval, which is free for non-commercial use but up to
-RepeaterBook.
-
-1. Sign in at <https://www.repeaterbook.com> (a free account).
-2. Fill in the request form at <https://www.repeaterbook.com/api/token_request.php>.
-   Say it's a non-commercial, single-user station (not a server or a distributed
-   app), and give:
-   - **App name:** Emcomm-CNC
-   - **User-Agent:** `Emcomm-CNC/1.0 (+https://github.com/ac1sb/emcomm-station; you@example.org)`,
-     with the email you put under Online > Accounts. The station sends exactly
-     this, and RepeaterBook may refuse requests whose User-Agent doesn't match.
-   - **What it does:** downloads my state's repeater list about once a week, kept
-     on this station so it works offline during emergencies; not shared or
-     redistributed.
-3. Once approved, the token is on <https://www.repeaterbook.com/user/api_apps.php>.
-   It's shown only once, so copy it then.
-4. On the station, open Online > Accounts, paste it as the RepeaterBook token, pick
-   your state, and save. The Repeaters section downloads the list.
 
 ## Install
 
