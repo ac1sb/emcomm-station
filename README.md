@@ -21,6 +21,8 @@ environment.
   `127.0.0.1:4532`.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
 - **Launcher:** the home screen above. Tiles stay greyed out until the app is installed.
+  Works by touch, mouse or keyboard: Tab moves between buttons, 1–9 open tiles,
+  Esc/F1 goes Home, F2 opens Diagnostics, F3 opens Settings.
 - **Diagnostics:** USB devices with vendor:product IDs, radio ports, sound cards,
   services, recent USB events, a read-frequency check and a 2-second PTT test.
   The same report is available over SSH with `emcomm-diag`.

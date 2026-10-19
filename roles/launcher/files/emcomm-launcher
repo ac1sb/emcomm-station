@@ -40,6 +40,8 @@ window, .page { background: #101214; color: #E8E6E1; font-family: 'IBM Plex Sans
 .tile, .navbtn, .tile label, .navbtn label { background-image: none; box-shadow: none; text-shadow: none; }
 .tile { background: #1A1D21; border: 1px solid #2A2F35; border-radius: 12px; padding: 16px; }
 .tile:hover { background: #22262B; }
+.tile:focus, .navbtn:focus { border: 2px solid #F2A33A; outline: none; }
+.key-hint { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #9AA0A6; }
 .tile:disabled { opacity: 0.45; }
 .tile-code { font-family: 'IBM Plex Mono', monospace; font-size: 28px; font-weight: 600; color: #F2A33A; }
 .tile-name { font-size: 18px; font-weight: 600; color: #E8E6E1; }
@@ -140,6 +142,23 @@ class Launcher(Gtk.Window):
         GLib.timeout_add_seconds(1, self._tick_clock)
         self._poll_status()
         GLib.timeout_add_seconds(5, self._poll_status)
+        self.connect("key-press-event", self._on_key)
+
+    # ---- keyboard ------------------------------------------------------
+
+    def _on_key(self, _widget, event):
+        """Esc/F1 Home, F2 Diagnostics, F3 Settings, 1-9 open a tile on Home."""
+        pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home",
+                 Gdk.KEY_F2: "diagnostics", Gdk.KEY_F3: "settings"}
+        if event.keyval in pages:
+            self.stack.set_visible_child_name(pages[event.keyval])
+            return True
+        if self.stack.get_visible_child_name() == "home" and Gdk.KEY_1 <= event.keyval <= Gdk.KEY_9:
+            index = event.keyval - Gdk.KEY_1
+            if index < len(self.tiles) and self.tiles[index].get_sensitive():
+                self.tiles[index].clicked()
+            return True
+        return False
 
     # ---- top bar -------------------------------------------------------
 
@@ -194,29 +213,38 @@ class Launcher(Gtk.Window):
     def _home_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=20)
         grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
+        self.tiles = []
         for i, app in enumerate(self.config.get("apps", [])):
-            grid.attach(self._tile(app), i % 3, i // 3, 1, 1)
+            tile = self._tile(app, i + 1 if i < 9 else None)
+            self.tiles.append(tile)
+            grid.attach(tile, i % 3, i // 3, 1, 1)
         page.pack_start(grid, True, True, 0)
 
         nav = Gtk.Box(spacing=12, homogeneous=True)
-        nav.pack_start(self._navbtn("Diagnostics", lambda *_: self.stack.set_visible_child_name("diagnostics")), True, True, 0)
-        nav.pack_start(self._navbtn("Settings", lambda *_: self.stack.set_visible_child_name("settings")), True, True, 0)
+        nav.pack_start(self._navbtn("Diagnostics  F2", lambda *_: self.stack.set_visible_child_name("diagnostics")), True, True, 0)
+        nav.pack_start(self._navbtn("Settings  F3", lambda *_: self.stack.set_visible_child_name("settings")), True, True, 0)
         nav.pack_start(self._navbtn("Power", self._power_dialog), True, True, 0)
         page.pack_end(nav, False, False, 0)
         return page
 
-    def _tile(self, app):
+    def _tile(self, app, key=None):
         btn = Gtk.Button()
         btn.get_style_context().add_class("tile")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         code = Gtk.Label(label=app.get("code", ""), xalign=0)
         code.get_style_context().add_class("tile-code")
+        top = Gtk.Box()
+        top.pack_start(code, True, True, 0)
+        if key:
+            hint = Gtk.Label(label=str(key), yalign=0)
+            hint.get_style_context().add_class("key-hint")
+            top.pack_end(hint, False, False, 0)
         name = Gtk.Label(label=app.get("name", ""), xalign=0)
         name.get_style_context().add_class("tile-name")
         installed = shutil.which(app.get("command", "")) is not None
         detail = Gtk.Label(label=app.get("detail", "") if installed else "Not installed yet", xalign=0)
         detail.get_style_context().add_class("tile-detail")
-        box.pack_start(code, True, True, 0)
+        box.pack_start(top, True, True, 0)
         box.pack_start(name, False, False, 0)
         box.pack_start(detail, False, False, 0)
         btn.add(box)
@@ -266,7 +294,7 @@ class Launcher(Gtk.Window):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
 
         header = Gtk.Box(spacing=12)
-        header.pack_start(self._navbtn("‹ Home", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
         title = Gtk.Label(label="Station settings", xalign=0)
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
@@ -386,7 +414,7 @@ class Launcher(Gtk.Window):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
 
         header = Gtk.Box(spacing=12)
-        header.pack_start(self._navbtn("‹ Home", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
         title = Gtk.Label(label="Diagnostics", xalign=0)
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
