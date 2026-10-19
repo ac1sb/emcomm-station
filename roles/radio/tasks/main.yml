@@ -125,6 +125,19 @@
     state: started
     daemon_reload: true
 
+# The receive audio recorder reads the radio's audio through PipeWire's
+# PulseAudio side (parec), so other apps can use the sound card meanwhile.
+- name: Install the receive audio recorder
+  ansible.builtin.apt:
+    name: pulseaudio-utils
+    install_recommends: false
+
+- name: Install the recorder script
+  ansible.builtin.copy:
+    src: emcomm-recorder
+    dest: /usr/local/bin/emcomm-recorder
+    mode: "0755"
+
 - name: Apply the current settings (udev rules, rigctld arguments)
   ansible.builtin.command: /usr/local/sbin/emcomm-apply-settings
   changed_when: false

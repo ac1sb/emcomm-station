@@ -61,6 +61,12 @@ environment.
   assignment). Both are saved in `~/ICS forms` and open with a **Print** button;
   the print dialog can also save a PDF to a USB stick. Nets are kept in
   `~/.local/share/emcomm/nets`.
+- **Recorder** (on the Logs page): records the radio's receive audio to
+  `~/Recordings`, each file named with the UTC time, frequency and mode. **Record
+  when there's a signal** keeps only the parts with audio, so a frequency can be
+  monitored for hours; **Record everything** records continuously in hourly
+  files. The top bar shows "Recording" while it runs. Recordings play on
+  headphones or a speaker, never through the radio, so they can't key it by VOX.
 - **Reference** (F5): the US band plan with a which-band-when guide, emergency and
   calling frequencies (IARU emergency centres of activity, Hurricane Watch Net,
   SATERN, 60 m channels, simplex calling, APRS), and JS8Call and FT8 dial
