@@ -833,7 +833,7 @@ class Launcher(Gtk.Window):
 
     def _show_gps(self, gps):
         """Top bar: GPS grid when there's a fix; nothing when no GPS is plugged in."""
-        self.gps_grid = latlon_to_grid(gps[1], gps[2]) if gps else None
+        self.gps_grid = latlon_to_grid(gps[1], gps[2]) if isinstance(gps, tuple) else None
         if gps == "absent":
             self.gps_status.set_text("")
         elif self.gps_grid:
