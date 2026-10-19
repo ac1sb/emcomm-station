@@ -1,0 +1,18 @@
+---
+# Upstream releases installed outside Debian's archive. Bump the version and
+# checksum together.
+
+# Pat 1.0 (Debian 13 ships 0.15, which has no web configuration page).
+apps_pat_version: 1.0.0
+apps_pat_sha256: 3dec3c2f0802707e7789c6752e955f141365e14923cc5c6331ddb8af48663d32
+
+# ardopcf, the maintained ARDOP modem. Upstream publishes no checksums.
+apps_ardopcf_version: 1.0.4.1.3
+
+# winetricks lives in Debian's contrib section, which a default install doesn't
+# enable, so the script comes straight from the upstream release tag.
+apps_winetricks_version: "20260125"
+
+# Wine and the VARA installer helper. VARA itself is downloaded on the station
+# the first time its tile is tapped.
+apps_vara: true

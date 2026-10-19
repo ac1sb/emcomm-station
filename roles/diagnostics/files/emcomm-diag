@@ -46,11 +46,20 @@ show_audio() {
 
 show_services() {
   section "Services"
-  for svc in rigctld pat direwolf ardop; do
-    if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -q "^${svc}.service"; then
-      printf '%-10s %s\n' "$svc" "$(systemctl is-active "$svc" 2>/dev/null)"
+  printf '%-10s %s\n' rigctld "$(systemctl is-active rigctld 2>/dev/null)"
+  local name port
+  while read -r name port; do
+    if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+      printf '%-10s running (port %s)\n' "$name" "$port"
+    else
+      printf '%-10s not running\n' "$name"
     fi
-  done
+  done <<'EOF'
+Pat 8080
+VARA 8300
+ARDOP 8515
+Direwolf 8000
+EOF
 }
 
 show_rig() {

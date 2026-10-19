@@ -1,0 +1,103 @@
+---
+# Each app is tagged with its name so the launcher's Install button can install
+# just that one: emcomm-update --app NAME runs this role with --tags NAME.
+
+- name: Install app launch and setup scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: "0755"
+  loop:
+    - emcomm-start
+    - emcomm-app-setup
+    - emcomm-webview
+    - emcomm-install-vara
+  tags: [always]
+
+- name: Install JS8Call
+  ansible.builtin.apt:
+    name: js8call
+    install_recommends: false
+  tags: [js8call]
+
+- name: Install WSJT-X
+  ansible.builtin.apt:
+    name: wsjtx
+    install_recommends: false
+  tags: [wsjtx]
+
+- name: Install fldigi and flamp
+  ansible.builtin.apt:
+    name: [fldigi, flamp]
+    install_recommends: false
+  tags: [fldigi]
+
+- name: Install flmsg
+  ansible.builtin.apt:
+    name: flmsg
+    install_recommends: false
+  tags: [flmsg]
+
+- name: Install Direwolf
+  ansible.builtin.apt:
+    name: direwolf
+    install_recommends: false
+  tags: [packet]
+
+- name: Install Pat
+  tags: [pat]
+  block:
+    - name: Install the mailbox window's web view
+      ansible.builtin.apt:
+        name: gir1.2-webkit2-4.1
+        install_recommends: false
+
+    - name: Create the download cache
+      ansible.builtin.file:
+        path: /var/cache/emcomm
+        state: directory
+        mode: "0755"
+
+    - name: Download Pat
+      ansible.builtin.get_url:
+        url: "https://github.com/la5nta/pat/releases/download/v{{ apps_pat_version }}/pat_{{ apps_pat_version }}_linux_amd64.deb"
+        dest: "/var/cache/emcomm/pat_{{ apps_pat_version }}_linux_amd64.deb"
+        checksum: "sha256:{{ apps_pat_sha256 }}"
+        mode: "0644"
+
+    - name: Install Pat
+      ansible.builtin.apt:
+        deb: "/var/cache/emcomm/pat_{{ apps_pat_version }}_linux_amd64.deb"
+
+- name: Install ardopcf
+  ansible.builtin.get_url:
+    url: "https://github.com/pflarue/ardop/releases/download/{{ apps_ardopcf_version }}/ardopcf_amd64_Linux_64"
+    dest: /usr/local/bin/ardopcf
+    mode: "0755"
+  tags: [ardop]
+
+- name: Set up Wine for VARA
+  when: apps_vara | bool
+  tags: [vara]
+  block:
+    - name: Check for 32-bit package support
+      ansible.builtin.command: dpkg --print-foreign-architectures
+      register: apps_foreign_arch
+      changed_when: false
+
+    - name: Enable 32-bit packages (VARA is a 32-bit Windows program)
+      ansible.builtin.command: dpkg --add-architecture i386
+      when: "'i386' not in apps_foreign_arch.stdout_lines"
+      changed_when: true
+
+    - name: Install Wine
+      ansible.builtin.apt:
+        name: [wine, "wine32:i386", cabextract, unzip, udisks2]
+        update_cache: true
+        install_recommends: false
+
+    - name: Install winetricks
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/Winetricks/winetricks/{{ apps_winetricks_version }}/src/winetricks"
+        dest: /usr/local/bin/winetricks
+        mode: "0755"

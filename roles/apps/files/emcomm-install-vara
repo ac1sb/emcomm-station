@@ -1,0 +1,88 @@
+#!/bin/bash
+# Set up VARA HF or VARA FM under Wine for the station user.
+# Usage: emcomm-install-vara hf|fm
+#
+# Uses a VARA setup .zip or .exe from ~/Downloads or a USB stick if there is
+# one, otherwise downloads the current version from Winlink. The Wine prefix
+# (~/.wine-vara) is created the first time, with the Windows parts VARA needs.
+set -u
+
+case "${1:-}" in
+  hf) product="VARA HF"; exe='C:\VARA\VARA.exe' ;;
+  fm) product="VARA FM"; exe='C:\VARA FM\VARAFM.exe' ;;
+  *) echo "usage: $0 hf|fm" >&2; exit 2 ;;
+esac
+
+# From a launcher tile there's no terminal: show progress in one.
+if [ ! -t 1 ]; then
+  exec xterm -fa "IBM Plex Mono" -fs 12 -geometry 110x30 -T "Set up $product" -e "$0" "$@"
+fi
+
+export WINEPREFIX="$HOME/.wine-vara" WINEARCH=win32 WINEDEBUG=-all
+DOWNLOADS="https://downloads.winlink.org/VARA%20Products/"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+finish() {
+  echo
+  echo "$1"
+  read -r -p "Press Enter to close. " _
+  exit "${2:-0}"
+}
+
+find_installer() {
+  local dir f
+  for dir in "$HOME/Downloads" "$HOME" /media/"$USER"/* /run/media/"$USER"/*; do
+    [ -d "$dir" ] || continue
+    for f in "$dir/$product"*setup*.zip "$dir/$product"*setup*.exe; do
+      [ -f "$f" ] && { echo "$f"; return 0; }
+    done
+  done
+  return 1
+}
+
+mount_usb_sticks() {
+  local dev
+  for dev in /dev/disk/by-id/usb-*-part*; do
+    [ -e "$dev" ] && udisksctl mount --no-user-interaction -b "$(readlink -f "$dev")" >/dev/null 2>&1
+  done
+  return 0
+}
+
+echo "== Setting up $product =="
+installer=$(find_installer) || { mount_usb_sticks; installer=$(find_installer); } || installer=""
+
+if [ -z "$installer" ]; then
+  echo "No $product setup file in Downloads or on a USB stick; downloading it from Winlink."
+  name=$(curl -fsSL "$DOWNLOADS" | grep -o "$product v[0-9.]* setup\.zip" | sort -V | tail -n 1)
+  [ -n "$name" ] || finish "Couldn't download $product. Copy its setup .zip to a USB stick or ~/Downloads and tap the tile again." 1
+  echo "Downloading $name"
+  installer="$work/$name"
+  curl -fL --progress-bar -o "$installer" "$DOWNLOADS${name// /%20}" || finish "Download failed." 1
+fi
+echo "Using $installer"
+
+if [[ "$installer" == *.zip ]]; then
+  unzip -q -o "$installer" -d "$work/setup" || finish "Couldn't unpack $installer." 1
+  installer=$(find "$work/setup" -iname '*.exe' | head -n 1)
+  [ -n "$installer" ] || finish "No setup program inside the .zip." 1
+fi
+
+if [ ! -d "$WINEPREFIX" ]; then
+  echo
+  echo "== Preparing Wine (first time only; this takes a while) =="
+  wineboot -i
+  # vb6run: VARA is a Visual Basic 6 program. pdh_nt4: the older pdh.dll VARA's
+  # CPU meter needs. sound=alsa: talk to the sound card directly.
+  winetricks -q win7 sound=alsa vb6run pdh_nt4 || finish "Wine setup failed; see above." 1
+fi
+
+echo
+echo "== Installing $product =="
+echo "VARA shows an OK box when it's done; tap OK."
+wine "$installer" /SILENT
+if [ -e "$(winepath -u "$exe" 2>/dev/null)" ]; then
+  finish "$product is installed. In VARA, open Settings > SoundCard and pick the radio sound card. Leave PTT to Pat."
+else
+  finish "$product didn't install. Check the messages above." 1
+fi

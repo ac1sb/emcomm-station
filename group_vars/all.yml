@@ -12,14 +12,30 @@ station_radio: ft-891-digirig
 # Local account that auto-logs in and runs the kiosk.
 station_user: radio
 
-# Apps shown on the home screen. A tile is greyed out until its command is installed.
+# Apps shown on the home screen.
+#   command: the program that must be installed; until it is, the tile offers
+#            to install it (app: its tag in roles/apps).
+#   run:     what the tile starts.
+#   ready:   a file that must exist too, else the tile offers to set it up (VARA).
 launcher_apps:
-  - { code: JS8, name: JS8Call, detail: HF messaging, command: js8call }
-  - { code: WL, name: Winlink mail, detail: Pat, command: emcomm-pat-ui }
-  - { code: VHF, name: VARA HF, detail: Winlink modem, command: emcomm-vara-hf }
-  - { code: VFM, name: VARA FM, detail: VHF/UHF modem, command: emcomm-vara-fm }
-  - { code: "213", name: Forms, detail: flmsg · ICS-213, command: flmsg }
-  - { code: FLD, name: fldigi, detail: Digital modes · flamp, command: fldigi }
-  - { code: PKT, name: Packet, detail: Direwolf · AX.25, command: emcomm-packet }
-  - { code: ARD, name: ARDOP, detail: Open HF modem, command: emcomm-ardop }
-  - { code: FT8, name: WSJT-X, detail: FT8 · band check, command: wsjtx }
+  - { code: JS8, name: JS8Call, detail: HF messaging, command: js8call, app: js8call, run: [emcomm-start, js8call] }
+  - { code: WL, name: Winlink mail, detail: Pat, command: pat, app: pat, run: [emcomm-start, pat] }
+  - code: VHF
+    name: VARA HF
+    detail: Winlink modem
+    command: wine
+    app: vara
+    ready: ~/.wine-vara/drive_c/VARA/VARA.exe
+    run: [emcomm-start, vara-hf]
+  - code: VFM
+    name: VARA FM
+    detail: VHF/UHF modem
+    command: wine
+    app: vara
+    ready: ~/.wine-vara/drive_c/VARA FM/VARAFM.exe
+    run: [emcomm-start, vara-fm]
+  - { code: "213", name: Forms, detail: flmsg · ICS-213, command: flmsg, app: flmsg, run: [emcomm-start, flmsg] }
+  - { code: FLD, name: fldigi, detail: Digital modes · flamp, command: fldigi, app: fldigi, run: [emcomm-start, fldigi] }
+  - { code: PKT, name: Packet, detail: Direwolf · AX.25, command: direwolf, app: packet, run: [emcomm-start, packet] }
+  - { code: ARD, name: ARDOP, detail: Open HF modem, command: ardopcf, app: ardop, run: [emcomm-start, ardop] }
+  - { code: FT8, name: WSJT-X, detail: FT8 · band check, command: wsjtx, app: wsjtx, run: [emcomm-start, wsjtx] }
