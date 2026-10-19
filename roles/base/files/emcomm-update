@@ -40,7 +40,8 @@ cd "$dir"
 
 if [ -z "$app" ]; then
   echo "== Downloading updates =="
-  if [ -d .git ] && git pull --ff-only; then
+  # Never stop to ask for a GitHub login: there's no one to type it.
+  if [ -d .git ] && GIT_TERMINAL_PROMPT=0 git pull --ff-only; then
     :
   else
     echo "Couldn't download updates (no internet?). Rebuilding from the copy on this station."
