@@ -1,0 +1,14 @@
+# Managed by the emcomm-station playbook.
+# NOAA Weather Radio alerts from an RTL-SDR dongle; set up on the launcher's Online page.
+[Unit]
+Description=NOAA Weather Radio alerts (RTL-SDR)
+After=network.target
+
+[Service]
+User={{ station_user }}
+ExecStart=/usr/local/bin/emcomm-nwr
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
