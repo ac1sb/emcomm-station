@@ -56,7 +56,36 @@ environment.
   gateway (blue HF, green VHF/UHF; tap one for its dial frequencies, modes and
   hours) and stations heard on JS8Call and WSJT-X with their grids. The gateway
   list is Pat's: it works offline from the copy built into Pat, and is refreshed
-  when it's over a week old and the station is online.
+  when it's over a week old and the station is online. It also shows what the
+  Online page last saved: stations that heard you (purple, with a line to each)
+  and the nearest 300 repeaters.
+- **Online** (F7): data from internet services, saved so the last answer still
+  shows offline. Each section says when it was last updated.
+  - **Weather alerts** for your grid from the National Weather Service (US only),
+    most severe first; **Details** shows the full text. Alerts in force also show in
+    the top bar; tap there to read them. Checked every ten minutes when online.
+  - **Propagation:** solar flux, K index and the NOAA R/S/G scales from NOAA's Space
+    Weather Prediction Center, and day/night HF band conditions from N0NBH
+    (hamqsl.com), with a line on what the numbers mean.
+  - **Who heard me:** stations that reported your signal to PSKReporter in the last
+    six hours, with distance, band, mode and SNR. Transmit FT8, JS8 or another
+    digital mode first; reports come from stations that are online.
+  - **Repeaters** near you from RepeaterBook, nearest first, filtered by band.
+    **Tune** sets frequency, FM, offset and tone (for radios that cover the band);
+    **Save** adds it to My frequencies.
+  - **Callsign lookup:** name, address, grid, distance and licence from QRZ (or
+    HamQTH if there's no QRZ login), plus the last APRS position from aprs.fi.
+    Callsigns looked up before still show offline.
+  - **Accounts:** a contact email (sent to NOAA, PSKReporter and RepeaterBook so they
+    know who's asking), QRZ and HamQTH logins, the aprs.fi API key, the RepeaterBook
+    token and your state or country. They're saved in
+    `~/.config/emcomm/accounts.json`, readable only by the station user. Alerts,
+    propagation and PSKReporter need no account. QRZ gives full records only to
+    XML Logbook Data subscribers. For RepeaterBook, request API access at
+    <https://www.repeaterbook.com/api/token_request.php> (see below).
+- **Browser** (tile): Chromium, with a Ham radio bookmarks bar (World Radio League,
+  QRZ, PSKReporter, aprs.fi, RepeaterBook, NWS, space weather, Winlink, WebSDR,
+  LoTW). The list is `apps_browser_bookmarks` in `roles/apps/defaults/main.yml`.
 - **Wi-Fi** (F6, the **Wi-Fi** button in Settings, or tap the network status at the
   top): lists nearby networks by signal strength; tap **Connect** and type the
   password. The station remembers networks it has joined. If the Debian installer
@@ -83,6 +112,12 @@ environment.
 ![Map](docs/map.png)
 
 ![Nearest Winlink gateways](docs/gateways.png)
+
+![Online: weather alerts](docs/online-alerts.png)
+
+![Online: repeaters](docs/online-repeaters.png)
+
+![Online: propagation](docs/online-propagation.png)
 
 ## Using the apps
 
@@ -114,6 +149,27 @@ environment.
 
 Running more than one sound-card app at a time doesn't work: close one before
 opening the next.
+
+### Getting a RepeaterBook token
+
+RepeaterBook's API needs approval, which is free for non-commercial use but up to
+RepeaterBook.
+
+1. Sign in at <https://www.repeaterbook.com> (a free account).
+2. Fill in the request form at <https://www.repeaterbook.com/api/token_request.php>.
+   Say it's a non-commercial, single-user station (not a server or a distributed
+   app), and give:
+   - **App name:** Emcomm-CNC
+   - **User-Agent:** `Emcomm-CNC/1.0 (+https://github.com/ac1sb/emcomm-station; you@example.org)`,
+     with the email you put under Online > Accounts. The station sends exactly
+     this, and RepeaterBook may refuse requests whose User-Agent doesn't match.
+   - **What it does:** downloads my state's repeater list about once a week, kept
+     on this station so it works offline during emergencies; not shared or
+     redistributed.
+3. Once approved, the token is on <https://www.repeaterbook.com/user/api_apps.php>.
+   It's shown only once, so copy it then.
+4. On the station, open Online > Accounts, paste it as the RepeaterBook token, pick
+   your state, and save. The Repeaters section downloads the list.
 
 ## Install
 

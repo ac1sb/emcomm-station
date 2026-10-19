@@ -127,6 +127,33 @@
       when: apps_natural_earth is changed or not apps_basemap.stat.exists
       changed_when: true
 
+- name: Install the web browser
+  tags: [browser]
+  block:
+    - name: Install Chromium
+      ansible.builtin.apt:
+        name: chromium
+        install_recommends: false
+
+    - name: Create Chromium's policy folder
+      ansible.builtin.file:
+        path: /etc/chromium/policies/managed
+        state: directory
+        mode: "0755"
+
+    - name: Add the ham radio bookmarks and turn off first-run prompts
+      ansible.builtin.copy:
+        content: "{{ apps_browser_policy | to_nice_json }}\n"
+        dest: /etc/chromium/policies/managed/emcomm.json
+        mode: "0644"
+      vars:
+        apps_browser_policy:
+          BookmarkBarEnabled: true
+          ManagedBookmarks: "{{ [{'toplevel_name': 'Ham radio'}] + apps_browser_bookmarks }}"
+          DefaultBrowserSettingEnabled: false
+          MetricsReportingEnabled: false
+          PromotionsEnabled: false
+
 - name: Install Pat
   tags: [pat]
   block:

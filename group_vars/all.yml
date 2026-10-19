@@ -46,4 +46,5 @@ launcher_apps:
   - { code: MSH, icon: meshtastic, name: Meshtastic, detail: Mesh text over LoRa, command: contact, app: meshtastic, run: [emcomm-start, meshtastic] }
   - { code: MCR, icon: meshcore, name: MeshCore, detail: Mesh text over LoRa, command: meshcore-cli, app: meshcore, run: [emcomm-start, meshcore] }
   - { code: MAP, icon: map, name: Map, detail: Gateways · stations heard, command: emcomm-map, app: map, run: [emcomm-map] }
+  - { code: WEB, icon: browser, name: Browser, detail: Chromium · ham bookmarks, command: chromium, app: browser, run: [chromium, --password-store=basic] }
   - { code: FT8, icon: wsjtx, name: WSJT-X, detail: FT8 · band check, command: wsjtx, app: wsjtx, run: [emcomm-start, wsjtx] }

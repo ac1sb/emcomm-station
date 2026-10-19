@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Open the station map: an offline base map with Maidenhead grid squares, this
-station, Winlink gateways from Pat's list, and stations heard on JS8Call and
-WSJT-X.
+station, Winlink gateways from Pat's list, stations heard on JS8Call and
+WSJT-X, and what the Online page last saved: stations PSKReporter says heard
+this one, and nearby repeaters from RepeaterBook.
 
   emcomm-map            build the map's data and open it
   emcomm-map --data     only write the data file and print its path
@@ -25,6 +26,8 @@ CACHE = os.path.join(HOME, ".cache/emcomm/map")
 RMSLIST = os.path.join(HOME, ".local/share/pat/rmslist.json")
 JS8_ALL = os.path.join(HOME, ".local/share/JS8Call/ALL.TXT")
 WSJTX_ALL = os.path.join(HOME, ".local/share/WSJT-X/ALL.TXT")
+ONLINE = os.environ.get("EMCOMM_ONLINE_CACHE", os.path.join(HOME, ".cache/emcomm/online"))
+MAX_REPEATERS = 300
 WEEK = 7 * 24 * 3600
 
 GRID = r"[A-R]{2}[0-9]{2}(?:[A-X]{2})?"
@@ -135,6 +138,34 @@ def read_heard(own_call=""):
     return out
 
 
+def read_online(name):
+    try:
+        with open(os.path.join(ONLINE, name + ".json"), encoding="utf-8") as f:
+            return json.load(f).get("data") or []
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def read_heard_me():
+    """Stations that reported hearing this one, from the Online page's PSKReporter check."""
+    out = []
+    for h in read_online("heard"):
+        pos = grid_to_latlon(h.get("grid", ""))
+        if pos:
+            out.append({"call": h.get("call", ""), "grid": h.get("grid", ""), "lat": pos[0], "lon": pos[1],
+                        "mode": h.get("mode", ""), "snr": h.get("snr"), "freq": h.get("freq"), "time": h.get("time")})
+    return out
+
+
+def read_repeaters(here):
+    """The nearest repeaters the Online page saved from RepeaterBook."""
+    reps = [r for r in read_online("repeaters") if r.get("lat") is not None and r.get("lon") is not None]
+    if here:
+        reps.sort(key=lambda r: (r["lat"] - here[0]) ** 2 + ((r["lon"] - here[1]) * 0.75) ** 2)
+    return [{k: r.get(k) for k in ("freq", "input", "tone", "call", "city", "lat", "lon", "modes", "nets")}
+            for r in reps[:MAX_REPEATERS]]
+
+
 def write_data():
     station = load_station()
     refresh_gateways()
@@ -146,6 +177,8 @@ def write_data():
         "gateways": gateways,
         "gatewaysUpdated": time.strftime("%Y-%m-%d", time.gmtime(updated)) if updated else None,
         "heard": read_heard(station.get("callsign", "")),
+        "heardMe": read_heard_me(),
+        "repeaters": read_repeaters(pos),
     }
     os.makedirs(CACHE, exist_ok=True)
     path = os.path.join(CACHE, "data.js")
