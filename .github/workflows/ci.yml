@@ -26,6 +26,7 @@ jobs:
         run: >-
           python -m py_compile roles/launcher/files/emcomm-launcher roles/radio/files/emcomm-apply-settings
           roles/apps/files/emcomm-app-setup roles/apps/files/emcomm-webview roles/radio/files/emcomm-audio-default
+          roles/apps/files/emcomm-map roles/apps/files/emcomm-map-prepare
       - name: Helper tests
         run: |
           python tests/test_apply_settings.py

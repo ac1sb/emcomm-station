@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Open the station map: an offline base map with Maidenhead grid squares, this
+station, Winlink gateways from Pat's list, and stations heard on JS8Call and
+WSJT-X.
+
+  emcomm-map            build the map's data and open it
+  emcomm-map --data     only write the data file and print its path
+
+Gateways come from Pat's saved list (~/.local/share/pat/rmslist.json). If there
+isn't one yet, Pat writes it, falling back to the copy built into Pat when the
+station is offline; a list older than a week is refreshed when online.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
+MAP_DIR = os.environ.get("EMCOMM_MAP", "/usr/share/emcomm/map")
+HOME = os.path.expanduser("~")
+CACHE = os.path.join(HOME, ".cache/emcomm/map")
+RMSLIST = os.path.join(HOME, ".local/share/pat/rmslist.json")
+JS8_ALL = os.path.join(HOME, ".local/share/JS8Call/ALL.TXT")
+WSJTX_ALL = os.path.join(HOME, ".local/share/WSJT-X/ALL.TXT")
+WEEK = 7 * 24 * 3600
+
+GRID = r"[A-R]{2}[0-9]{2}(?:[A-X]{2})?"
+CALL = r"[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z]"
+# JS8Call: "...  K1ABC: @HB HEARTBEAT FN42" or "K1ABC: @ALLCALL CQ CQ CQ FN42"
+JS8_RE = re.compile(rf"\b({CALL}):\s+.*\b(?:HEARTBEAT|CQ|GRID)\b\s+({GRID})\b")
+# WSJT-X: "251019_183000    14.074 Rx FT8    -12  0.3 1234 CQ K1ABC FN42"
+WSJTX_RE = re.compile(rf"^(\d{{6}}_\d{{6}})\s+([\d.]+)\s+Rx\s+(\S+)\s.*?\s({CALL})\s+({GRID})\s*$")
+
+
+def grid_to_latlon(grid):
+    """Centre of a Maidenhead square (4 or 6 characters), or None."""
+    grid = grid.strip()
+    if not re.fullmatch(r"[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?", grid):
+        return None
+    lon = (ord(grid[0].upper()) - 65) * 20 - 180 + int(grid[2]) * 2
+    lat = (ord(grid[1].upper()) - 65) * 10 - 90 + int(grid[3])
+    if len(grid) == 6:
+        lon += (ord(grid[4].lower()) - 97) * 5 / 60 + 2.5 / 60
+        lat += (ord(grid[5].lower()) - 97) * 2.5 / 60 + 1.25 / 60
+    else:
+        lon, lat = lon + 1, lat + 0.5
+    return round(lat, 4), round(lon, 4)
+
+
+def load_station():
+    try:
+        with open(STATION_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def refresh_gateways():
+    """Make sure Pat's gateway list exists; refresh it if it's old and we're online."""
+    try:
+        age = time.time() - os.path.getmtime(RMSLIST)
+    except OSError:
+        age = None
+    if age is not None and age < WEEK:
+        return
+    args = ["pat", "rmslist"] + (["--force-download"] if age is not None else [])
+    try:
+        subprocess.run(args, capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def dial(freq_hz, modes):
+    """Dial frequency for a gateway channel: HF modes sit 1.5 kHz above the dial."""
+    if "FM" in modes.upper() or "PACKET" in modes.upper():
+        return freq_hz
+    return freq_hz - 1500
+
+
+def read_gateways():
+    try:
+        with open(RMSLIST, encoding="utf-8") as f:
+            status = json.load(f)
+    except (OSError, ValueError):
+        return [], None
+    gateways = []
+    for gw in status.get("Gateways") or []:
+        lat, lon = gw.get("Latitude"), gw.get("Longitude")
+        channels = []
+        for ch in gw.get("GatewayChannels") or []:
+            freq = ch.get("Frequency") or 0
+            modes = ch.get("SupportedModes", "")
+            channels.append({"dial": dial(freq, modes), "modes": modes, "hours": ch.get("OperatingHours", ""),
+                             "grid": ch.get("Gridsquare", "")})
+            if (lat, lon) == (0, 0) or lat is None:
+                pos = grid_to_latlon(ch.get("Gridsquare", ""))
+                if pos:
+                    lat, lon = pos
+        if lat is None or not channels:
+            continue
+        gateways.append({"call": gw.get("Callsign", ""), "lat": round(lat, 4), "lon": round(lon, 4),
+                         "channels": channels})
+    return gateways, os.path.getmtime(RMSLIST)
+
+
+def tail_lines(path, count=5000):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.readlines()[-count:]
+    except OSError:
+        return []
+
+
+def read_heard(own_call=""):
+    """Latest grid heard from each station, from JS8Call and WSJT-X logs."""
+    heard = {}
+    for line in tail_lines(JS8_ALL):
+        m = JS8_RE.search(line.upper())
+        if m:
+            heard[m.group(1)] = {"grid": m.group(2), "via": "JS8Call", "when": line[:19].strip()}
+    for line in tail_lines(WSJTX_ALL):
+        m = WSJTX_RE.match(line.strip())
+        if m and m.group(5) != "RR73":
+            stamp = m.group(1)
+            when = f"20{stamp[:2]}-{stamp[2:4]}-{stamp[4:6]} {stamp[7:9]}:{stamp[9:11]}"
+            heard[m.group(4)] = {"grid": m.group(5), "via": f"{m.group(3)} {m.group(2)} MHz", "when": when}
+    out = []
+    for call, info in heard.items():
+        pos = grid_to_latlon(info["grid"])
+        if pos and call != own_call.upper():
+            out.append({"call": call, "lat": pos[0], "lon": pos[1], **info})
+    return out
+
+
+def write_data():
+    station = load_station()
+    refresh_gateways()
+    gateways, updated = read_gateways()
+    pos = grid_to_latlon(station.get("grid", ""))
+    data = {
+        "station": {"call": station.get("callsign", ""), "grid": station.get("grid", ""),
+                    "lat": pos[0] if pos else None, "lon": pos[1] if pos else None},
+        "gateways": gateways,
+        "gatewaysUpdated": time.strftime("%Y-%m-%d", time.gmtime(updated)) if updated else None,
+        "heard": read_heard(station.get("callsign", "")),
+    }
+    os.makedirs(CACHE, exist_ok=True)
+    path = os.path.join(CACHE, "data.js")
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        f.write("window.MAPDATA = " + json.dumps(data, separators=(",", ":")) + ";\n")
+    os.replace(path + ".tmp", path)
+    # The page itself lives next to the data, and loads the shared files by path.
+    with open(os.path.join(MAP_DIR, "index.html"), encoding="utf-8") as f:
+        page = f.read().replace("@MAP_DIR@", MAP_DIR)
+    with open(os.path.join(CACHE, "index.html"), "w", encoding="utf-8") as f:
+        f.write(page)
+    return os.path.join(CACHE, "index.html")
+
+
+def main(argv):
+    page = write_data()
+    if argv[:1] == ["--data"]:
+        print(page)
+        return 0
+    os.execvp("emcomm-webview", ["emcomm-webview", "file://" + page, "Station map"])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

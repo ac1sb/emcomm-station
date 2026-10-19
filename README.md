@@ -44,6 +44,12 @@ environment.
   frequencies** with a name and note, for local nets and repeaters. The lists are
   CSV files (`MHz,Mode,Name,Note`) in `/usr/share/emcomm/reference`; a file of the
   same name in `~/.local/share/emcomm/reference` replaces the standard one.
+- **Map** (tile): an offline map (countries, states, US counties, highways and towns
+  from Natural Earth) with Maidenhead grid squares, your station, every Winlink
+  gateway (blue HF, green VHF/UHF; tap one for its dial frequencies, modes and
+  hours) and stations heard on JS8Call and WSJT-X with their grids. The gateway
+  list is Pat's: it works offline from the copy built into Pat, and is refreshed
+  when it's over a week old and the station is online.
 - **Wi-Fi** (F6, the **Wi-Fi** button in Settings, or tap the network status at the
   top): lists nearby networks by signal strength; tap **Connect** and type the
   password. The station remembers networks it has joined. If the Debian installer
@@ -66,6 +72,8 @@ environment.
 ![Reference](docs/reference.png)
 
 ![Wi-Fi](docs/wifi.png)
+
+![Map](docs/map.png)
 
 ## Using the apps
 

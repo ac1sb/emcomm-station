@@ -604,8 +604,9 @@ class Launcher(Gtk.Window):
         grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
         self.tiles = []
         apps = self.config.get("apps", [])
-        # Three across fits nine tiles on a 600-pixel-high screen; more go four across.
-        columns = 3 if len(apps) <= 9 else 4
+        # Three rows fit a 600-pixel-high screen: three across for up to nine tiles,
+        # then wider rows.
+        columns = max(3, -(-len(apps) // 3))
         for i, app in enumerate(apps):
             tile = self._tile(app, i + 1 if i < 9 else None)
             self.tiles.append(tile)
@@ -634,9 +635,10 @@ class Launcher(Gtk.Window):
             hint = Gtk.Label(label=str(key), yalign=0)
             hint.get_style_context().add_class("key-hint")
             top.pack_end(hint, False, False, 0)
-        name = Gtk.Label(label=app.get("name", ""), xalign=0)
+        # Ellipsize, so five tiles across still fit a 1024-pixel screen.
+        name = Gtk.Label(label=app.get("name", ""), xalign=0, ellipsize=Pango.EllipsizeMode.END)
         name.get_style_context().add_class("tile-name")
-        detail = Gtk.Label(xalign=0)
+        detail = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         detail.get_style_context().add_class("tile-detail")
         box.pack_start(top, True, True, 0)
         box.pack_start(name, False, False, 0)
@@ -768,7 +770,7 @@ class Launcher(Gtk.Window):
         installable = bool(btn.app.get("app"))
         btn.detail.set_text({"ready": btn.app.get("detail", ""),
                              "setup": "Tap to set up",
-                             "missing": "Not installed · tap to install" if installable else "Not installed",
+                             "missing": "Tap to install" if installable else "Not installed",
                              }[btn.app_state])
         btn.set_sensitive(btn.app_state != "missing" or installable)
         ctx = btn.get_style_context()

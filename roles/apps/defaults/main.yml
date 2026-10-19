@@ -13,6 +13,17 @@ apps_ardopcf_version: 1.0.4.1.3
 apps_contact_version: 1.7.1
 apps_meshcore_cli_version: 1.6.6
 
+# Natural Earth (public domain) for the offline station map: countries, lakes,
+# state lines, US counties, North American highways and towns.
+apps_natural_earth_version: v5.1.2
+apps_natural_earth_files:
+  ne_50m_admin_0_countries: 3e458fc036ad0a66411f2c1e6cac49c5d7bfb81cb1123bc513b22511a2b7fdeb
+  ne_50m_lakes: d350b75978b26fe839b797c2c529b2fb8f47fb3983c03f4964e36d5df9378a52
+  ne_50m_admin_1_states_provinces_lines: 72cca93c850d412628a5da4bc5ebfe21ba4d376eb34611bde6b623ee73f0fdcf
+  ne_10m_admin_2_counties: 9a80308d80eef51a0c1ade49aeb9ca877957a346f880e177a85527ef6cfdd1bb
+  ne_10m_roads: 66a0c7b438e92fd124822cc5921cfa11042f48c294ade5e0f03f2c6640fd0248
+  ne_10m_populated_places_simple: fd3fa867a320cbd5c5b6bb5bc550afeec2939fb2cef688e508007282a55ac42f
+
 # winetricks lives in Debian's contrib section, which a default install doesn't
 # enable, so the script comes straight from the upstream release tag.
 apps_winetricks_version: "20260125"

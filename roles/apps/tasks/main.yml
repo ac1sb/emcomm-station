@@ -79,6 +79,54 @@
         state: link
       loop: "{{ apps_mesh_clients | dict2items }}"
 
+- name: Install the station map
+  tags: [map]
+  block:
+    - name: Install the map window's web view
+      ansible.builtin.apt:
+        name: [python3-gi, gir1.2-webkit2-4.1]
+        install_recommends: false
+
+    - name: Create the map folders
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: [/usr/share/emcomm/map, /var/cache/emcomm/natural-earth]
+
+    - name: Install the map page and Leaflet
+      ansible.builtin.copy:
+        src: map/
+        dest: /usr/share/emcomm/map/
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Download the Natural Earth map data
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/{{ apps_natural_earth_version }}/geojson/{{ item.key }}.geojson"
+        dest: "/var/cache/emcomm/natural-earth/{{ item.key }}.geojson"
+        checksum: "sha256:{{ item.value }}"
+        mode: "0644"
+      loop: "{{ apps_natural_earth_files | dict2items }}"
+      register: apps_natural_earth
+
+    - name: Install the map scripts
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        mode: "0755"
+      loop: [emcomm-map, emcomm-map-prepare]
+
+    - name: Check for the base map
+      ansible.builtin.stat:
+        path: /usr/share/emcomm/map/basemap.js
+      register: apps_basemap
+
+    - name: Build the offline base map
+      ansible.builtin.command: emcomm-map-prepare /var/cache/emcomm/natural-earth /usr/share/emcomm/map/basemap.js
+      when: apps_natural_earth is changed or not apps_basemap.stat.exists
+      changed_when: true
+
 - name: Install Pat
   tags: [pat]
   block:
