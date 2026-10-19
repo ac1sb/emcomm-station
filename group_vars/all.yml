@@ -42,4 +42,7 @@ launcher_apps:
   - { code: FLD, icon: fldigi, name: fldigi, detail: Digital modes · flamp, command: fldigi, app: fldigi, run: [emcomm-start, fldigi] }
   - { code: PKT, icon: packet, name: Packet, detail: Direwolf · AX.25, command: direwolf, app: packet, run: [emcomm-start, packet] }
   - { code: ARD, icon: ardop, name: ARDOP, detail: Open HF modem, command: ardopcf, app: ardop, run: [emcomm-start, ardop] }
+  - { code: APR, icon: aprs, name: APRS, detail: Xastir · map and messages, command: xastir, app: aprs, run: [emcomm-start, aprs] }
+  - { code: MSH, icon: meshtastic, name: Meshtastic, detail: Mesh text over LoRa, command: contact, app: meshtastic, run: [emcomm-start, meshtastic] }
+  - { code: MCR, icon: meshcore, name: MeshCore, detail: Mesh text over LoRa, command: meshcore-cli, app: meshcore, run: [emcomm-start, meshcore] }
   - { code: FT8, icon: wsjtx, name: WSJT-X, detail: FT8 · band check, command: wsjtx, app: wsjtx, run: [emcomm-start, wsjtx] }

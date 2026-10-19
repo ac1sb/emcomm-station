@@ -29,8 +29,9 @@ environment.
   icon" puts it back. **Light mode** / **Dark mode** in Settings switches the colours
   (light is easier to read in daylight); the choice is remembered.
 - **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, flmsg (ICS-213 forms), Pat for
-  Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf) and Direwolf for
-  packet. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
+  Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf), Direwolf for
+  packet, Xastir for APRS, and the Meshtastic (`contact`) and MeshCore
+  (`meshcore-cli`) clients for LoRa mesh radios. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
   once, in Settings. Callsign and grid are filled in for each app.
 - **Logs:** JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
   place, plus a box to note a voice or other contact. Notes get the UTC time,
@@ -63,6 +64,17 @@ environment.
 - **Audio:** whenever the radio's sound card is plugged in, the station makes it the
   default speaker and microphone, so apps left on their "default" sound device use
   the radio. (`emcomm-audio-default` does this; Diagnostics shows the current default.)
+- **APRS:** the APRS tile starts Direwolf (1200 baud, for 2 m APRS on 144.390 MHz
+  in North America) and opens Xastir with your callsign, and your position taken
+  from the centre of your grid square. Direwolf stops when Xastir closes. Xastir
+  only fills in its radio connection the first time, so changes you make in
+  Interface Control stick. For HF APRS at 300 baud, put your own Direwolf settings
+  in `~/.config/emcomm/direwolf.custom.conf`.
+- **Meshtastic and MeshCore:** plug the node in by USB and tap its tile. The tile
+  finds the node's USB port (skipping the radio's CAT and PTT ports) and asks which
+  one if more than one is plugged in. Meshtastic opens `contact`, a full-screen
+  text client for messages, nodes and settings; MeshCore opens `meshcore-cli`,
+  where `?` lists its commands.
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 
@@ -157,7 +169,8 @@ seconds (connect an antenna or dummy load first).
   computer, put it on a USB stick, plug it in and tap the tile.
 - **Winlink mail (Pat):** open it and, on Pat's configuration page, enter your
   Winlink password. Callsign, grid and rig control are already filled in.
-- **JS8Call, WSJT-X, Forms, Packet and ARDOP** are ready to use. fldigi needs its rig
+- **JS8Call, WSJT-X, Forms, Packet, ARDOP, APRS, Meshtastic and MeshCore** are
+  ready to use once installed from their tiles. fldigi needs its rig
   control pointed at `localhost:4532` once (see "Using the apps" above).
 
 ### Updating

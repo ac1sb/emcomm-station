@@ -455,10 +455,13 @@ class Launcher(Gtk.Window):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=20)
         grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
         self.tiles = []
-        for i, app in enumerate(self.config.get("apps", [])):
+        apps = self.config.get("apps", [])
+        # Three across fits nine tiles on a 600-pixel-high screen; more go four across.
+        columns = 3 if len(apps) <= 9 else 4
+        for i, app in enumerate(apps):
             tile = self._tile(app, i + 1 if i < 9 else None)
             self.tiles.append(tile)
-            grid.attach(tile, i % 3, i // 3, 1, 1)
+            grid.attach(tile, i % columns, i // columns, 1, 1)
         page.pack_start(grid, True, True, 0)
 
         nav = Gtk.Box(spacing=12, homogeneous=True)
