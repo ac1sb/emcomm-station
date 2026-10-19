@@ -15,6 +15,13 @@
     mode: "0644"
     directory_mode: "0755"
 
+- name: Install the Reference page's frequency lists and band plan
+  ansible.builtin.copy:
+    src: reference/
+    dest: /usr/share/emcomm/reference/
+    mode: "0644"
+    directory_mode: "0755"
+
 - name: Install the launcher
   ansible.builtin.copy:
     src: emcomm-launcher

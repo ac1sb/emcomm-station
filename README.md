@@ -23,7 +23,7 @@ environment.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
 - **Launcher:** the home screen above. Works by touch, mouse or keyboard: Tab moves
   between buttons, 1–9 open tiles, Esc/F1 goes Home, F2 Diagnostics, F3 Settings,
-  F4 Logs. A tile for an app that isn't installed says "tap to install". To use
+  F4 Logs, F5 Reference. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
   icon" puts it back. **Light mode** / **Dark mode** in Settings switches the colours
@@ -36,6 +36,14 @@ environment.
 - **Logs:** JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
   place, plus a box to note a voice or other contact. Notes get the UTC time,
   frequency and mode from the radio.
+- **Reference** (F5): the US band plan with a which-band-when guide, emergency and
+  calling frequencies (IARU emergency centres of activity, Hurricane Watch Net,
+  SATERN, 60 m channels, simplex calling, APRS), and JS8Call and FT8 dial
+  frequencies. **Tune** puts the radio on that frequency and mode. **Add
+  frequency** saves the radio's current frequency (or one you type) to **My
+  frequencies** with a name and note, for local nets and repeaters. The lists are
+  CSV files (`MHz,Mode,Name,Note`) in `/usr/share/emcomm/reference`; a file of the
+  same name in `~/.local/share/emcomm/reference` replaces the standard one.
 - **Update station** (in Settings): downloads the latest Emcomm-CNC and installs
   anything missing, with progress on screen. No terminal or password needed.
 - **Diagnostics:** USB devices with vendor:product IDs, radio ports, sound cards,
@@ -49,6 +57,8 @@ environment.
 ![Diagnostics](docs/diag.png)
 
 ![Logs](docs/logs.png)
+
+![Reference](docs/reference.png)
 
 ## Using the apps
 
