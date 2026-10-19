@@ -21,9 +21,18 @@ environment.
 - **Presets** (`radios/`): Yaesu FT-891 with a Digirig, and Yaesu FT-710. Optional
   shortcuts that fill in every radio field at once, even before the radio is plugged in.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
-- **Launcher:** the home screen above. Tiles stay greyed out until the app is installed.
-  Works by touch, mouse or keyboard: Tab moves between buttons, 1–9 open tiles,
-  Esc/F1 goes Home, F2 opens Diagnostics, F3 opens Settings.
+- **Launcher:** the home screen above. Works by touch, mouse or keyboard: Tab moves
+  between buttons, 1–9 open tiles, Esc/F1 goes Home, F2 Diagnostics, F3 Settings,
+  F4 Logs. A tile for an app that isn't installed says "tap to install".
+- **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, flmsg (ICS-213 forms), Pat for
+  Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf) and Direwolf for
+  packet. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
+  once, in Settings. Callsign and grid are filled in for each app.
+- **Logs:** JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
+  place, plus a box to note a voice or other contact. Notes get the UTC time,
+  frequency and mode from the radio.
+- **Update station** (in Settings): downloads the latest Emcomm-CNC and installs
+  anything missing, with progress on screen. No terminal or password needed.
 - **Diagnostics:** USB devices with vendor:product IDs, radio ports, sound cards,
   services, recent USB events, a read-frequency check and a 2-second PTT test.
   The same report is available over SSH with `emcomm-diag`.
@@ -32,8 +41,25 @@ environment.
 
 ![Diagnostics](docs/diag.png)
 
-The radio apps themselves (Pat, VARA, JS8Call, fldigi/flmsg, Direwolf, ARDOP, WSJT-X)
-come next.
+![Logs](docs/logs.png)
+
+## Using the apps
+
+- **Winlink over VARA:** tap VARA HF (or FM) first. The first tap sets up Wine and
+  downloads VARA from Winlink, or uses a VARA setup .zip from a USB stick or
+  `~/Downloads`. In VARA's Settings > SoundCard, pick the radio's sound card. Then
+  open Winlink mail (Pat), which keys the radio through `rigctld`. On first use, set
+  your Winlink password in Pat's configuration page.
+- **Winlink over ARDOP or packet:** start ARDOP or Packet from their tiles, then use
+  Pat as above.
+- **JS8Call and WSJT-X** start with your callsign, grid and rig control filled in
+  (radio "Hamlib NET rigctl", PTT by CAT). Pick the radio's sound card in their
+  audio settings once.
+- **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
+  device `localhost:4532`, and pick the sound card under Audio.
+
+Running more than one sound-card app at a time doesn't work: close one before
+opening the next.
 
 ## Install
 
@@ -54,8 +80,14 @@ come next.
    card, check the baud rate matches the radio's CAT RATE menu, and save.
 4. Plug in the radio and open Diagnostics to check the radio, sound card and PTT.
 
-Re-run the playbook any time to update the station. It only changes what's
-different and keeps the settings saved on the Settings screen.
+To update later, tap **Update station** in Settings, or re-run the playbook as root.
+Either way only what's different changes, and the settings saved on the Settings
+screen are kept.
+
+The station user (`radio`) has no password and can't use `sudo` or `apt` in the
+terminal. That's deliberate: installing apps and updating go through the launcher's
+buttons instead. For anything else, log in over SSH with the admin account you made
+when installing Debian.
 
 Ubuntu Server 24.04 should also work if your hardware needs newer drivers.
 

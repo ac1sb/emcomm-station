@@ -1,0 +1,51 @@
+#!/bin/bash
+# Start a radio app from a launcher tile, with its settings filled in from the
+# station settings first.
+# Usage: emcomm-start js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop
+set -u
+
+STATE="$HOME/.local/state/emcomm"
+mkdir -p "$STATE"
+TERM_OPTS=(-fa "IBM Plex Mono" -fs 12 -geometry 110x30)
+export WINEPREFIX="$HOME/.wine-vara" WINEARCH=win32 WINEDEBUG=-all
+
+listening() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+case "${1:-}" in
+  js8call|wsjtx)
+    emcomm-app-setup "$1" >/dev/null
+    exec "$1"
+    ;;
+  fldigi|flmsg)
+    exec "$1"
+    ;;
+  pat)
+    # Pat runs as a small web server; the mailbox opens in its own window.
+    if ! listening 8080; then
+      emcomm-app-setup pat >/dev/null
+      setsid pat http >"$STATE/pat.log" 2>&1 &
+      for _ in $(seq 20); do listening 8080 && break; sleep 0.5; done
+    fi
+    exec emcomm-webview "http://localhost:8080/" "Winlink mail (Pat)"
+    ;;
+  vara-hf|vara-fm)
+    if [ "$1" = vara-hf ]; then exe='C:\VARA\VARA.exe'; else exe='C:\VARA FM\VARAFM.exe'; fi
+    if [ ! -e "$(winepath -u "$exe" 2>/dev/null)" ]; then
+      exec emcomm-install-vara "${1#vara-}"
+    fi
+    exec wine "$exe"
+    ;;
+  packet)
+    conf=$(emcomm-app-setup direwolf)
+    exec xterm "${TERM_OPTS[@]}" -T "Packet (Direwolf)" -e direwolf -c "$conf"
+    ;;
+  ardop)
+    # Pat keys the radio through rigctld, so ardopcf only needs the sound card.
+    exec xterm "${TERM_OPTS[@]}" -T "ARDOP modem" -e ardopcf --logdir "$STATE" \
+      8515 plughw:CARD=rigaudio,DEV=0 plughw:CARD=rigaudio,DEV=0
+    ;;
+  *)
+    echo "usage: $0 js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop" >&2
+    exit 2
+    ;;
+esac

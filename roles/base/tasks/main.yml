@@ -11,6 +11,7 @@
       - pipewire-alsa
       - wireplumber
       - curl
+      - git
       - ca-certificates
     install_recommends: false
     update_cache: true
@@ -34,3 +35,23 @@
     path: /etc/emcomm
     state: directory
     mode: "0755"
+
+- name: Remember where this playbook lives, for Update station
+  ansible.builtin.copy:
+    content: "{{ playbook_dir }}\n"
+    dest: /etc/emcomm/playbook-dir
+    mode: "0644"
+
+- name: Install the update helper
+  ansible.builtin.copy:
+    src: emcomm-update
+    dest: /usr/local/sbin/emcomm-update
+    mode: "0755"
+
+- name: Let the station user install apps and updates from the launcher
+  ansible.builtin.copy:
+    content: |
+      {{ station_user }} ALL=(root) NOPASSWD: /usr/local/sbin/emcomm-update
+    dest: /etc/sudoers.d/emcomm-update
+    mode: "0440"
+    validate: visudo -cf %s

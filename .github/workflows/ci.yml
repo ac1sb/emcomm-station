@@ -19,8 +19,14 @@ jobs:
       - name: Ansible lint
         run: ansible-lint
       - name: Shell scripts
-        run: shellcheck roles/diagnostics/files/emcomm-diag roles/diagnostics/files/emcomm-ptt-test
+        run: >-
+          shellcheck roles/diagnostics/files/emcomm-diag roles/diagnostics/files/emcomm-ptt-test
+          roles/base/files/emcomm-update roles/apps/files/emcomm-start roles/apps/files/emcomm-install-vara
       - name: Python compiles
-        run: python -m py_compile roles/launcher/files/emcomm-launcher roles/radio/files/emcomm-apply-settings
-      - name: Settings helper tests
-        run: python tests/test_apply_settings.py
+        run: >-
+          python -m py_compile roles/launcher/files/emcomm-launcher roles/radio/files/emcomm-apply-settings
+          roles/apps/files/emcomm-app-setup roles/apps/files/emcomm-webview
+      - name: Helper tests
+        run: |
+          python tests/test_apply_settings.py
+          python tests/test_app_setup.py

@@ -1,0 +1,48 @@
+#!/bin/bash
+# Rebuild the station from its playbook, as root. The launcher runs this
+# through sudo (see /etc/sudoers.d/emcomm-update), so the kiosk user can
+# install apps and updates without a password or a root shell.
+#
+#   emcomm-update             download the latest playbook, then rebuild
+#   emcomm-update --app NAME  install one app (a tag in roles/apps)
+set -euo pipefail
+
+APPS="js8call wsjtx fldigi flmsg pat ardop packet vara"
+SOURCE_FILE=/etc/emcomm/playbook-dir
+
+usage() { echo "usage: $0 [--app ${APPS// /|}]" >&2; exit 2; }
+
+app=""
+case "${1:-}" in
+  "") ;;
+  --app)
+    app="${2:-}"
+    [[ " $APPS " == *" $app "* ]] || usage
+    ;;
+  *) usage ;;
+esac
+
+dir=$(cat "$SOURCE_FILE")
+# Only run a playbook that only root can change.
+if [ ! -f "$dir/site.yml" ] || [ "$(stat -c %u "$dir")" != 0 ] || [ -n "$(find "$dir" -maxdepth 0 -perm /022)" ]; then
+  echo "The station's playbook at $dir is missing or not owned by root." >&2
+  exit 1
+fi
+cd "$dir"
+
+if [ -z "$app" ]; then
+  echo "== Downloading updates =="
+  if [ -d .git ] && git pull --ff-only; then
+    :
+  else
+    echo "Couldn't download updates (no internet?). Rebuilding from the copy on this station."
+  fi
+  echo
+  echo "== Rebuilding the station =="
+  ansible-playbook site.yml
+else
+  echo "== Installing $app =="
+  ansible-playbook site.yml --tags "$app"
+fi
+echo
+echo "Done."

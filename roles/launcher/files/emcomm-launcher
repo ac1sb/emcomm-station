@@ -28,6 +28,7 @@ STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 PRESETS_DIR = os.environ.get("EMCOMM_PRESETS", "/usr/share/emcomm/radios")
 FAKE_DEVICES = os.environ.get("EMCOMM_FAKE_DEVICES")  # JSON file of devices, for testing without hardware
 APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply-settings").split()
+UPDATE_CMD = os.environ.get("EMCOMM_UPDATE", "sudo -n /usr/local/sbin/emcomm-update").split()
 RIGCTLD = ("127.0.0.1", 4532)
 BAUD_RATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
 PTT_CHOICES = [("CAT", "CAT command"), ("RTS", "RTS line (Digirig)"), ("DTR", "DTR line"), ("NONE", "VOX / none")]
@@ -45,7 +46,7 @@ window, .page { background: #101214; color: #E8E6E1; font-family: 'IBM Plex Sans
 .tile:hover { background: #22262B; }
 .tile:focus, .navbtn:focus { border: 2px solid #F2A33A; outline: none; }
 .key-hint { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #9AA0A6; }
-.tile:disabled { opacity: 0.45; }
+.tile:disabled, .tile.not-ready { opacity: 0.5; }
 .tile-code { font-family: 'IBM Plex Mono', monospace; font-size: 28px; font-weight: 600; color: #F2A33A; }
 .tile-name { font-size: 18px; font-weight: 600; color: #E8E6E1; }
 .tile-detail { font-size: 13px; color: #9AA0A6; }
@@ -187,6 +188,66 @@ def run_detached(argv):
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+# ---- logs ------------------------------------------------------------------
+
+NOTES_PATH = os.path.expanduser("~/.local/share/emcomm/contacts.log")
+PAT_MAILBOX = os.path.expanduser("~/.local/share/pat/mailbox")
+# (id, label, file). Pat's mailbox is a folder of messages, summarised by pat_mail_summary.
+LOG_SOURCES = [
+    ("notes", "Contact notes", NOTES_PATH),
+    ("js8-directed", "JS8Call messages", "~/.local/share/JS8Call/DIRECTED.TXT"),
+    ("js8-all", "JS8Call all activity", "~/.local/share/JS8Call/ALL.TXT"),
+    ("wsjtx", "WSJT-X contacts", "~/.local/share/WSJT-X/wsjtx.log"),
+    ("pat", "Winlink mail", None),
+]
+
+
+def tail_file(path, lines=400):
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as f:
+            return "".join(f.readlines()[-lines:]) or "(empty)\n"
+    except FileNotFoundError:
+        return "Nothing logged yet.\n"
+    except OSError as exc:
+        return f"Can't read {path}: {exc}\n"
+
+
+def b2f_headers(path):
+    """The header block of a Winlink (B2F) message: everything before the first blank line."""
+    headers = {}
+    with open(path, "rb") as f:
+        for raw in f:
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if not line:
+                break
+            key, _, value = line.partition(":")
+            headers.setdefault(key.strip(), value.strip())
+    return headers
+
+
+def pat_mail_summary(callsign, limit=200):
+    rows = []
+    for folder in ("in", "out", "sent", "archive"):
+        for path in glob.glob(os.path.join(PAT_MAILBOX, callsign, folder, "*.b2f")):
+            try:
+                h = b2f_headers(path)
+            except OSError:
+                continue
+            rows.append((h.get("Date", ""), folder, h.get("From", ""), h.get("To", ""), h.get("Subject", "")))
+    if not rows:
+        return "No Winlink messages yet.\n"
+    rows.sort(reverse=True)
+    lines = [f"{'Date (UTC)':<17} {'Box':<8} {'From':<12} {'To':<12} Subject"]
+    lines += [f"{d:<17} {box:<8} {frm[:12]:<12} {to[:12]:<12} {subj}" for d, box, frm, to, subj in rows[:limit]]
+    return "\n".join(lines) + "\n"
+
+
+def note_line(call, note, freq=None, mode=None, when=None):
+    when = when or time.gmtime()
+    return (f"{time.strftime('%Y-%m-%d %H:%MZ', when)}  {freq or '-':>12}  {mode or '-':<6}  "
+            f"{call.upper() or '-':<10}  {' '.join(note.split())}\n")
+
+
 class Launcher(Gtk.Window):
     def __init__(self, config):
         super().__init__(title="Emcomm-CNC")
@@ -207,6 +268,7 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._home_page(), "home")
         self.stack.add_named(self._diag_page(), "diagnostics")
         self.stack.add_named(self._settings_page(), "settings")
+        self.stack.add_named(self._logs_page(), "logs")
         root.pack_start(self.stack, True, True, 0)
 
         self._tick_clock()
@@ -218,9 +280,9 @@ class Launcher(Gtk.Window):
     # ---- keyboard ------------------------------------------------------
 
     def _on_key(self, _widget, event):
-        """Esc/F1 Home, F2 Diagnostics, F3 Settings, 1-9 open a tile on Home."""
+        """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, 1-9 open a tile on Home."""
         pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home",
-                 Gdk.KEY_F2: "diagnostics", Gdk.KEY_F3: "settings"}
+                 Gdk.KEY_F2: "diagnostics", Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs"}
         if event.keyval in pages:
             self.stack.set_visible_child_name(pages[event.keyval])
             return True
@@ -277,6 +339,7 @@ class Launcher(Gtk.Window):
             self.rig_status.set_markup("<span foreground='#9AA0A6'>○</span>  Rig not connected")
         dot = "<span foreground='#4FC3B8'>●</span>" if audio else "<span foreground='#9AA0A6'>○</span>"
         self.audio_status.set_markup(f"{dot}  Radio audio")
+        self._refresh_tiles()
         return False
 
     # ---- home ----------------------------------------------------------
@@ -294,6 +357,7 @@ class Launcher(Gtk.Window):
         nav = Gtk.Box(spacing=12, homogeneous=True)
         nav.pack_start(self._navbtn("Diagnostics  F2", lambda *_: self.stack.set_visible_child_name("diagnostics")), True, True, 0)
         nav.pack_start(self._navbtn("Settings  F3", lambda *_: self.stack.set_visible_child_name("settings")), True, True, 0)
+        nav.pack_start(self._navbtn("Logs  F4", lambda *_: self.stack.set_visible_child_name("logs")), True, True, 0)
         nav.pack_start(self._navbtn("Power", self._power_dialog), True, True, 0)
         page.pack_end(nav, False, False, 0)
         return page
@@ -312,16 +376,78 @@ class Launcher(Gtk.Window):
             top.pack_end(hint, False, False, 0)
         name = Gtk.Label(label=app.get("name", ""), xalign=0)
         name.get_style_context().add_class("tile-name")
-        installed = shutil.which(app.get("command", "")) is not None
-        detail = Gtk.Label(label=app.get("detail", "") if installed else "Not installed yet", xalign=0)
+        detail = Gtk.Label(xalign=0)
         detail.get_style_context().add_class("tile-detail")
         box.pack_start(top, True, True, 0)
         box.pack_start(name, False, False, 0)
         box.pack_start(detail, False, False, 0)
         btn.add(box)
-        btn.set_sensitive(installed)
-        btn.connect("clicked", lambda *_: run_detached([app["command"]]))
+        btn.app, btn.detail = app, detail
+        btn.connect("clicked", self._tile_clicked)
+        self._update_tile(btn)
         return btn
+
+    @staticmethod
+    def _app_state(app):
+        """'ready', 'setup' (installed, needs first-time setup) or 'missing'."""
+        if shutil.which(app.get("command", "")) is None:
+            return "missing"
+        ready = app.get("ready")
+        if ready and not os.path.exists(os.path.expanduser(ready)):
+            return "setup"
+        return "ready"
+
+    def _update_tile(self, btn):
+        btn.app_state = self._app_state(btn.app)
+        installable = bool(btn.app.get("app"))
+        btn.detail.set_text({"ready": btn.app.get("detail", ""),
+                             "setup": "Tap to set up",
+                             "missing": "Not installed · tap to install" if installable else "Not installed",
+                             }[btn.app_state])
+        btn.set_sensitive(btn.app_state != "missing" or installable)
+        ctx = btn.get_style_context()
+        if btn.app_state == "ready":
+            ctx.remove_class("not-ready")
+        else:
+            ctx.add_class("not-ready")
+
+    def _refresh_tiles(self):
+        for btn in self.tiles:
+            self._update_tile(btn)
+
+    def _tile_clicked(self, btn):
+        app = btn.app
+        if btn.app_state != "missing":
+            run_detached(app.get("run") or [app["command"]])
+            return
+        if self._confirm(f"Install {app['name']}?",
+                         "It's downloaded from the internet, which takes a few minutes."):
+            self._run_in_terminal(f"Installing {app['name']}", UPDATE_CMD + ["--app", app["app"]],
+                                  self._refresh_tiles)
+
+    def _confirm(self, text, secondary):
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                   buttons=Gtk.ButtonsType.OK_CANCEL, text=text)
+        dialog.format_secondary_text(secondary)
+        response = dialog.run()
+        dialog.destroy()
+        return response == Gtk.ResponseType.OK
+
+    def _run_in_terminal(self, title, argv, on_done=None):
+        """Show argv's progress in a terminal window; call on_done once it's closed."""
+        script = '"$@"; echo; read -r -p "Press Enter to close. " _'
+        proc = subprocess.Popen(["xterm", "-fa", "IBM Plex Mono", "-fs", "12", "-geometry", "110x30",
+                                 "-T", title, "-e", "bash", "-c", script, "emcomm"] + argv,
+                                start_new_session=True)
+        if on_done:
+            GLib.child_watch_add(GLib.PRIORITY_DEFAULT, proc.pid, lambda *_: on_done())
+
+    def _update_station(self, *_):
+        if self._confirm("Update the station?",
+                         "Downloads the latest Emcomm-CNC and installs any missing apps. Settings are kept. "
+                         "The home screen restarts when it's done."):
+            # The kiosk's autostart loop starts the new launcher after this one quits.
+            self._run_in_terminal("Updating the station", UPDATE_CMD, Gtk.main_quit)
 
     def _navbtn(self, label, handler, extra_class=None):
         btn = Gtk.Button(label=label)
@@ -370,6 +496,7 @@ class Launcher(Gtk.Window):
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
         header.pack_end(self._navbtn("Rescan devices", lambda *_: self._rescan_devices()), False, False, 0)
+        header.pack_end(self._navbtn("Update station", self._update_station), False, False, 0)
         page.pack_start(header, False, False, 0)
 
         cols = Gtk.Box(spacing=16)
@@ -581,6 +708,70 @@ class Launcher(Gtk.Window):
         self.settings_message.set_text(text)
 
     # ---- diagnostics ---------------------------------------------------
+
+    # ---- logs ----------------------------------------------------------
+
+    def _logs_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
+        title = Gtk.Label(label="Logs", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        self.log_combo = Gtk.ComboBoxText()
+        for source_id, label, _path in LOG_SOURCES:
+            self.log_combo.append(source_id, label)
+        self.log_combo.set_active_id("notes")
+        self.log_combo.connect("changed", lambda *_: self._show_log())
+        header.pack_start(self.log_combo, False, False, 0)
+        header.pack_end(self._navbtn("Refresh", lambda *_: self._show_log()), False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        self.log_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                     left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.CHAR)
+        self.log_scroller = Gtk.ScrolledWindow()
+        self.log_scroller.add(self.log_view)
+        page.pack_start(self.log_scroller, True, True, 0)
+
+        note_box = self._section("Note a contact (time and frequency are filled in)")
+        row = Gtk.Box(spacing=12)
+        self.note_call = Gtk.Entry(max_length=12, placeholder_text="Callsign", width_chars=10)
+        self.note_text = Gtk.Entry(max_length=200, placeholder_text="Note: traffic passed, signal report, net…")
+        self.note_text.connect("activate", self._add_note)
+        row.pack_start(self.note_call, False, False, 0)
+        row.pack_start(self.note_text, True, True, 0)
+        row.pack_start(self._navbtn("Add note", self._add_note, "primary"), False, False, 0)
+        note_box.pack_start(row, False, False, 0)
+        page.pack_end(note_box, False, False, 0)
+
+        page.connect("map", lambda *_: self._show_log())
+        return page
+
+    def _show_log(self):
+        source = self.log_combo.get_active_id()
+        if source == "pat":
+            text = pat_mail_summary(self.station.get("callsign", ""))
+        else:
+            text = tail_file(next(path for sid, _l, path in LOG_SOURCES if sid == source))
+        buf = self.log_view.get_buffer()
+        buf.set_text(text)
+        # Newest entries are at the bottom; scroll there once the view has laid out.
+        GLib.idle_add(lambda: self.log_view.scroll_to_iter(buf.get_end_iter(), 0, False, 0, 1) and False)
+
+    def _add_note(self, *_):
+        call, note = self.note_call.get_text().strip(), self.note_text.get_text().strip()
+        if not (call or note):
+            return
+        freq = format_freq(rigctld_query(*RIGCTLD, "f"))
+        mode = rigctld_query(*RIGCTLD, "m")
+        os.makedirs(os.path.dirname(NOTES_PATH), exist_ok=True)
+        with open(NOTES_PATH, "a", encoding="utf-8") as f:
+            f.write(note_line(call, note, freq, mode))
+        self.note_call.set_text("")
+        self.note_text.set_text("")
+        self.log_combo.set_active_id("notes")
+        self._show_log()
 
     def _diag_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)

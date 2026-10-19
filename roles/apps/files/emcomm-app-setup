@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Fill in an app's settings from the station settings before it starts.
+
+  emcomm-app-setup pat       callsign, grid and rig control in Pat's config
+  emcomm-app-setup direwolf  write the Direwolf config and print its path
+  emcomm-app-setup js8call   first run only: callsign, grid and rig control
+  emcomm-app-setup wsjtx     first run only: callsign, grid and rig control
+
+Every app reaches the radio through rigctld on 127.0.0.1:4532, which already
+handles PTT the way Settings says, so each app is told to key the radio by CAT
+through it. Callsign and grid follow Settings every time for Pat and Direwolf;
+JS8Call and WSJT-X keep their own settings once they exist, so changes made in
+those apps stick.
+"""
+
+import json
+import os
+import sys
+
+STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
+HOME = os.path.expanduser("~")
+RIGCTLD = "127.0.0.1:4532"
+RIG_AUDIO = "plughw:CARD=rigaudio,DEV=0"
+
+
+def load_station():
+    try:
+        with open(STATION_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def setup_pat(station):
+    path = os.path.join(HOME, ".config/pat/config.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        cfg = {}
+    if station.get("callsign"):
+        cfg["mycall"] = station["callsign"]
+    if station.get("grid"):
+        cfg["locator"] = station["grid"]
+    cfg.setdefault("http_addr", "localhost:8080")
+    cfg.setdefault("hamlib_rigs", {})["radio"] = {"address": RIGCTLD, "network": "tcp"}
+    for modem, addr in (("ardop", "localhost:8515"), ("varahf", "localhost:8300"), ("varafm", "localhost:8300")):
+        section = cfg.setdefault(modem, {})
+        section.setdefault("addr", addr)
+        section.setdefault("rig", "radio")
+        section.setdefault("ptt_ctrl", True)
+    # Packet goes through Direwolf's AGW port (emcomm-start packet).
+    cfg.setdefault("ax25", {}).setdefault("engine", "agwpe")
+    cfg.setdefault("agwpe", {"addr": "localhost:8000", "radio_port": 0})
+    write(path, json.dumps(cfg, indent=2) + "\n")
+    return path
+
+
+def setup_direwolf(station):
+    custom = os.path.join(HOME, ".config/emcomm/direwolf.custom.conf")
+    if os.path.exists(custom):
+        return custom
+    path = os.path.join(HOME, ".config/emcomm/direwolf.conf")
+    write(path, "\n".join([
+        "# Written by emcomm-app-setup each time Packet starts; edits are lost.",
+        f"# To use your own settings, copy this file to {custom}",
+        f"ADEVICE {RIG_AUDIO}",
+        "CHANNEL 0",
+        f"MYCALL {station.get('callsign', 'N0CALL')}",
+        "MODEM 1200",
+        # Hamlib model 2 is "NET rigctl": key the radio through rigctld.
+        f"PTT RIG 2 {RIGCTLD.replace('127.0.0.1', 'localhost')}",
+        "AGWPORT 8000",
+        "KISSPORT 8001",
+        "",
+    ]))
+    return path
+
+
+def setup_qt_ini(station, name):
+    path = os.path.join(HOME, ".config", name)
+    if os.path.exists(path):
+        return path
+    write(path, "\n".join([
+        "[Configuration]",
+        f"MyCall={station.get('callsign', '')}",
+        f"MyGrid={station.get('grid', '')}",
+        "Rig=Hamlib NET rigctl",
+        f"CATNetworkPort={RIGCTLD}",
+        "PTTMethod=PTT_method_CAT",
+        "",
+    ]))
+    return path
+
+
+def main(argv):
+    if len(argv) != 1:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    station = load_station()
+    app = argv[0]
+    if app == "pat":
+        path = setup_pat(station)
+    elif app == "direwolf":
+        path = setup_direwolf(station)
+    elif app == "js8call":
+        path = setup_qt_ini(station, "JS8Call.ini")
+    elif app == "wsjtx":
+        path = setup_qt_ini(station, "WSJT-X.ini")
+    else:
+        print(f"unknown app: {app}", file=sys.stderr)
+        return 2
+    print(path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

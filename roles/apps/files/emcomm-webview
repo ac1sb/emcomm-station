@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Show a local web app (Pat's mailbox) in a full-screen window with a Close
+button, so the station doesn't need a full web browser.
+
+  emcomm-webview URL [TITLE]
+"""
+
+import sys
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("WebKit2", "4.1")
+from gi.repository import Gdk, Gtk, WebKit2  # noqa: E402
+
+
+def main(argv):
+    if not argv:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    url, title = argv[0], (argv[1] if len(argv) > 1 else argv[0])
+
+    win = Gtk.Window(title=title)
+    win.set_default_size(1024, 600)
+    win.connect("destroy", Gtk.main_quit)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    win.add(box)
+
+    bar = Gtk.Box(spacing=8, margin=6)
+    view = WebKit2.WebView()
+    back = Gtk.Button(label="‹ Back")
+    back.connect("clicked", lambda *_: view.go_back())
+    reload_btn = Gtk.Button(label="Reload")
+    reload_btn.connect("clicked", lambda *_: view.reload())
+    close = Gtk.Button(label="Close  Esc")
+    close.connect("clicked", lambda *_: win.destroy())
+    for btn in (back, reload_btn):
+        bar.pack_start(btn, False, False, 0)
+    bar.pack_start(Gtk.Label(label=title), True, True, 0)
+    bar.pack_end(close, False, False, 0)
+    box.pack_start(bar, False, False, 0)
+    box.pack_start(view, True, True, 0)
+
+    win.connect("key-press-event",
+                lambda _w, e: e.keyval == Gdk.KEY_Escape and (win.destroy() or True))
+    view.load_uri(url)
+    win.show_all()
+    win.maximize()
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
