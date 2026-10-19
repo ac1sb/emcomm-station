@@ -1,0 +1,7 @@
+# Managed by the emcomm-station playbook.
+# Keep the screen on: this is a station, not a laptop.
+xset s off -dpms s noblank &
+# Hide the mouse pointer when idle (touchscreens).
+unclutter -idle 3 &
+# The launcher restarts itself if it is closed or crashes.
+(while true; do emcomm-launcher; sleep 1; done) &

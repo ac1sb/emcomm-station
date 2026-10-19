@@ -1,0 +1,27 @@
+---
+- name: Install launcher dependencies
+  ansible.builtin.apt:
+    name:
+      - python3-gi
+      - gir1.2-gtk-3.0
+    install_recommends: false
+
+- name: Install the launcher
+  ansible.builtin.copy:
+    src: emcomm-launcher
+    dest: /usr/local/bin/emcomm-launcher
+    mode: "0755"
+
+- name: Write launcher settings
+  ansible.builtin.copy:
+    content: "{{ launcher_config | to_nice_json }}\n"
+    dest: /etc/emcomm/launcher.json
+    mode: "0644"
+  vars:
+    launcher_config:
+      callsign: "{{ station_callsign }}"
+      grid: "{{ station_grid }}"
+      radio: "{{ radio_name }}"
+      rigctld_host: "{{ rigctld_host }}"
+      rigctld_port: "{{ rigctld_port }}"
+      apps: "{{ launcher_apps }}"

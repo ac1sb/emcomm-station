@@ -1,0 +1,23 @@
+# Managed by the emcomm-station playbook ({{ radio_name }}).
+[Unit]
+Description=Hamlib rig control for {{ radio_name }}
+BindsTo=dev-rig\x2dcat.device
+After=dev-rig\x2dcat.device
+
+[Service]
+User={{ station_user }}
+ExecStart=/usr/bin/rigctld \
+  --model={{ rig_model }} \
+  --rig-file=/dev/rig-cat \
+  --serial-speed={{ cat_baud }} \
+{% if ptt_method != 'CAT' %}
+  --ptt-file=/dev/rig-ptt \
+{% endif %}
+  --ptt-type={{ ptt_method }} \
+  --listen-addr={{ rigctld_host }} \
+  --port={{ rigctld_port }}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

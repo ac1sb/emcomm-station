@@ -1,0 +1,32 @@
+---
+- name: Install Hamlib
+  ansible.builtin.apt:
+    name: libhamlib-utils
+    install_recommends: false
+
+- name: Check PTT settings
+  ansible.builtin.assert:
+    that:
+      - ptt_method in ['RTS', 'DTR', 'CAT']
+      - ptt_method == 'CAT' or (ptt_udev_match | length > 0)
+    fail_msg: "{{ station_radio }}: ptt_method must be RTS, DTR or CAT, and RTS/DTR need ptt_udev_match."
+
+- name: Give the radio's devices stable names
+  ansible.builtin.template:
+    src: 99-emcomm-radio.rules.j2
+    dest: /etc/udev/rules.d/99-emcomm-radio.rules
+    mode: "0644"
+  notify: Reload udev
+
+- name: Install the rigctld service
+  ansible.builtin.template:
+    src: rigctld.service.j2
+    dest: /etc/systemd/system/rigctld.service
+    mode: "0644"
+  notify: Restart rigctld
+
+- name: Enable rigctld (it starts when the radio's CAT port appears)
+  ansible.builtin.systemd:
+    name: rigctld
+    enabled: true
+    daemon_reload: true

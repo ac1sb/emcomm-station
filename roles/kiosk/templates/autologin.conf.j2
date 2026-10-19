@@ -1,0 +1,4 @@
+# Managed by the emcomm-station playbook.
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin {{ station_user }} --noclear %I $TERM
