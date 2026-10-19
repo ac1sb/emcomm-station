@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import socket
+import string
 import subprocess
 import tempfile
 import threading
@@ -34,41 +35,69 @@ RIGCTLD = ("127.0.0.1", 4532)
 BAUD_RATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
 PTT_CHOICES = [("CAT", "CAT command"), ("RTS", "RTS line (Digirig)"), ("DTR", "DTR line"), ("NONE", "VOX / none")]
 
-CSS = b"""
-window, .page { background: #101214; color: #E8E6E1; font-family: 'IBM Plex Sans', sans-serif; }
-.topbar { background: #15181B; border-bottom: 1px solid #2A2F35; padding: 0 20px; min-height: 60px; }
-.callsign { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 600; color: #F2A33A; }
-.muted { color: #9AA0A6; }
+# Colours for the dark (default) and light themes; Settings switches between them.
+THEMES = {
+    "dark": dict(bg="#101214", bar="#15181B", surface="#1A1D21", hover="#22262B", line="#2A2F35",
+                 input_line="#3A4048", text="#E8E6E1", label="#C9CDD1", muted="#9AA0A6",
+                 accent="#F2A33A", accent_fill="#F2A33A", on_accent="#101214", ok="#4FC3B8",
+                 danger="#E5534B", danger_text="#F4B4AF", danger_bg="#2A1B1A"),
+    "light": dict(bg="#F4F2EE", bar="#FFFFFF", surface="#FFFFFF", hover="#EFECE6", line="#D6D2CA",
+                  input_line="#BDB8AE", text="#1D1F22", label="#3C4043", muted="#5F6368",
+                  accent="#A85F00", accent_fill="#F2A33A", on_accent="#101214", ok="#00796B",
+                  danger="#C62828", danger_text="#B71C1C", danger_bg="#FDECEA"),
+}
+THEME_PATH = os.path.expanduser("~/.config/emcomm/theme")
+ICON_COLOUR = "#F2A33A"  # the stroke colour in the standard tile icons
+
+CSS = string.Template("""
+window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', sans-serif; }
+.topbar { background: $bar; border-bottom: 1px solid $line; padding: 0 20px; min-height: 60px; }
+.callsign { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 600; color: $accent; }
+.muted { color: $muted; }
 .mono { font-family: 'IBM Plex Mono', monospace; }
-.dot-ok { color: #4FC3B8; }
-.dot-off { color: #9AA0A6; }
 .tile, .navbtn, .tile label, .navbtn label { background-image: none; box-shadow: none; text-shadow: none; }
-.tile { background: #1A1D21; border: 1px solid #2A2F35; border-radius: 12px; padding: 16px; }
-.tile:hover { background: #22262B; }
-.tile:focus, .navbtn:focus { border: 2px solid #F2A33A; outline: none; }
-.key-hint { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #9AA0A6; }
+.tile { background: $surface; border: 1px solid $line; border-radius: 12px; padding: 16px; }
+.tile:hover { background: $hover; }
+.tile:focus, .navbtn:focus { border: 2px solid $accent_fill; outline: none; }
+.key-hint { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: $muted; }
 .tile:disabled, .tile.not-ready { opacity: 0.5; }
-menu { background: #1A1D21; border: 1px solid #3A4048; padding: 4px 0; }
-menuitem { color: #E8E6E1; font-size: 16px; padding: 12px 18px; }
-menuitem:hover { background: #2A2F35; }
-.tile-code { font-family: 'IBM Plex Mono', monospace; font-size: 28px; font-weight: 600; color: #F2A33A; }
-.tile-name { font-size: 18px; font-weight: 600; color: #E8E6E1; }
-.tile-detail { font-size: 13px; color: #9AA0A6; }
-.navbtn { background: #15181B; border: 1px solid #2A2F35; border-radius: 10px; color: #E8E6E1;
+menu { background: $surface; border: 1px solid $input_line; padding: 4px 0; }
+menuitem { color: $text; font-size: 16px; padding: 12px 18px; }
+menuitem:hover { background: $hover; }
+.tile-code { font-family: 'IBM Plex Mono', monospace; font-size: 28px; font-weight: 600; color: $accent; }
+.tile-name { font-size: 18px; font-weight: 600; color: $text; }
+.tile-detail { font-size: 13px; color: $muted; }
+.navbtn { background: $bar; border: 1px solid $line; border-radius: 10px; color: $text;
           font-size: 16px; min-height: 52px; padding: 0 16px; }
-.danger { border-color: #E5534B; color: #F4B4AF; background: #2A1B1A; }
+.navbtn:hover { background: $hover; }
+.danger { border-color: $danger; color: $danger_text; background: $danger_bg; }
 .title { font-size: 20px; font-weight: 600; }
-.section { background: #1A1D21; border: 1px solid #2A2F35; border-radius: 12px; padding: 12px 16px; }
-.section-title { font-size: 12px; font-weight: 600; color: #9AA0A6; letter-spacing: 1px; }
-.field-label { font-size: 14px; color: #C9CDD1; }
+.section { background: $surface; border: 1px solid $line; border-radius: 12px; padding: 12px 16px; }
+.section-title { font-size: 12px; font-weight: 600; color: $muted; letter-spacing: 1px; }
+.field-label { font-size: 14px; color: $label; }
 combobox button { padding: 0 10px; }
-entry, combobox button { background: #101214; color: #E8E6E1; border: 1px solid #3A4048; border-radius: 8px;
+entry, combobox button { background: $bg; color: $text; border: 1px solid $input_line; border-radius: 8px;
                          min-height: 44px; font-size: 16px; background-image: none; box-shadow: none; }
-.primary { background: #F2A33A; color: #101214; border: none; font-weight: 600; }
-.error { color: #F4B4AF; }
-.ok { color: #4FC3B8; }
-textview, textview text { background: #1A1D21; color: #E8E6E1; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
-"""
+.primary { background: $accent_fill; color: $on_accent; border: none; font-weight: 600; }
+.error { color: $danger_text; }
+.ok { color: $ok; }
+textview, textview text { background: $surface; color: $text; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
+""")
+
+
+def load_theme():
+    try:
+        with open(THEME_PATH, encoding="utf-8") as f:
+            name = f.read().strip()
+    except OSError:
+        name = ""
+    return name if name in THEMES else "dark"
+
+
+def save_theme(name):
+    os.makedirs(os.path.dirname(THEME_PATH), exist_ok=True)
+    with open(THEME_PATH, "w", encoding="utf-8") as f:
+        f.write(name + "\n")
 
 
 def read_json(path, default):
@@ -215,6 +244,19 @@ def find_icon(name):
     return None
 
 
+def load_icon(path, colour):
+    """A tile icon as a pixbuf. The standard SVG icons are redrawn in the theme's accent colour."""
+    if path.endswith(".svg") and path.startswith(ICONS_DIR + "/"):
+        with open(path, "rb") as f:
+            svg = f.read().replace(ICON_COLOUR.encode(), colour.encode())
+        loader = GdkPixbuf.PixbufLoader()
+        loader.set_size(ICON_SIZE, ICON_SIZE)
+        loader.write(svg)
+        loader.close()
+        return loader.get_pixbuf()
+    return GdkPixbuf.Pixbuf.new_from_file_at_scale(path, ICON_SIZE, ICON_SIZE, True)
+
+
 def remove_user_icon(name):
     for ext in ICON_EXTS:
         try:
@@ -307,6 +349,8 @@ class Launcher(Gtk.Window):
         self.choices = {}
         self._filling = False
         self.default_audio_card = None
+        self.css_provider = None
+        self._apply_theme(load_theme())
         self.set_default_size(1024, 600)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -396,10 +440,11 @@ class Launcher(Gtk.Window):
 
     def _show_status(self, freq, audio):
         if freq:
-            self.rig_status.set_markup(f"<span foreground='#4FC3B8'>●</span>  Rig  <tt>{freq}</tt>")
+            self.rig_status.set_markup(f"<span foreground='{self.colours['ok']}'>●</span>  Rig  <tt>{freq}</tt>")
         else:
-            self.rig_status.set_markup("<span foreground='#9AA0A6'>○</span>  Rig not connected")
-        dot = "<span foreground='#4FC3B8'>●</span>" if audio else "<span foreground='#9AA0A6'>○</span>"
+            self.rig_status.set_markup(f"<span foreground='{self.colours['muted']}'>○</span>  Rig not connected")
+        dot = (f"<span foreground='{self.colours['ok']}'>●</span>" if audio
+               else f"<span foreground='{self.colours['muted']}'>○</span>")
         self.audio_status.set_markup(f"{dot}  Radio audio")
         self._refresh_tiles()
         return False
@@ -456,6 +501,33 @@ class Launcher(Gtk.Window):
         self._update_tile(btn)
         return btn
 
+    def _apply_theme(self, name):
+        """Switch between the dark and light colours, now and on later starts."""
+        self.theme = name
+        self.colours = THEMES[name]
+        screen = Gdk.Screen.get_default()
+        if self.css_provider:
+            Gtk.StyleContext.remove_provider_for_screen(screen, self.css_provider)
+        self.css_provider = Gtk.CssProvider()
+        self.css_provider.load_from_data(CSS.substitute(self.colours).encode())
+        Gtk.StyleContext.add_provider_for_screen(screen, self.css_provider,
+                                                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def _toggle_theme(self, btn):
+        name = "light" if self.theme == "dark" else "dark"
+        self._apply_theme(name)
+        try:
+            save_theme(name)
+        except OSError:
+            pass
+        btn.set_label(self._theme_button_label())
+        for tile in self.tiles:
+            self._set_tile_icon(tile)
+        self._poll_status()
+
+    def _theme_button_label(self):
+        return "Light mode" if self.theme == "dark" else "Dark mode"
+
     def _set_tile_icon(self, btn):
         for child in btn.icon_slot.get_children():
             btn.icon_slot.remove(child)
@@ -463,9 +535,8 @@ class Launcher(Gtk.Window):
         widget = None
         if path:
             try:
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, ICON_SIZE, ICON_SIZE, True)
-                widget = Gtk.Image.new_from_pixbuf(pixbuf)
-            except GLib.Error:
+                widget = Gtk.Image.new_from_pixbuf(load_icon(path, self.colours["accent"]))
+            except (GLib.Error, OSError):
                 widget = None
         if widget is None:
             # No icon, or it can't be read: show the short code instead.
@@ -640,6 +711,7 @@ class Launcher(Gtk.Window):
         header.pack_start(title, False, False, 0)
         header.pack_end(self._navbtn("Rescan devices", lambda *_: self._rescan_devices()), False, False, 0)
         header.pack_end(self._navbtn("Update station", self._update_station), False, False, 0)
+        header.pack_end(self._navbtn(self._theme_button_label(), self._toggle_theme), False, False, 0)
         page.pack_start(header, False, False, 0)
 
         cols = Gtk.Box(spacing=16)
@@ -974,10 +1046,6 @@ class Launcher(Gtk.Window):
 
 
 def main():
-    provider = Gtk.CssProvider()
-    provider.load_from_data(CSS)
-    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
-                                             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
     win = Launcher(load_config())
     win.connect("destroy", Gtk.main_quit)
     if not os.environ.get("EMCOMM_LAUNCHER_WINDOWED"):

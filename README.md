@@ -26,7 +26,8 @@ environment.
   F4 Logs. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
-  icon" puts it back.
+  icon" puts it back. **Light mode** / **Dark mode** in Settings switches the colours
+  (light is easier to read in daylight); the choice is remembered.
 - **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, flmsg (ICS-213 forms), Pat for
   Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf) and Direwolf for
   packet. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
@@ -39,6 +40,8 @@ environment.
 - **Diagnostics:** USB devices with vendor:product IDs, radio ports, sound cards,
   services, recent USB events, a read-frequency check and a 2-second PTT test.
   The same report is available over SSH with `emcomm-diag`.
+
+![Home screen in light mode](docs/home-light.png)
 
 ![Settings](docs/settings.png)
 
