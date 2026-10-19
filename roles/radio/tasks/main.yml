@@ -59,6 +59,37 @@
     enabled: true
     daemon_reload: true
 
+# A USB GPS sets the clock when there's no internet (FT8, JS8 and VARA need it
+# within a second or so) and gives the launcher a position for the grid square.
+- name: Install gpsd and chrony
+  ansible.builtin.apt:
+    name: [gpsd, gpsd-clients, chrony]
+    install_recommends: false
+
+- name: Point gpsd at /dev/gps0 only, so it never opens the radio's ports
+  ansible.builtin.copy:
+    content: |
+      # Written by the Emcomm-CNC playbook. Settings picks which USB device is /dev/gps0.
+      START_DAEMON="true"
+      USBAUTO="false"
+      DEVICES="/dev/gps0"
+      GPSD_OPTIONS="-n"
+    dest: /etc/default/gpsd
+    mode: "0644"
+  notify: Restart gpsd
+
+- name: Let chrony take the time from the GPS
+  ansible.builtin.copy:
+    content: |
+      # Written by the Emcomm-CNC playbook. GPS time over USB, without PPS, is good to
+      # a few tens of milliseconds: plenty for digital modes, and it works offline.
+      refclock SHM 0 refid GPS precision 1e-1 offset 0.1 delay 0.2
+      # Step the clock at any time if it's more than a second out (a flat CMOS battery).
+      makestep 1 -1
+    dest: /etc/chrony/conf.d/emcomm-gps.conf
+    mode: "0644"
+  notify: Restart chrony
+
 - name: Apply the current settings (udev rules, rigctld arguments)
   ansible.builtin.command: /usr/local/sbin/emcomm-apply-settings
   changed_when: false

@@ -92,6 +92,25 @@ class ApplySettingsTest(unittest.TestCase):
         self.assertIn("--model=3073", env)
         self.assertIn("--ptt-file=/dev/rig-cat", env)
 
+    def test_gps_defaults_to_ublox_or_the_chosen_port(self):
+        r = self.run_helper(preset("ft-891-digirig"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rules = self.read("etc/udev/rules.d/99-emcomm-radio.rules")
+        self.assertIn('ENV{ID_VENDOR_ID}=="1546", SYMLINK+="gps0"', rules)
+        r = self.run_helper(preset("ft-891-digirig", gps_match={"vendor": "067B", "product": "2303"}))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rules = self.read("etc/udev/rules.d/99-emcomm-radio.rules")
+        self.assertIn('ENV{ID_MODEL_ID}=="2303", ENV{ID_VENDOR_ID}=="067b", SYMLINK+="gps0"', rules)
+        self.assertEqual(json.loads(self.read("etc/emcomm/station.json"))["gps_match"],
+                         {"vendor": "067b", "product": "2303"})
+
+    def test_gps_cannot_be_the_radio_port(self):
+        settings = preset("ft-891-digirig")
+        settings["gps_match"] = settings["cat_match"]
+        r = self.run_helper(settings)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("GPS", r.stderr)
+
     def test_rejects_bad_input(self):
         bad = [
             preset("ft-710", callsign="NOT A CALL"),
