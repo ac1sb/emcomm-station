@@ -302,6 +302,11 @@ NOTES_PATH = os.path.expanduser("~/.local/share/emcomm/contacts.log")
 REFERENCE_DIR = os.environ.get("EMCOMM_REFERENCE", "/usr/share/emcomm/reference")
 USER_REFERENCE = os.path.expanduser("~/.local/share/emcomm/reference")
 MY_FREQS = os.path.join(USER_REFERENCE, "My frequencies.csv")
+# My frequencies' FM channels in CHIRP's own CSV layout, for File > Import in CHIRP.
+CHIRP_EXPORT = os.path.expanduser("~/My frequencies for CHIRP.csv")
+CHIRP_FIELDS = ["Location", "Name", "Frequency", "Duplex", "Offset", "Tone", "rToneFreq", "cToneFreq",
+                "DtcsCode", "DtcsPolarity", "Mode", "TStep", "Skip", "Comment",
+                "URCALL", "RPT1CALL", "RPT2CALL"]
 # Offset (MHz, e.g. -0.6) and Tone (CTCSS Hz) are for repeaters and may be blank.
 FREQ_FIELDS = ["MHz", "Mode", "Name", "Note", "Offset", "Tone"]
 MODES = ["USB", "LSB", "FM", "AM", "CW", "PKTUSB", "PKTLSB", "PKTFM"]
@@ -433,6 +438,28 @@ def write_freqs(path, rows):
             out.writerow({**row, "MHz": f"{row['MHz']:.6f}".rstrip("0").rstrip("."),
                           "Offset": "" if row.get("Offset") is None else f"{row['Offset']:+g}",
                           "Tone": f"{row['Tone']:g}" if row.get("Tone") else ""})
+    if path == MY_FREQS:
+        export_chirp(rows)
+
+
+def export_chirp(rows, path=CHIRP_EXPORT):
+    """Write the FM channels for CHIRP, numbered from 1 in list order."""
+    channels = [r for r in rows if r["Mode"] in ("FM", "PKTFM")]
+    try:
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            out = csv.DictWriter(f, CHIRP_FIELDS)
+            out.writeheader()
+            for i, r in enumerate(channels, 1):
+                offset = r.get("Offset") or 0
+                tone = r.get("Tone")
+                out.writerow({"Location": i, "Name": r["Name"], "Frequency": f"{r['MHz']:.6f}",
+                              "Duplex": "+" if offset > 0 else "-" if offset < 0 else "",
+                              "Offset": f"{abs(offset):.6f}", "Tone": "Tone" if tone else "",
+                              "rToneFreq": f"{tone or 88.5:.1f}", "cToneFreq": f"{tone or 88.5:.1f}",
+                              "DtcsCode": "023", "DtcsPolarity": "NN", "Mode": "FM", "TStep": "5.00",
+                              "Skip": "", "Comment": r["Note"], "URCALL": "", "RPT1CALL": "", "RPT2CALL": ""})
+    except OSError:
+        pass
 
 
 def nmcli_fields(line):
@@ -1897,6 +1924,9 @@ class Launcher(Gtk.Window):
             return
         rows = read_freqs(path)
         mine = path == MY_FREQS
+        if mine and rows:
+            # Keeps CHIRP's copy current, also when the list was copied in from a USB stick.
+            export_chirp(rows)
         if not rows:
             self.ref_status.set_text("Nothing here yet. Tune the radio and tap Add frequency." if mine else "")
         self._fill_ref_list(rows, my_index=mine)

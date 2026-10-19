@@ -31,7 +31,8 @@ environment.
 - **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, flmsg (ICS-213 forms), Pat for
   Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf), Direwolf for
   packet, Xastir for APRS, and the Meshtastic (`contact`) and MeshCore
-  (`meshcore-cli`) clients for LoRa mesh radios. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
+  (`meshcore-cli`) clients for LoRa mesh radios, and CHIRP for programming
+  handhelds and mobiles. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
   once, in Settings. Callsign and grid are filled in for each app.
 - **Logs:** JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
   place, plus a box to note a voice or other contact. Notes get the UTC time,
@@ -141,6 +142,13 @@ environment.
   one if more than one is plugged in. Meshtastic opens `contact`, a full-screen
   text client for messages, nodes and settings; MeshCore opens `meshcore-cli`,
   where `?` lists its commands.
+- **CHIRP:** for programming a handheld or mobile over its programming cable (the
+  FT-710 and FT-891 don't need it). The station keeps
+  `~/My frequencies for CHIRP.csv` up to date with the FM channels from My
+  frequencies, offset and tone included. In CHIRP, download from the radio first,
+  then use File > Import to add that file's channels, and upload to the radio.
+  CHIRP comes from archive.chirpmyradio.com, newest build by default (set
+  `apps_chirp_build` in `roles/apps/defaults/main.yml` to stay on one).
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 
