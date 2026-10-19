@@ -31,7 +31,8 @@ environment.
 - **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, flmsg (ICS-213 forms), Pat for
   Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf), Direwolf for
   packet, Xastir for APRS, and the Meshtastic (`contact`) and MeshCore
-  (`meshcore-cli`) clients for LoRa mesh radios. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
+  (`meshcore-cli`) clients for LoRa mesh radios, and CHIRP for programming
+  handhelds and mobiles. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
   once, in Settings. Callsign and grid are filled in for each app.
 - **Logs:** JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
   place, plus a box to note a voice or other contact. Notes get the UTC time,
@@ -41,9 +42,14 @@ environment.
   SATERN, 60 m channels, simplex calling, APRS), and JS8Call and FT8 dial
   frequencies. **Tune** puts the radio on that frequency and mode. **Add
   frequency** saves the radio's current frequency (or one you type) to **My
-  frequencies** with a name and note, for local nets and repeaters. The lists are
-  CSV files (`MHz,Mode,Name,Note`) in `/usr/share/emcomm/reference`; a file of the
-  same name in `~/.local/share/emcomm/reference` replaces the standard one.
+  frequencies** with a name and note, for local nets and repeaters. For a repeater,
+  also give its offset (for example -0.6, or +5 on 70 cm) and CTCSS tone; **Tune**
+  then sets the radio to FM with that offset and tone, on radios and bands that
+  support it. The lists are CSV files (`MHz,Mode,Name,Note,Offset,Tone`; Offset and
+  Tone may be left out) in `/usr/share/emcomm/reference`; a file of the same name in
+  `~/.local/share/emcomm/reference` replaces the standard one. My frequencies is
+  `~/.local/share/emcomm/reference/My frequencies.csv`, so a list made on a computer
+  can be copied in from a USB stick.
 - **Nearest Winlink gateways** (on the Reference page): every gateway channel from
   Pat's list, nearest to your grid first, with distance, bearing, mode and hours.
   Pick VARA HF, ARDOP, VARA FM or Packet to narrow it, and **Tune** puts the radio
@@ -56,7 +62,30 @@ environment.
   gateway (blue HF, green VHF/UHF; tap one for its dial frequencies, modes and
   hours) and stations heard on JS8Call and WSJT-X with their grids. The gateway
   list is Pat's: it works offline from the copy built into Pat, and is refreshed
-  when it's over a week old and the station is online.
+  when it's over a week old and the station is online. It also shows the stations
+  that heard you (purple, with a line to each), as the Online page last saved them.
+- **Online** (F7): data from internet services, saved so the last answer still
+  shows offline. Each section says when it was last updated.
+  - **Weather alerts** for your grid from the National Weather Service (US only),
+    most severe first; **Details** shows the full text. Alerts in force also show in
+    the top bar; tap there to read them. Checked every ten minutes when online.
+  - **Propagation:** solar flux, K index and the NOAA R/S/G scales from NOAA's Space
+    Weather Prediction Center, and day/night HF band conditions from N0NBH
+    (hamqsl.com), with a line on what the numbers mean.
+  - **Who heard me:** stations that reported your signal to PSKReporter in the last
+    six hours, with distance, band, mode and SNR. Transmit FT8, JS8 or another
+    digital mode first; reports come from stations that are online.
+  - **Callsign lookup:** name, address, grid, distance and licence from QRZ (or
+    HamQTH if there's no QRZ login), plus the last APRS position from aprs.fi.
+    Callsigns looked up before still show offline.
+  - **Accounts:** QRZ and HamQTH logins, a contact email (sent to NOAA and
+    PSKReporter so they know who's asking) and the aprs.fi API key. They're saved in
+    `~/.config/emcomm/accounts.json`, readable only by the station user. Alerts,
+    propagation and PSKReporter need no account. QRZ gives full records only to
+    XML Logbook Data subscribers.
+- **Browser** (tile): Chromium, with a Ham radio bookmarks bar (World Radio League,
+  QRZ, PSKReporter, aprs.fi, RepeaterBook, NWS, space weather, Winlink, WebSDR,
+  LoTW). The list is `apps_browser_bookmarks` in `roles/apps/defaults/main.yml`.
 - **Wi-Fi** (F6, the **Wi-Fi** button in Settings, or tap the network status at the
   top): lists nearby networks by signal strength; tap **Connect** and type the
   password. The station remembers networks it has joined. If the Debian installer
@@ -84,6 +113,10 @@ environment.
 
 ![Nearest Winlink gateways](docs/gateways.png)
 
+![Online: weather alerts](docs/online-alerts.png)
+
+![Online: propagation](docs/online-propagation.png)
+
 ## Using the apps
 
 - **Winlink over VARA:** tap VARA HF (or FM) first. The first tap sets up Wine and
@@ -109,6 +142,13 @@ environment.
   one if more than one is plugged in. Meshtastic opens `contact`, a full-screen
   text client for messages, nodes and settings; MeshCore opens `meshcore-cli`,
   where `?` lists its commands.
+- **CHIRP:** for programming a handheld or mobile over its programming cable (the
+  FT-710 and FT-891 don't need it). The station keeps
+  `~/My frequencies for CHIRP.csv` up to date with the FM channels from My
+  frequencies, offset and tone included. In CHIRP, download from the radio first,
+  then use File > Import to add that file's channels, and upload to the radio.
+  CHIRP comes from archive.chirpmyradio.com, newest build by default (set
+  `apps_chirp_build` in `roles/apps/defaults/main.yml` to stay on one).
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 

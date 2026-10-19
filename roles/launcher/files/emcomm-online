@@ -1,0 +1,522 @@
+#!/usr/bin/env python3
+"""Online services for the station's Online page, saved so the last answer
+still shows when the station is offline.
+
+  emcomm-online refresh [--force] [SOURCE...]  fetch alerts, space, bands, heard
+                                               (default: alerts space bands)
+  emcomm-online lookup CALL                    callsign lookup (QRZ, else HamQTH) and the
+                                               station's last aprs.fi position, as JSON
+
+Each source is saved to ~/.cache/emcomm/online/SOURCE.json as
+{"updated": time of the last good fetch, "tried": time of the last try,
+ "error": text or null, "data": ...}. A failed fetch keeps the old data.
+A source isn't fetched again sooner than its minimum interval, which keeps
+within each service's rules (PSKReporter asks for one query per five minutes).
+
+Logins and keys come from ~/.config/emcomm/accounts.json, which the Online
+page's Accounts button writes: email, qrz_user, qrz_password, hamqth_user,
+hamqth_password, aprsfi_key.
+"""
+
+import datetime
+import json
+import math
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+
+VERSION = "1.0"
+HOME_PAGE = "https://github.com/ac1sb/emcomm-station"
+STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
+ACCOUNTS_PATH = os.environ.get("EMCOMM_ACCOUNTS", os.path.expanduser("~/.config/emcomm/accounts.json"))
+CACHE_DIR = os.environ.get("EMCOMM_ONLINE_CACHE", os.path.expanduser("~/.cache/emcomm/online"))
+
+SOURCES = ["alerts", "space", "bands", "heard"]
+DEFAULT_SOURCES = ["alerts", "space", "bands"]
+# Seconds before a source is fetched again; a forced refresh (the Refresh button)
+# still waits FORCED_MIN_AGE.
+MIN_AGE = {"alerts": 300, "space": 900, "bands": 3600, "heard": 300}
+FORCED_MIN_AGE = {"heard": 300}
+FORCED_DEFAULT = 30
+HEARD_WINDOW = 6 * 3600  # PSKReporter reports from the last six hours
+
+NWS_ALERTS = "https://api.weather.gov/alerts/active?point={lat:.4f},{lon:.4f}"
+SWPC_KP = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+SWPC_FLUX = "https://services.swpc.noaa.gov/products/summary/10cm-flux.json"
+SWPC_SCALES = "https://services.swpc.noaa.gov/products/noaa-scales.json"
+HAMQSL = "https://www.hamqsl.com/solarxml.php"
+PSKREPORTER = "https://retrieve.pskreporter.info/query"
+QRZ = "https://xmldata.qrz.com/xml/current/"
+HAMQTH = "https://www.hamqth.com/xml.php"
+APRSFI = "https://api.aprs.fi/api/get"
+
+
+
+class OnlineError(Exception):
+    pass
+
+
+# ---- local settings -----------------------------------------------------
+
+def read_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, value, private=False):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(value, f, indent=1)
+    os.replace(tmp, path)
+
+
+def station():
+    return read_json(STATION_PATH, {})
+
+
+def accounts():
+    return read_json(ACCOUNTS_PATH, {})
+
+
+def grid_to_latlon(grid):
+    """Centre of a Maidenhead square (4 or 6 characters), or None."""
+    grid = (grid or "").strip()
+    if not re.fullmatch(r"[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?", grid):
+        return None
+    lon = (ord(grid[0].upper()) - 65) * 20 - 180 + int(grid[2]) * 2
+    lat = (ord(grid[1].upper()) - 65) * 10 - 90 + int(grid[3])
+    if len(grid) == 6:
+        lon += (ord(grid[4].lower()) - 97) * 5 / 60 + 2.5 / 60
+        lat += (ord(grid[5].lower()) - 97) * 2.5 / 60 + 1.25 / 60
+    else:
+        lon, lat = lon + 1, lat + 0.5
+    return lat, lon
+
+
+def my_call():
+    call = (station().get("callsign") or "").strip().upper()
+    if not call or call == "N0CALL":
+        raise OnlineError("Set the station's callsign in Settings first.")
+    return call
+
+
+def my_position():
+    pos = grid_to_latlon(station().get("grid", ""))
+    if not pos:
+        raise OnlineError("Set the station's grid square in Settings first.")
+    return pos
+
+
+# ---- http ---------------------------------------------------------------
+
+def user_agent():
+    """Services ask to be told which program is calling and how to reach its operator."""
+    email = (accounts().get("email") or "").strip()
+    return f"Emcomm-CNC/{VERSION} (+{HOME_PAGE}" + (f"; {email})" if email else ")")
+
+
+def http_get(url, params=None, headers=None, timeout=25):
+    if params:
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+    request = urllib.request.Request(url, headers={"User-Agent": user_agent(), **(headers or {})})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise OnlineError(f"the service refused the request (HTTP {exc.code}); check the key under Accounts")
+        if exc.code == 429:
+            raise OnlineError("the service asked the station to slow down; try again later")
+        raise OnlineError(f"the service answered HTTP {exc.code}")
+    except (urllib.error.URLError, OSError) as exc:
+        raise OnlineError("no internet connection")
+
+
+def get_json(url, params=None, headers=None):
+    body = http_get(url, params, headers)
+    try:
+        return json.loads(body)
+    except ValueError:
+        raise OnlineError("the service sent something that isn't JSON")
+
+
+def get_xml(url, params=None, headers=None):
+    body = http_get(url, params, headers)
+    try:
+        return ET.fromstring(body)
+    except ET.ParseError:
+        raise OnlineError("the service sent something that isn't XML")
+
+
+def local(tag):
+    """An XML tag without its namespace."""
+    return tag.rsplit("}", 1)[-1]
+
+
+def xml_fields(element):
+    """{child tag: text} for an element's direct children, namespaces dropped."""
+    return {local(child.tag): (child.text or "").strip() for child in element} if element is not None else {}
+
+
+def find(root, name):
+    return next((e for e in root.iter() if local(e.tag) == name), None)
+
+
+def to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def to_int(value):
+    number = to_float(value)
+    return None if number is None else int(number)
+
+
+def parse_time(text):
+    """Epoch seconds from an ISO 8601 time, or None."""
+    if not text:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+# ---- parsers --------------------------------------------------------------
+
+SEVERITY = ["Extreme", "Severe", "Moderate", "Minor"]
+
+
+def parse_nws(doc):
+    """NWS active alerts (GeoJSON), most severe first."""
+    alerts = []
+    for feature in doc.get("features") or []:
+        p = feature.get("properties") or {}
+        alerts.append({
+            "event": p.get("event") or "Alert", "severity": p.get("severity") or "Unknown",
+            "urgency": p.get("urgency") or "", "headline": p.get("headline") or "",
+            "area": p.get("areaDesc") or "", "sender": p.get("senderName") or "",
+            "starts": p.get("onset") or p.get("effective") or "", "ends": p.get("ends") or p.get("expires") or "",
+            "description": (p.get("description") or "").strip(), "instruction": (p.get("instruction") or "").strip(),
+        })
+    rank = {name: i for i, name in enumerate(SEVERITY)}
+    return sorted(alerts, key=lambda a: (rank.get(a["severity"], len(SEVERITY)), a["ends"]))
+
+
+def parse_kp(doc):
+    """(latest planetary K index, its time) from SWPC's table, which comes either as
+    rows under a header row or as a list of objects."""
+    if not isinstance(doc, list) or not doc:
+        return None, None
+    if isinstance(doc[0], list):
+        header = [str(h).lower() for h in doc[0]]
+        rows = [dict(zip(header, row)) for row in doc[1:]]
+    else:
+        rows = [{str(k).lower(): v for k, v in row.items()} for row in doc if isinstance(row, dict)]
+    for row in reversed(rows):
+        kp = to_float(row.get("kp", row.get("kp_index", row.get("estimated_kp"))))
+        if kp is not None:
+            return kp, row.get("time_tag")
+    return None, None
+
+
+def parse_flux(doc):
+    """10.7 cm solar flux from SWPC's summary ({"Flux": "150", ...}) or a list of readings."""
+    if isinstance(doc, list):
+        doc = doc[-1] if doc else {}
+    lowered = {str(k).lower(): v for k, v in (doc or {}).items()}
+    return to_int(lowered.get("flux"))
+
+
+def parse_scales(doc):
+    """Today's NOAA radio blackout (R), solar radiation (S) and geomagnetic storm (G) levels."""
+    now = (doc or {}).get("0") or {}
+    out = {}
+    for key in ("R", "S", "G"):
+        scale = now.get(key) or {}
+        level = scale.get("Scale")
+        if level not in (None, ""):
+            out[key] = {"level": to_int(level) or 0, "text": scale.get("Text") or ""}
+    return out
+
+
+def parse_hamqsl(root):
+    """N0NBH's solar summary and calculated HF band conditions."""
+    data = find(root, "solardata")
+    if data is None:
+        raise OnlineError("the solar data was empty")
+    fields = xml_fields(data)
+    bands = {}
+    for band in data.iter():
+        if local(band.tag) == "band" and band.get("name"):
+            bands.setdefault(band.get("name"), {})[band.get("time", "day")] = (band.text or "").strip()
+    vhf = [{"name": p.get("name", ""), "where": p.get("location", ""), "state": (p.text or "").strip()}
+           for p in data.iter() if local(p.tag) == "phenomenon"]
+    return {"updated": fields.get("updated", ""), "sfi": fields.get("solarflux", ""),
+            "a": fields.get("aindex", ""), "k": fields.get("kindex", ""), "xray": fields.get("xray", ""),
+            "sunspots": fields.get("sunspots", ""), "noise": fields.get("signalnoise", ""),
+            "geomag": fields.get("geomagfield", ""), "bands": bands, "vhf": vhf}
+
+
+def parse_pskreporter(root):
+    """Stations that reported hearing us: the latest report from each, newest first."""
+    latest = {}
+    for e in root.iter():
+        if local(e.tag) != "receptionReport":
+            continue
+        call = (e.get("receiverCallsign") or "").upper()
+        when = to_int(e.get("flowStartSeconds")) or 0
+        if call and (call not in latest or when > latest[call]["time"]):
+            latest[call] = {"call": call, "grid": e.get("receiverLocator") or "",
+                            "freq": to_int(e.get("frequency")), "mode": e.get("mode") or "",
+                            "snr": to_int(e.get("sNR")), "time": when}
+    return sorted(latest.values(), key=lambda r: -r["time"])
+
+
+def parse_qrz(root):
+    """(session fields, callsign fields) from a QRZ XML answer."""
+    return xml_fields(find(root, "Session")), xml_fields(find(root, "Callsign"))
+
+
+def parse_hamqth(root):
+    return xml_fields(find(root, "session")), xml_fields(find(root, "search"))
+
+
+def parse_aprsfi(doc):
+    if doc.get("result") != "ok":
+        raise OnlineError(doc.get("description") or "aprs.fi refused the request")
+    entries = doc.get("entries") or []
+    if not entries:
+        return None
+    e = entries[0]
+    return {"name": e.get("name", ""), "lat": to_float(e.get("lat")), "lon": to_float(e.get("lng")),
+            "time": to_int(e.get("lasttime") or e.get("time")), "comment": e.get("comment", "")}
+
+
+# ---- sources --------------------------------------------------------------
+
+def fetch_alerts():
+    lat, lon = my_position()
+    doc = get_json(NWS_ALERTS.format(lat=lat, lon=lon), headers={"Accept": "application/geo+json"})
+    return parse_nws(doc)
+
+
+def fetch_space():
+    data, errors = {}, []
+    for url, parse, key in ((SWPC_KP, parse_kp, "kp"), (SWPC_FLUX, parse_flux, "sfi"),
+                            (SWPC_SCALES, parse_scales, "scales")):
+        try:
+            value = parse(get_json(url))
+        except OnlineError as exc:
+            errors.append(str(exc))
+            continue
+        if key == "kp":
+            data["kp"], data["kp_time"] = value
+        else:
+            data[key] = value
+    if not data:
+        raise OnlineError(errors[0] if errors else "no space weather data")
+    return data
+
+
+def fetch_bands():
+    return parse_hamqsl(get_xml(HAMQSL))
+
+
+def fetch_heard():
+    params = {"senderCallsign": my_call(), "flowStartSeconds": -HEARD_WINDOW, "rronly": 1}
+    email = (accounts().get("email") or "").strip()
+    if email:
+        params["appcontact"] = email
+    return parse_pskreporter(get_xml(PSKREPORTER, params))
+
+
+FETCHERS = {"alerts": fetch_alerts, "space": fetch_space, "bands": fetch_bands,
+            "heard": fetch_heard}
+
+
+def cache_path(name):
+    return os.path.join(CACHE_DIR, name + ".json")
+
+
+def refresh(name, force=False, now=None):
+    """Fetch one source unless it was tried too recently. Returns its saved record."""
+    now = now or time.time()
+    record = read_json(cache_path(name), {})
+    # After a failure (offline, or a key not set yet) the next try needn't wait long.
+    retry = FORCED_MIN_AGE.get(name, FORCED_DEFAULT)
+    wait = retry if force or record.get("error") else MIN_AGE[name]
+    if now - (record.get("tried") or 0) < wait:
+        return record
+    record["tried"] = now
+    try:
+        record["data"] = FETCHERS[name]()
+        record["updated"], record["error"] = now, None
+    except OnlineError as exc:
+        record["error"] = str(exc)
+    write_json(cache_path(name), record)
+    return record
+
+
+# ---- callsign lookup ------------------------------------------------------
+
+def sessions():
+    return read_json(cache_path("sessions"), {})
+
+
+def save_session(service, value):
+    saved = sessions()
+    saved[service] = value
+    write_json(cache_path("sessions"), saved, private=True)
+
+
+def qrz_lookup(call, user, password):
+    for attempt in range(2):
+        key = sessions().get("qrz", {}).get("key")
+        if not key or attempt:
+            session, _ = parse_qrz(get_xml(QRZ, {"username": user, "password": password,
+                                                 "agent": f"EmcommCNC{VERSION}"}))
+            if not session.get("Key"):
+                raise OnlineError("QRZ: " + (session.get("Error") or "login failed"))
+            key = session["Key"]
+            save_session("qrz", {"key": key, "subexp": session.get("SubExp", "")})
+        session, found = parse_qrz(get_xml(QRZ, {"s": key, "callsign": call}))
+        error = session.get("Error", "")
+        if found.get("call"):
+            q = found
+            name = " ".join(filter(None, [q.get("fname"), q.get("name")]))
+            lat, lon = to_float(q.get("lat")), to_float(q.get("lon"))
+            result = {"source": "QRZ", "call": q.get("call", call).upper(), "name": name,
+                      "city": q.get("addr2", ""), "state": q.get("state", ""), "country": q.get("country", ""),
+                      "grid": q.get("grid", ""), "lat": lat, "lon": lon, "class": q.get("class", ""),
+                      "expires": q.get("expdate", ""), "email": q.get("email", "")}
+            if "non-subscriber" in (session.get("SubExp") or "").lower():
+                result["note"] = "QRZ shows non-subscribers only part of the record."
+            return result
+        if error.lower().startswith("not found"):
+            return None
+        if not session.get("Key"):
+            continue  # the saved session expired: log in again
+        raise OnlineError("QRZ: " + (error or "no answer"))
+    raise OnlineError("QRZ: couldn't keep a session open")
+
+
+def hamqth_lookup(call, user, password):
+    for attempt in range(2):
+        saved = sessions().get("hamqth", {})
+        sid = saved.get("id") if time.time() - saved.get("time", 0) < 3300 else None
+        if not sid or attempt:
+            session, _ = parse_hamqth(get_xml(HAMQTH, {"u": user, "p": password}))
+            if not session.get("session_id"):
+                raise OnlineError("HamQTH: " + (session.get("error") or "login failed"))
+            sid = session["session_id"]
+            save_session("hamqth", {"id": sid, "time": time.time()})
+        session, found = parse_hamqth(get_xml(HAMQTH, {"id": sid, "callsign": call, "prg": "EmcommCNC"}))
+        if found.get("callsign"):
+            h = found
+            return {"source": "HamQTH", "call": h.get("callsign", call).upper(),
+                    "name": h.get("adr_name") or h.get("nick", ""), "city": h.get("adr_city") or h.get("qth", ""),
+                    "state": h.get("us_state", ""), "country": h.get("country", ""), "grid": h.get("grid", "").upper(),
+                    "lat": to_float(h.get("latitude")), "lon": to_float(h.get("longitude")),
+                    "class": "", "expires": "", "email": h.get("email", "")}
+        error = session.get("error", "")
+        if "not found" in error.lower():
+            return None
+        if "expired" in error.lower() or "does not exist" in error.lower():
+            continue
+        raise OnlineError("HamQTH: " + (error or "no answer"))
+    raise OnlineError("HamQTH: couldn't keep a session open")
+
+
+def aprs_position(call, key):
+    return parse_aprsfi(get_json(APRSFI, {"name": call, "what": "loc", "apikey": key, "format": "json"}))
+
+
+def lookup(call):
+    """Everything the station can find on a callsign. Answers are saved, so a callsign
+    looked up before still shows when the station is offline."""
+    call = call.strip().upper()
+    acc = accounts()
+    saved_path = os.path.join(CACHE_DIR, "calls", re.sub(r"[^A-Z0-9/]", "", call).replace("/", "_") + ".json")
+    result, errors = None, []
+    services = [("QRZ", qrz_lookup, acc.get("qrz_user"), acc.get("qrz_password")),
+                ("HamQTH", hamqth_lookup, acc.get("hamqth_user"), acc.get("hamqth_password"))]
+    if not any(user and password for _, _, user, password in services):
+        errors.append("Add a QRZ or HamQTH login under Accounts to look up names and addresses.")
+    for name, service, user, password in services:
+        if user and password and not result:
+            try:
+                result = service(call, user.strip(), password)
+            except OnlineError as exc:
+                errors.append(f"{name}: {exc}".replace(f"{name}: {name}: ", f"{name}: "))
+    if result:
+        result["updated"] = time.time()
+        write_json(saved_path, result)
+    elif not errors:
+        result = {"call": call, "notfound": True}
+    else:
+        result = read_json(saved_path, None)
+        if result:
+            result["cached"] = True
+    result = result or {"call": call}
+    if (acc.get("aprsfi_key") or "").strip():
+        try:
+            result["aprs"] = aprs_position(call, acc["aprsfi_key"].strip())
+        except OnlineError as exc:
+            errors.append(f"aprs.fi: {exc}")
+    if result.get("lat") is None and result.get("grid"):
+        pos = grid_to_latlon(result["grid"])
+        if pos:
+            result["lat"], result["lon"] = pos
+    here = grid_to_latlon(station().get("grid", ""))
+    if here and result.get("lat") is not None:
+        result["miles"], result["bearing"] = distance_bearing(here, (result["lat"], result["lon"]))
+    result["errors"] = errors
+    return result
+
+
+def distance_bearing(a, b):
+    """Great-circle miles and initial bearing in degrees from a to b, both (lat, lon)."""
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    d = 2 * math.asin(math.sqrt(math.sin((lat2 - lat1) / 2) ** 2
+                                + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2))
+    y = math.sin(lon2 - lon1) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(lon2 - lon1)
+    return round(d * 3958.8, 1), round((math.degrees(math.atan2(y, x)) + 360) % 360)
+
+
+def main(argv):
+    if argv[:1] == ["lookup"] and len(argv) == 2:
+        print(json.dumps(lookup(argv[1])))
+        return 0
+    if argv[:1] == ["refresh"]:
+        force = "--force" in argv
+        names = [a for a in argv[1:] if a != "--force"] or DEFAULT_SOURCES
+        unknown = [n for n in names if n not in SOURCES]
+        if unknown:
+            print(f"unknown source: {' '.join(unknown)} (choose from {' '.join(SOURCES)})", file=sys.stderr)
+            return 2
+        failed = False
+        for name in names:
+            record = refresh(name, force)
+            failed |= bool(record.get("error"))
+            print(f"{name}: {record.get('error') or 'ok'}")
+        return 1 if failed else 0
+    print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

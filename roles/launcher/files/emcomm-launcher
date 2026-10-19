@@ -8,6 +8,7 @@ through emcomm-apply-settings. The app list comes from
 """
 
 import csv
+import datetime
 import glob
 import json
 import math
@@ -87,6 +88,12 @@ entry, combobox button { background: $bg; color: $text; border: 1px solid $input
 .freq { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: $accent; }
 .freq-row { padding: 6px 4px; border-bottom: 1px solid $line; }
 list, list row { background: $surface; color: $text; }
+dialog, dialog box, dialog label { background: $surface; color: $text; }
+dialog button { background: $bar; color: $text; border: 1px solid $line; border-radius: 8px;
+                background-image: none; box-shadow: none; text-shadow: none; min-height: 40px; }
+dialog button:hover { background: $hover; }
+dialog button box, dialog button label { background: transparent; }
+dialog check { background: $bg; border: 1px solid $input_line; }
 textview, textview text { background: $surface; color: $text; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
 """)
 
@@ -295,7 +302,13 @@ NOTES_PATH = os.path.expanduser("~/.local/share/emcomm/contacts.log")
 REFERENCE_DIR = os.environ.get("EMCOMM_REFERENCE", "/usr/share/emcomm/reference")
 USER_REFERENCE = os.path.expanduser("~/.local/share/emcomm/reference")
 MY_FREQS = os.path.join(USER_REFERENCE, "My frequencies.csv")
-FREQ_FIELDS = ["MHz", "Mode", "Name", "Note"]
+# My frequencies' FM channels in CHIRP's own CSV layout, for File > Import in CHIRP.
+CHIRP_EXPORT = os.path.expanduser("~/My frequencies for CHIRP.csv")
+CHIRP_FIELDS = ["Location", "Name", "Frequency", "Duplex", "Offset", "Tone", "rToneFreq", "cToneFreq",
+                "DtcsCode", "DtcsPolarity", "Mode", "TStep", "Skip", "Comment",
+                "URCALL", "RPT1CALL", "RPT2CALL"]
+# Offset (MHz, e.g. -0.6) and Tone (CTCSS Hz) are for repeaters and may be blank.
+FREQ_FIELDS = ["MHz", "Mode", "Name", "Note", "Offset", "Tone"]
 MODES = ["USB", "LSB", "FM", "AM", "CW", "PKTUSB", "PKTLSB", "PKTFM"]
 
 
@@ -381,21 +394,39 @@ def reference_sections():
     return [("My frequencies", MY_FREQS), ("Nearest Winlink gateways", GATEWAYS)] + sections
 
 
+def to_float(text):
+    try:
+        return float((text or "").strip().replace("+", ""))
+    except ValueError:
+        return None
+
+
 def read_freqs(path):
     """Rows of a frequency list; rows without a usable frequency are skipped."""
     rows = []
     try:
         with open(path, encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
-                try:
-                    mhz = float(row.get("MHz") or "")
-                except ValueError:
+                mhz = to_float(row.get("MHz"))
+                if mhz is None:
                     continue
                 rows.append({"MHz": mhz, "Mode": (row.get("Mode") or "").strip().upper(),
-                             "Name": (row.get("Name") or "").strip(), "Note": (row.get("Note") or "").strip()})
+                             "Name": (row.get("Name") or "").strip(), "Note": (row.get("Note") or "").strip(),
+                             "Offset": to_float(row.get("Offset")), "Tone": to_float(row.get("Tone"))})
     except OSError:
         pass
     return rows
+
+
+def offset_text(offset):
+    return "simplex" if offset == 0 else f"{offset:+.3f}".rstrip("0").rstrip(".") + " MHz"
+
+
+def freq_detail(row):
+    """Offset, tone and note, for under a frequency's name."""
+    parts = [offset_text(row["Offset"]) if row.get("Offset") is not None else "",
+             f"tone {row['Tone']:g}" if row.get("Tone") else "", row["Note"]]
+    return " · ".join(filter(None, parts))
 
 
 def write_freqs(path, rows):
@@ -404,7 +435,31 @@ def write_freqs(path, rows):
         out = csv.DictWriter(f, FREQ_FIELDS)
         out.writeheader()
         for row in rows:
-            out.writerow({**row, "MHz": f"{row['MHz']:.6f}".rstrip("0").rstrip(".")})
+            out.writerow({**row, "MHz": f"{row['MHz']:.6f}".rstrip("0").rstrip("."),
+                          "Offset": "" if row.get("Offset") is None else f"{row['Offset']:+g}",
+                          "Tone": f"{row['Tone']:g}" if row.get("Tone") else ""})
+    if path == MY_FREQS:
+        export_chirp(rows)
+
+
+def export_chirp(rows, path=CHIRP_EXPORT):
+    """Write the FM channels for CHIRP, numbered from 1 in list order."""
+    channels = [r for r in rows if r["Mode"] in ("FM", "PKTFM")]
+    try:
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            out = csv.DictWriter(f, CHIRP_FIELDS)
+            out.writeheader()
+            for i, r in enumerate(channels, 1):
+                offset = r.get("Offset") or 0
+                tone = r.get("Tone")
+                out.writerow({"Location": i, "Name": r["Name"], "Frequency": f"{r['MHz']:.6f}",
+                              "Duplex": "+" if offset > 0 else "-" if offset < 0 else "",
+                              "Offset": f"{abs(offset):.6f}", "Tone": "Tone" if tone else "",
+                              "rToneFreq": f"{tone or 88.5:.1f}", "cToneFreq": f"{tone or 88.5:.1f}",
+                              "DtcsCode": "023", "DtcsPolarity": "NN", "Mode": "FM", "TStep": "5.00",
+                              "Skip": "", "Comment": r["Note"], "URCALL": "", "RPT1CALL": "", "RPT2CALL": ""})
+    except OSError:
+        pass
 
 
 def nmcli_fields(line):
@@ -475,6 +530,90 @@ def tune_radio(mhz, mode):
         if rigctld_query(*RIGCTLD, f"M {m} 0") == "RPRT 0":
             return True
     return False
+
+
+# The Online page shows what emcomm-online saved; it fetches in the background.
+ONLINE_CMD = os.environ.get("EMCOMM_ONLINE", "emcomm-online")
+ONLINE_CACHE = os.environ.get("EMCOMM_ONLINE_CACHE", os.path.expanduser("~/.cache/emcomm/online"))
+ACCOUNTS_PATH = os.environ.get("EMCOMM_ACCOUNTS", os.path.expanduser("~/.config/emcomm/accounts.json"))
+ONLINE_SECTIONS = {"alerts": "Weather alerts", "space": "Propagation", "heard": "Who heard me",
+                   "lookup": "Callsign lookup"}
+ONLINE_SOURCES = {"alerts": ["alerts"], "space": ["space", "bands"], "heard": ["heard"], "lookup": []}
+BACKGROUND_SOURCES = ["alerts", "space", "bands"]
+BANDS = [("160 m", 1.8, 2), ("80 m", 3.5, 4), ("60 m", 5.3, 5.41), ("40 m", 7, 7.3), ("30 m", 10.1, 10.15),
+         ("20 m", 14, 14.35), ("17 m", 18.068, 18.168), ("15 m", 21, 21.45), ("12 m", 24.89, 24.99),
+         ("10 m", 28, 29.7), ("6 m", 50, 54), ("2 m", 144, 148), ("1.25 m", 222, 225), ("70 cm", 420, 450)]
+# (key, label, hidden while typing)
+ACCOUNT_FIELDS = [("qrz_user", "QRZ username", False), ("qrz_password", "QRZ password", True),
+                  ("hamqth_user", "HamQTH username", False), ("hamqth_password", "HamQTH password", True),
+                  ("email", "Contact email", False), ("aprsfi_key", "aprs.fi API key", True)]
+
+
+def online_record(name):
+    return read_json(os.path.join(ONLINE_CACHE, name + ".json"), {})
+
+
+def ago(epoch, now=None):
+    if not epoch:
+        return "never"
+    minutes = int(((now or time.time()) - epoch) // 60)
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} min ago"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h ago"
+    return time.strftime("%Y-%m-%d", time.localtime(epoch))
+
+
+def iso_epoch(text):
+    try:
+        return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def active_alerts(record, now=None):
+    """Saved weather alerts that haven't ended yet."""
+    now = now or time.time()
+    return [a for a in record.get("data") or [] if (iso_epoch(a.get("ends", "")) or now + 1) > now]
+
+
+def band_name(mhz):
+    return next((name for name, low, high in BANDS if low <= mhz <= high), f"{mhz:g} MHz")
+
+
+def record_status(record, what):
+    """One line on how fresh a saved answer is, and why it isn't fresher."""
+    if record.get("error") and record.get("updated"):
+        return f"{what} from {ago(record['updated'])}. Couldn't update: {record['error']}"
+    if record.get("error"):
+        return record["error"]
+    if not record.get("updated"):
+        return "Nothing saved yet; the station needs internet to get it."
+    return f"{what}, updated {ago(record['updated'])}"
+
+
+def tune_split(mhz, offset_mhz, tone):
+    """Tune an FM repeater: output frequency, FM, transmit offset and CTCSS tone.
+    Returns None if the radio didn't take the frequency, else what it didn't take."""
+    if not tune_radio(mhz, "FM"):
+        return None
+    missed = []
+    if offset_mhz is not None:
+        offset = round(offset_mhz * 1_000_000)
+        shift = "+" if offset > 0 else "-" if offset < 0 else "0"
+        took = rigctld_query(*RIGCTLD, f"R {shift}") == "RPRT 0"
+        if took and offset:
+            took = rigctld_query(*RIGCTLD, f"O {abs(offset)}") == "RPRT 0"
+        if not took:
+            missed.append("offset")
+    if tone:
+        if rigctld_query(*RIGCTLD, f"C {round(tone * 10)}") == "RPRT 0":
+            rigctld_query(*RIGCTLD, "U TONE 1")
+        else:
+            missed.append("tone")
+    return missed
 PAT_MAILBOX = os.path.expanduser("~/.local/share/pat/mailbox")
 # (id, label, file). Pat's mailbox is a folder of messages, summarised by pat_mail_summary.
 LOG_SOURCES = [
@@ -542,6 +681,7 @@ class Launcher(Gtk.Window):
         self.choices = {}
         self._filling = False
         self.default_audio_card = None
+        self.net_connected = False
         self.css_provider = None
         self._apply_theme(load_theme())
         self.set_default_size(1024, 600)
@@ -558,20 +698,27 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._logs_page(), "logs")
         self.stack.add_named(self._reference_page(), "reference")
         self.stack.add_named(self._wifi_page(), "wifi")
+        self.stack.add_named(self._online_page(), "online")
         root.pack_start(self.stack, True, True, 0)
 
         self._tick_clock()
         GLib.timeout_add_seconds(1, self._tick_clock)
         self._poll_status()
         GLib.timeout_add_seconds(5, self._poll_status)
+        self._update_alert_badge()
+        # Weather alerts and propagation: shortly after start, then every ten minutes.
+        GLib.timeout_add_seconds(20, lambda: self._background_online() and False)
+        GLib.timeout_add_seconds(600, self._background_online)
         self.connect("key-press-event", self._on_key)
 
     # ---- keyboard ------------------------------------------------------
 
     def _on_key(self, _widget, event):
-        """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, F5 Reference, F6 Wi-Fi, 1-9 open a tile on Home."""
+        """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online,
+        1-9 open a tile on Home."""
         pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home", Gdk.KEY_F2: "diagnostics",
-                 Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs", Gdk.KEY_F5: "reference", Gdk.KEY_F6: "wifi"}
+                 Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs", Gdk.KEY_F5: "reference", Gdk.KEY_F6: "wifi",
+                 Gdk.KEY_F7: "online"}
         if event.keyval in pages:
             self.stack.set_visible_child_name(pages[event.keyval])
             return True
@@ -606,6 +753,12 @@ class Launcher(Gtk.Window):
         net_box.add(self.net_status)
         net_box.connect("button-press-event", lambda *_: self.stack.set_visible_child_name("wifi"))
         bar.pack_end(net_box, False, False, 0)
+        # Weather alerts in force; tap to read them.
+        self.alert_status = Gtk.Label()
+        alert_box = Gtk.EventBox()
+        alert_box.add(self.alert_status)
+        alert_box.connect("button-press-event", lambda *_: self._open_online("alerts"))
+        bar.pack_end(alert_box, False, False, 0)
         self.rig_status = Gtk.Label()
         bar.pack_end(self.rig_status, False, False, 0)
         return bar
@@ -664,6 +817,7 @@ class Launcher(Gtk.Window):
             dot = (f"<span foreground='{self.colours['ok']}'>●</span>" if net[1]
                    else f"<span foreground='{self.colours['muted']}'>○</span>")
             self.net_status.set_markup(f"{dot}  {GLib.markup_escape_text(net[0])}")
+        self.net_connected = bool(net and net[1])
         self.net_status.set_visible(bool(net))
         self._refresh_tiles()
         return False
@@ -689,6 +843,7 @@ class Launcher(Gtk.Window):
         nav.pack_start(self._navbtn("Settings  F3", lambda *_: self.stack.set_visible_child_name("settings")), True, True, 0)
         nav.pack_start(self._navbtn("Logs  F4", lambda *_: self.stack.set_visible_child_name("logs")), True, True, 0)
         nav.pack_start(self._navbtn("Reference  F5", lambda *_: self.stack.set_visible_child_name("reference")), True, True, 0)
+        nav.pack_start(self._navbtn("Online  F7", lambda *_: self.stack.set_visible_child_name("online")), True, True, 0)
         nav.pack_start(self._navbtn("Power", self._power_dialog), True, True, 0)
         page.pack_end(nav, False, False, 0)
         return page
@@ -1346,6 +1501,355 @@ class Launcher(Gtk.Window):
 
         threading.Thread(target=work, daemon=True).start()
 
+    # ---- online --------------------------------------------------------
+
+    def _online_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
+        title = Gtk.Label(label="Online", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        self.online_combo = Gtk.ComboBoxText()
+        for key, label in ONLINE_SECTIONS.items():
+            self.online_combo.append(key, label)
+        self.online_combo.set_active_id("alerts")
+        self.online_combo.connect("changed", lambda *_: self._show_online(fetch=True))
+        header.pack_start(self.online_combo, False, False, 0)
+        header.pack_end(self._navbtn("Accounts", self._edit_accounts), False, False, 0)
+        self.online_refresh_btn = self._navbtn("Refresh", lambda *_: self._online_refresh(force=True))
+        header.pack_end(self.online_refresh_btn, False, False, 0)
+        self.online_map_btn = self._navbtn("Map", lambda *_: run_detached(["emcomm-map"]))
+        header.pack_end(self.online_map_btn, False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        self.lookup_row = Gtk.Box(spacing=12)
+        self.lookup_entry = Gtk.Entry(max_length=12, placeholder_text="Callsign", width_chars=12)
+        self.lookup_entry.connect("activate", self._lookup)
+        self.lookup_row.pack_start(self.lookup_entry, False, False, 0)
+        self.lookup_row.pack_start(self._navbtn("Look up", self._lookup, "primary"), False, False, 0)
+        page.pack_start(self.lookup_row, False, False, 0)
+
+        self.online_status = Gtk.Label(xalign=0, wrap=True)
+        self.online_status.get_style_context().add_class("muted")
+        page.pack_start(self.online_status, False, False, 0)
+
+        self.online_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.online_text = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                        left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD)
+        self.online_stack = Gtk.Stack()
+        for name, child in (("list", self.online_list), ("text", self.online_text)):
+            scroller = Gtk.ScrolledWindow()
+            scroller.add(child)
+            self.online_stack.add_named(scroller, name)
+        page.pack_start(self.online_stack, True, True, 0)
+        self.lookup_text = ""
+        page.connect("map", lambda *_: self._show_online(fetch=True))
+        return page
+
+    def _open_online(self, section):
+        self.online_combo.set_active_id(section)
+        self.stack.set_visible_child_name("online")
+
+    def _show_online(self, fetch=False):
+        section = self.online_combo.get_active_id()
+        self.lookup_row.set_visible(section == "lookup")
+        self.online_map_btn.set_visible(section == "heard" and bool(shutil.which("emcomm-map")))
+        self.online_refresh_btn.set_visible(section != "lookup")
+        {"alerts": self._online_alerts, "space": self._online_space, "heard": self._online_heard,
+         "lookup": self._online_lookup}[section]()
+        if fetch and ONLINE_SOURCES[section]:
+            # Quick when the saved answer is recent: emcomm-online only fetches what's due.
+            self._online_refresh()
+
+    def _online_refresh(self, force=False):
+        section = self.online_combo.get_active_id()
+        if not shutil.which(ONLINE_CMD):
+            self.online_status.set_text("The online helper isn't installed; tap Update station in Settings.")
+            return
+        if force:
+            self.online_status.set_text("Checking…")
+        self.online_refresh_btn.set_sensitive(False)
+        argv = [ONLINE_CMD, "refresh"] + (["--force"] if force else []) + ONLINE_SOURCES[section]
+
+        def work():
+            try:
+                subprocess.run(argv, capture_output=True, timeout=120, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            GLib.idle_add(self._online_refreshed, section)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _online_refreshed(self, section):
+        self.online_refresh_btn.set_sensitive(True)
+        self._update_alert_badge()
+        current = self.online_combo.get_active_id()
+        if self.stack.get_visible_child_name() == "online" and current != "lookup" and section in (None, current):
+            self._show_online()
+        return False
+
+    def _background_online(self):
+        """Keep weather alerts and propagation fresh while the station has internet."""
+        if self.net_connected and shutil.which(ONLINE_CMD):
+            def work():
+                try:
+                    subprocess.run([ONLINE_CMD, "refresh"] + BACKGROUND_SOURCES, capture_output=True,
+                                   timeout=180, check=False)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                GLib.idle_add(self._online_refreshed, None)
+
+            threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def _update_alert_badge(self):
+        alerts = active_alerts(online_record("alerts"))
+        if alerts:
+            plural = "s" if len(alerts) > 1 else ""
+            self.alert_status.set_markup(f"<span foreground='{self.colours['danger']}'>▲</span>  "
+                                         f"{len(alerts)} weather alert{plural}")
+        else:
+            self.alert_status.set_text("")
+
+    def _fill_online_list(self, rows):
+        for child in self.online_list.get_children():
+            self.online_list.remove(child)
+        for row in rows:
+            self.online_list.add(row)
+        self.online_list.show_all()
+        self.online_stack.set_visible_child_name("list")
+
+    def _info_row(self, lead, title, detail, buttons=(), lead_colour=None):
+        box = Gtk.Box(spacing=16)
+        box.get_style_context().add_class("freq-row")
+        lead_label = Gtk.Label(xalign=1, width_chars=9)
+        lead_label.get_style_context().add_class("freq")
+        if lead_colour:
+            lead_label.set_markup(f"<span foreground='{lead_colour}'>{GLib.markup_escape_text(lead)}</span>")
+        else:
+            lead_label.set_text(lead)
+        box.pack_start(lead_label, False, False, 0)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        name = Gtk.Label(label=title, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        name.get_style_context().add_class("tile-name")
+        text.pack_start(name, False, False, 0)
+        if detail:
+            note = Gtk.Label(label=detail, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            note.get_style_context().add_class("tile-detail")
+            text.pack_start(note, False, False, 0)
+        box.pack_start(text, True, True, 0)
+        for label, handler in reversed(buttons):
+            box.pack_end(self._navbtn(label, handler), False, False, 0)
+        return box
+
+    def _show_text(self, text):
+        self.online_text.get_buffer().set_text(text)
+        self.online_stack.set_visible_child_name("text")
+
+    def _text_dialog(self, title, text):
+        dialog = Gtk.Dialog(title=title, transient_for=self, modal=True)
+        dialog.set_default_size(820, 460)
+        dialog.add_buttons("Close", Gtk.ResponseType.CLOSE)
+        view = Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD,
+                            left_margin=12, right_margin=12, top_margin=8)
+        view.get_buffer().set_text(text)
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.add(view)
+        dialog.get_content_area().pack_start(scroller, True, True, 0)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def _online_alerts(self):
+        record = online_record("alerts")
+        alerts = active_alerts(record)
+        grid = self.station.get("grid", "?")
+        status = record_status(record, f"Weather alerts for grid {grid} from the National Weather Service (US only)")
+        if record.get("updated") and not alerts:
+            status = "No weather alerts in force. " + status
+        self.online_status.set_text(status)
+        rows = []
+        for alert in alerts:
+            ends = iso_epoch(alert.get("ends", ""))
+            until = f"until {time.strftime('%a %H:%M', time.localtime(ends))}" if ends else ""
+            colour = self.colours["danger"] if alert["severity"] in ("Extreme", "Severe") else self.colours["accent"]
+            text = "\n\n".join(filter(None, [alert["headline"], alert["description"], alert["instruction"],
+                                             f"Areas: {alert['area']}", alert["sender"]]))
+            rows.append(self._info_row(alert["severity"], alert["event"],
+                                       " · ".join(filter(None, [until, alert["area"]])),
+                                       [("Details", lambda *_, e=alert["event"], t=text: self._text_dialog(e, t))],
+                                       colour))
+        self._fill_online_list(rows)
+
+    def _online_space(self):
+        space, bands = online_record("space"), online_record("bands")
+        self.online_status.set_text(record_status(space, "Space weather from NOAA") + " · " +
+                                    record_status(bands, "band conditions from N0NBH (hamqsl.com)"))
+        s, b = space.get("data") or {}, bands.get("data") or {}
+        lines = []
+        sfi = s.get("sfi") or b.get("sfi")
+        if sfi:
+            hint = ("upper bands (15 to 10 m) mostly closed" if int(sfi) < 90 else
+                    "upper bands open at times" if int(sfi) < 150 else "upper bands open")
+            lines.append(f"Solar flux (SFI)     {sfi:<6}  {hint}")
+        kp = s.get("kp")
+        if kp is not None:
+            hint = ("quiet: HF normal" if kp < 3 else "unsettled: some fading at high latitudes" if kp < 4 else
+                    "active: HF noisy, polar paths poor" if kp < 5 else
+                    f"storm (G{min(5, int(kp) - 4)}): HF may fade out; try 80 and 40 m NVIS")
+            lines.append(f"Planetary K index    {kp:<6g}  {hint}")
+        scales = s.get("scales") or {}
+        if scales:
+            names = {"R": "radio blackouts", "S": "radiation storms", "G": "geomagnetic storms"}
+            lines.append("NOAA scales today    " + " · ".join(
+                f"{k}{v['level']} {names[k]}" + (f" ({v['text']})" if v["level"] else "") for k, v in scales.items()))
+        if b.get("bands"):
+            lines += ["", f"HF band conditions (updated {b.get('updated', '').strip()})", f"{'':16}{'Day':10}Night"]
+            for band, times in b["bands"].items():
+                lines.append(f"  {band:14}{times.get('day', '?'):10}{times.get('night', '?')}")
+            extra = [f"Geomagnetic field {b['geomag']}" if b.get("geomag") else "",
+                     f"noise {b['noise']}" if b.get("noise") else "",
+                     f"A index {b['a']}" if b.get("a") else "", f"sunspots {b['sunspots']}" if b.get("sunspots") else ""]
+            lines += ["", " · ".join(filter(None, extra))]
+            open_vhf = [f"{p['name'].replace('-', ' ')} ({p['where'].replace('_', ' ')}): {p['state']}"
+                        for p in b.get("vhf", []) if p["state"].lower() != "band closed"]
+            if open_vhf:
+                lines += ["VHF: " + "; ".join(open_vhf)]
+        self._show_text("\n".join(lines) if lines else "")
+
+    def _online_heard(self):
+        record = online_record("heard")
+        heard = record.get("data") or []
+        call = self.station.get("callsign", "")
+        if record.get("updated") and not heard:
+            status = (f"No one has reported hearing {call} on PSKReporter in the last 6 hours. Reports come from "
+                      "FT8, JS8Call and other digital stations that are online. ")
+        else:
+            status = f"{len(heard)} stations reported hearing {call} in the last 6 hours. " if heard else ""
+        self.online_status.set_text(status + record_status(record, "From PSKReporter"))
+        here = grid_to_latlon(self.station.get("grid", ""))
+        rows = []
+        for h in heard:
+            there = grid_to_latlon(h["grid"])
+            where = ""
+            if here and there:
+                miles, bearing = distance_bearing(here, there)
+                where = f"{miles:,.0f} mi at {bearing:03.0f}°"
+            details = [where, h["mode"], f"SNR {h['snr']} dB" if h["snr"] is not None else "", ago(h["time"])]
+            band = band_name(h["freq"] / 1e6) if h["freq"] else "?"
+            rows.append(self._info_row(band, f"{h['call']}  ·  {h['grid']}", " · ".join(filter(None, details))))
+        self._fill_online_list(rows)
+
+    def _online_lookup(self):
+        acc = read_json(ACCOUNTS_PATH, {})
+        services = [name for name, key in (("QRZ", "qrz_user"), ("HamQTH", "hamqth_user"), ("aprs.fi", "aprsfi_key"))
+                    if acc.get(key)]
+        self.online_status.set_text(("Looks up with " + ", ".join(services) + ". Callsigns looked up before "
+                                     "still show when the station is offline.") if services else
+                                    "Add a QRZ or HamQTH login under Accounts to look up callsigns.")
+        self._show_text(self.lookup_text)
+        self.lookup_entry.grab_focus()
+
+    def _lookup(self, *_):
+        call = self.lookup_entry.get_text().strip().upper()
+        if not call:
+            return
+        if not shutil.which(ONLINE_CMD):
+            self.online_status.set_text("The online helper isn't installed; tap Update station in Settings.")
+            return
+        self.online_status.set_text(f"Looking up {call}…")
+
+        def work():
+            try:
+                out = subprocess.run([ONLINE_CMD, "lookup", call], capture_output=True, text=True, timeout=60).stdout
+                result = json.loads(out)
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                result = {"call": call, "errors": ["The lookup didn't finish."]}
+            GLib.idle_add(self._lookup_done, result)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _lookup_done(self, r):
+        lines = []
+        if r.get("notfound"):
+            lines.append(f"{r['call']} isn't in the callbook.")
+        elif r.get("source"):
+            lines += [f"{r['call']}   {r.get('name', '')}".rstrip(),
+                      ", ".join(filter(None, [r.get("city"), r.get("state"), r.get("country")]))]
+            where = f"Grid {r['grid']}" if r.get("grid") else ""
+            if r.get("miles") is not None:
+                where += f" · {r['miles']:,.0f} mi at {r['bearing']:03.0f}°"
+            lines += [where.strip(" ·")]
+            if r.get("class"):
+                lines.append(f"Licence class {r['class']}" + (f", expires {r['expires']}" if r.get("expires") else ""))
+            if r.get("email"):
+                lines.append(r["email"])
+            source = f"From {r['source']}"
+            if r.get("cached"):
+                source += f", saved {ago(r.get('updated'))} (couldn't reach it now)"
+            lines += ["", source]
+            if r.get("note"):
+                lines.append(r["note"])
+        aprs = r.get("aprs")
+        if aprs:
+            here = grid_to_latlon(self.station.get("grid", ""))
+            where = ""
+            if here and aprs.get("lat") is not None:
+                miles, bearing = distance_bearing(here, (aprs["lat"], aprs["lon"]))
+                where = f", {miles:,.0f} mi at {bearing:03.0f}°"
+            lines += ["", f"Last APRS position (aprs.fi): {aprs['name']} {ago(aprs.get('time'))}{where}",
+                      f"  {aprs['lat']:.4f}, {aprs['lon']:.4f}  {aprs.get('comment', '')}".rstrip()]
+        elif "aprs" in r:
+            lines += ["", "No recent APRS position on aprs.fi."]
+        if r.get("errors"):
+            lines += [""] + r["errors"]
+        self.lookup_text = "\n".join(lines).strip()
+        if self.online_combo.get_active_id() == "lookup":
+            self._online_lookup()
+        return False
+
+    def _edit_accounts(self, *_):
+        acc = read_json(ACCOUNTS_PATH, {})
+        dialog = Gtk.Dialog(title="Accounts and keys", transient_for=self, modal=True)
+        dialog.set_default_size(860, -1)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        grid = Gtk.Grid(column_spacing=16, row_spacing=10, column_homogeneous=True)
+        widgets = {}
+        for i, (key, label, secret) in enumerate(ACCOUNT_FIELDS):
+            entry = Gtk.Entry(visibility=not secret)
+            entry.set_text(acc.get(key, ""))
+            widgets[key] = entry
+            grid.attach(self._field(label, entry), i % 2, i // 2, 1, 1)
+        box.pack_start(grid, False, False, 0)
+        show = Gtk.CheckButton(label="Show passwords and keys")
+        show.connect("toggled", lambda b: [widgets[k].set_visibility(b.get_active())
+                                           for k, _l, secret in ACCOUNT_FIELDS if secret])
+        box.pack_start(show, False, False, 0)
+        hint = Gtk.Label(xalign=0, wrap=True, label=(
+            "QRZ gives full records to XML subscribers; HamQTH is free (hamqth.com). The email is sent to "
+            "NOAA and PSKReporter so they know who to contact about the station's requests. The aprs.fi key "
+            "is under My account on aprs.fi. These stay on this station."))
+        hint.set_max_width_chars(100)
+        hint.get_style_context().add_class("muted")
+        box.pack_start(hint, False, False, 0)
+        dialog.get_content_area().add(box)
+        dialog.show_all()
+        response = dialog.run()
+        values = {key: entry.get_text().strip() for key, entry in widgets.items()}
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        acc.update(values)
+        os.makedirs(os.path.dirname(ACCOUNTS_PATH), exist_ok=True)
+        # Only the station user can read the logins.
+        fd = os.open(ACCOUNTS_PATH + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(acc, f, indent=1)
+        os.replace(ACCOUNTS_PATH + ".tmp", ACCOUNTS_PATH)
+        self._show_online()
+
     # ---- reference -----------------------------------------------------
 
     def _reference_page(self):
@@ -1420,6 +1924,9 @@ class Launcher(Gtk.Window):
             return
         rows = read_freqs(path)
         mine = path == MY_FREQS
+        if mine and rows:
+            # Keeps CHIRP's copy current, also when the list was copied in from a USB stick.
+            export_chirp(rows)
         if not rows:
             self.ref_status.set_text("Nothing here yet. Tune the radio and tap Add frequency." if mine else "")
         self._fill_ref_list(rows, my_index=mine)
@@ -1490,8 +1997,9 @@ class Launcher(Gtk.Window):
         name = Gtk.Label(label=row["Name"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
         name.get_style_context().add_class("tile-name")
         text.pack_start(name, False, False, 0)
-        if row["Note"]:
-            note = Gtk.Label(label=row["Note"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        detail = freq_detail(row)
+        if detail:
+            note = Gtk.Label(label=detail, xalign=0, ellipsize=Pango.EllipsizeMode.END)
             note.get_style_context().add_class("tile-detail")
             text.pack_start(note, False, False, 0)
         box.pack_start(text, True, True, 0)
@@ -1502,6 +2010,17 @@ class Launcher(Gtk.Window):
 
     def _tune(self, row):
         label = f"{row['MHz']:g} MHz {row['Mode']}".strip()
+        if row.get("Offset") is not None or row.get("Tone"):
+            missed = tune_split(row["MHz"], row.get("Offset"), row.get("Tone"))
+            if missed is None:
+                self.ref_status.set_text(f"The radio didn't take {row['MHz']:g} MHz FM; it may not cover that "
+                                         "band, or isn't connected.")
+            elif missed:
+                self.ref_status.set_text(f"Radio on {row['MHz']:g} MHz FM. Set the {' and '.join(missed)} on "
+                                         "the radio; it didn't take them from here.")
+            else:
+                self.ref_status.set_text(f"Radio on {row['MHz']:g} MHz FM, {freq_detail({**row, 'Note': ''})}")
+            return
         if tune_radio(row["MHz"], row["Mode"]):
             self.ref_status.set_text(f"Radio on {label}")
         else:
@@ -1518,13 +2037,16 @@ class Launcher(Gtk.Window):
             mode.append(m, m.replace("PKT", "DATA-"))
         name = Gtk.Entry(placeholder_text="County ARES net")
         note = Gtk.Entry(placeholder_text="Sundays 19:00 local")
+        offset = Gtk.Entry(placeholder_text="Repeaters only: -0.6, +5 or 0 for simplex")
+        tone = Gtk.Entry(placeholder_text="Repeaters only: CTCSS tone, e.g. 100.0")
         # Start from where the radio is now.
         hz = rigctld_query(*RIGCTLD, "f")
         if hz and hz.isdigit():
             mhz.set_text(f"{int(hz) / 1_000_000:.6f}".rstrip("0").rstrip("."))
         current_mode = rigctld_query(*RIGCTLD, "m")
         mode.set_active_id(current_mode if current_mode in MODES else "USB")
-        for i, (label, widget) in enumerate((("MHz", mhz), ("Mode", mode), ("Name", name), ("Note", note))):
+        for i, (label, widget) in enumerate((("MHz", mhz), ("Mode", mode), ("Name", name), ("Note", note),
+                                             ("Offset MHz", offset), ("Tone Hz", tone))):
             grid.attach(Gtk.Label(label=label, xalign=0), 0, i, 1, 1)
             widget.set_hexpand(True)
             grid.attach(widget, 1, i, 1, 1)
@@ -1537,8 +2059,13 @@ class Launcher(Gtk.Window):
                 mhz.grab_focus()
                 continue
             rows = read_freqs(MY_FREQS)
+            shift, ctcss = to_float(offset.get_text()), to_float(tone.get_text())
+            if (offset.get_text().strip() and shift is None) or (tone.get_text().strip() and not ctcss):
+                (offset if shift is None and offset.get_text().strip() else tone).grab_focus()
+                continue
             rows.append({"MHz": value, "Mode": mode.get_active_id(),
-                         "Name": name.get_text().strip() or f"{value:g} MHz", "Note": note.get_text().strip()})
+                         "Name": name.get_text().strip() or f"{value:g} MHz", "Note": note.get_text().strip(),
+                         "Offset": shift, "Tone": ctcss})
             write_freqs(MY_FREQS, rows)
             self._load_reference_sections(select=MY_FREQS)
             break

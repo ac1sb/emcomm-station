@@ -79,6 +79,50 @@
         state: link
       loop: "{{ apps_mesh_clients | dict2items }}"
 
+# CHIRP isn't packaged by Debian; the project publishes a Python wheel per build.
+- name: Install CHIRP
+  tags: [chirp]
+  vars:
+    apps_chirp_index: https://archive.chirpmyradio.com/chirp_next/
+  block:
+    - name: Install CHIRP's GUI toolkit
+      ansible.builtin.apt:
+        name: [python3-venv, python3-wxgtk4.0, python3-yattag]
+        install_recommends: false
+
+    - name: List CHIRP builds
+      ansible.builtin.uri:
+        url: "{{ apps_chirp_index }}"
+        return_content: true
+      register: apps_chirp_builds
+
+    - name: Pick the CHIRP build
+      ansible.builtin.set_fact:
+        apps_chirp_folder: >-
+          {{ apps_chirp_builds.content | regex_findall('href="((?:next-)?\d{8})/"')
+             | select('search', apps_chirp_build) | sort | last }}
+
+    - name: Find the build's wheel
+      ansible.builtin.uri:
+        url: "{{ apps_chirp_index }}{{ apps_chirp_folder }}/"
+        return_content: true
+      register: apps_chirp_files
+
+    # Its own Python environment, like the mesh clients, but able to see
+    # Debian's wxPython.
+    - name: Install CHIRP
+      ansible.builtin.pip:
+        name: "{{ apps_chirp_index }}{{ apps_chirp_folder }}/{{ apps_chirp_files.content | regex_search('chirp-\\d{8}-py3-none-any\\.whl') }}"
+        virtualenv: /opt/emcomm/chirp
+        virtualenv_command: python3 -m venv
+        virtualenv_site_packages: true
+
+    - name: Put CHIRP on the PATH
+      ansible.builtin.file:
+        src: /opt/emcomm/chirp/bin/chirp
+        dest: /usr/local/bin/chirp
+        state: link
+
 - name: Install the station map
   tags: [map]
   block:
@@ -126,6 +170,33 @@
       ansible.builtin.command: emcomm-map-prepare /var/cache/emcomm/natural-earth /usr/share/emcomm/map/basemap.js
       when: apps_natural_earth is changed or not apps_basemap.stat.exists
       changed_when: true
+
+- name: Install the web browser
+  tags: [browser]
+  block:
+    - name: Install Chromium
+      ansible.builtin.apt:
+        name: chromium
+        install_recommends: false
+
+    - name: Create Chromium's policy folder
+      ansible.builtin.file:
+        path: /etc/chromium/policies/managed
+        state: directory
+        mode: "0755"
+
+    - name: Add the ham radio bookmarks and turn off first-run prompts
+      ansible.builtin.copy:
+        content: "{{ apps_browser_policy | to_nice_json }}\n"
+        dest: /etc/chromium/policies/managed/emcomm.json
+        mode: "0644"
+      vars:
+        apps_browser_policy:
+          BookmarkBarEnabled: true
+          ManagedBookmarks: "{{ [{'toplevel_name': 'Ham radio'}] + apps_browser_bookmarks }}"
+          DefaultBrowserSettingEnabled: false
+          MetricsReportingEnabled: false
+          PromotionsEnabled: false
 
 - name: Install Pat
   tags: [pat]

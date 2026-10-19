@@ -7,7 +7,7 @@
 #   emcomm-update --app NAME  install one app (a tag in roles/apps)
 set -euo pipefail
 
-APPS="js8call wsjtx fldigi flmsg pat ardop packet vara aprs meshtastic meshcore map"
+APPS="js8call wsjtx fldigi flmsg pat ardop packet vara aprs meshtastic meshcore map browser chirp"
 SOURCE_FILE=/etc/emcomm/playbook-dir
 
 usage() { echo "usage: $0 [--app ${APPS// /|}]" >&2; exit 2; }

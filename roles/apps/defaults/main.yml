@@ -31,3 +31,21 @@ apps_winetricks_version: "20260125"
 # Wine and the VARA installer helper. VARA itself is downloaded on the station
 # the first time its tile is tapped.
 apps_vara: true
+
+# Bookmarks bar in Chromium (the Browser tile). Edit and run Update station
+# to change them.
+apps_browser_bookmarks:
+  - { name: World Radio League, url: "https://worldradioleague.com" }
+  - { name: QRZ, url: "https://www.qrz.com" }
+  - { name: PSKReporter, url: "https://pskreporter.info/pskmap.html" }
+  - { name: aprs.fi, url: "https://aprs.fi" }
+  - { name: RepeaterBook, url: "https://www.repeaterbook.com" }
+  - { name: NWS weather, url: "https://www.weather.gov" }
+  - { name: Space weather, url: "https://www.swpc.noaa.gov" }
+  - { name: Winlink, url: "https://winlink.org" }
+  - { name: WebSDR, url: "http://websdr.org" }
+  - { name: LoTW, url: "https://lotw.arrl.org" }
+
+# CHIRP build to install, as its date (for example "20251018"); blank installs
+# the newest from archive.chirpmyradio.com each time the station is updated.
+apps_chirp_build: ""

@@ -1,5 +1,6 @@
 // Station map: offline Natural Earth base map, Maidenhead grid, this station,
-// Winlink gateways and stations heard. Data comes from window.BASEMAP
+// Winlink gateways, stations heard and stations that heard us (PSKReporter).
+// Data comes from window.BASEMAP
 // (emcomm-map-prepare) and window.MAPDATA (emcomm-map).
 (function () {
   "use strict";
@@ -112,6 +113,27 @@
         .addTo(heard);
     });
   }
+  var heardMe = L.layerGroup().addTo(map);
+  function drawHeardMe() {
+    heardMe.clearLayers();
+    if (!document.getElementById("show-heard-me").checked) return;
+    (D.heardMe || []).forEach(function (h) {
+      if (S.lat != null) {
+        L.polyline([home, [h.lat, h.lon]], { color: "#7C3AED", weight: 1.2, opacity: 0.6, interactive: false,
+                                              renderer: renderer }).addTo(heardMe);
+      }
+      L.circleMarker([h.lat, h.lon], { radius: 6, weight: 1.5, color: "#FFFFFF", fillColor: "#7C3AED", fillOpacity: 0.95 })
+        .bindPopup("<b>" + esc(h.call) + "</b> · " + esc(h.grid) + "<br>Heard you on " +
+                   (h.freq ? (h.freq / 1e6).toFixed(3) + " MHz " : "") + esc(h.mode) +
+                   (h.snr != null ? ", SNR " + h.snr + " dB" : "") + "<br>" + ago(h.time) + " · PSKReporter")
+        .addTo(heardMe);
+    });
+  }
+  function ago(t) {
+    if (!t) return "";
+    var m = Math.round((Date.now() / 1000 - t) / 60);
+    return m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago";
+  }
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
@@ -123,11 +145,12 @@
     document.getElementById(id).addEventListener("change", drawGateways);
   });
   document.getElementById("show-heard").addEventListener("change", drawHeard);
+  document.getElementById("show-heard-me").addEventListener("change", drawHeardMe);
   document.getElementById("show-grid").addEventListener("change", drawGrid);
   document.getElementById("home").addEventListener("click", function () { map.setView(home, 7); });
   document.getElementById("note").textContent =
     (D.gatewaysUpdated ? "Gateway list " + D.gatewaysUpdated : "No gateway list yet");
 
   map.on("zoomend moveend", function () { detail(); drawGrid(); });
-  detail(); drawGrid(); drawGateways(); drawHeard();
+  detail(); drawGrid(); drawGateways(); drawHeard(); drawHeardMe();
 })();
