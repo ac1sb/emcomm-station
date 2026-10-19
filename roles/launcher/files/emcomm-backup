@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Back the station up to a USB stick, and restore it from one.
+
+  emcomm-backup create DIR     write DIR/EmcommBackup/emcomm-backup-CALL-DATE.tar.gz; prints its path
+  emcomm-backup list DIR       the backups on a stick, newest first
+  emcomm-backup restore FILE   put a backup's files back, and its station settings
+
+A backup holds the station settings and the station user's logs, nets, ICS
+forms, My frequencies, tile pictures and app settings. Passwords and keys
+(Accounts, Pat's Winlink password) are left out, so a lost stick gives none
+away; enter them again after a restore.
+"""
+
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+
+HOME = os.path.expanduser("~")
+STATION = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
+APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply-settings").split()
+FOLDER = "EmcommBackup"
+# Paths under the home folder that are backed up (files or folders).
+INCLUDE = [
+    ".local/share/emcomm",          # contact notes, nets, My frequencies
+    "ICS forms",
+    ".config/emcomm",               # launcher theme and pictures, weather radio
+    ".config/JS8Call.ini", ".local/share/JS8Call",
+    ".config/WSJT-X.ini", ".local/share/WSJT-X/wsjtx.log", ".local/share/WSJT-X/wsjtx_log.adi",
+    ".local/share/pat/mailbox",
+    ".fldigi", ".nbems",
+    ".xastir/config",
+]
+SECRETS = {".config/emcomm/accounts.json"}
+SKIP_SUFFIXES = (".tmp", ".part", ".wav")
+NAME_RE = re.compile(r"^emcomm-backup-[A-Z0-9/-]*-?\d{8}-\d{4}Z\.tar\.gz$")
+
+
+def files_to_back_up(home=HOME):
+    for item in INCLUDE:
+        path = os.path.join(home, item)
+        if os.path.isfile(path):
+            yield item
+        for root, _dirs, files in os.walk(path):
+            for name in sorted(files):
+                rel = os.path.relpath(os.path.join(root, name), home)
+                if rel not in SECRETS and not name.endswith(SKIP_SUFFIXES):
+                    yield rel
+
+
+def create(dest, home=HOME, station_path=STATION, now=None):
+    now = now or time.time()
+    try:
+        with open(station_path, "rb") as f:
+            station = f.read()
+        call = json.loads(station).get("callsign", "")
+    except (OSError, ValueError):
+        station, call = None, ""
+    folder = os.path.join(dest, FOLDER)
+    os.makedirs(folder, exist_ok=True)
+    name = f"emcomm-backup-{re.sub(r'[^A-Z0-9]', '', call.upper()) or 'station'}-" \
+           f"{time.strftime('%Y%m%d-%H%MZ', time.gmtime(now))}.tar.gz"
+    path = os.path.join(folder, name)
+    with tarfile.open(path + ".part", "w:gz") as tar:
+        if station:
+            info = tarfile.TarInfo("station.json")
+            info.size, info.mtime = len(station), int(now)
+            tar.addfile(info, io.BytesIO(station))
+        for rel in files_to_back_up(home):
+            try:
+                tar.add(os.path.join(home, rel), arcname="home/" + rel, recursive=False)
+            except OSError:
+                pass  # a file that vanished or can't be read
+    os.replace(path + ".part", path)
+    return path
+
+
+def backups(folder):
+    folder = os.path.join(folder, FOLDER) if os.path.isdir(os.path.join(folder, FOLDER)) else folder
+    try:
+        names = [n for n in os.listdir(folder) if NAME_RE.match(n)]
+    except OSError:
+        return []
+    return [os.path.join(folder, n) for n in sorted(names, key=lambda n: n[-22:], reverse=True)]
+
+
+def safe_members(tar):
+    """Regular files and folders under home/, plus station.json; nothing that
+    could write outside the home folder."""
+    for member in tar.getmembers():
+        name = member.name
+        if name == "station.json" and member.isfile():
+            yield member
+            continue
+        if not name.startswith("home/") or os.path.isabs(name) or ".." in name.split("/"):
+            continue
+        if not (member.isfile() or member.isdir()):
+            continue
+        if name[5:] in SECRETS:
+            continue
+        yield member
+
+
+def restore(path, home=HOME, apply_settings=True):
+    """Returns a short report of what was restored, and whether the station settings
+    (if the backup has them) were restored."""
+    restored, station_note, station_ok = 0, "", True
+    with tarfile.open(path, "r:gz") as tar:
+        for member in safe_members(tar):
+            if member.name == "station.json":
+                data = tar.extractfile(member).read()
+                if apply_settings:
+                    station_ok, station_note = apply_station(data)
+                continue
+            target = os.path.join(home, member.name[5:])
+            if member.isdir():
+                os.makedirs(target, exist_ok=True)
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with tar.extractfile(member) as src, open(target + ".tmp", "wb") as out:
+                out.write(src.read())
+            os.replace(target + ".tmp", target)
+            os.utime(target, (member.mtime, member.mtime))
+            restored += 1
+    return f"Restored {restored} files.{station_note}", station_ok
+
+
+def apply_station(data):
+    with tempfile.NamedTemporaryFile("wb", suffix=".json", delete=False) as f:
+        f.write(data)
+    try:
+        result = subprocess.run(APPLY_CMD + [f.name], capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f" Station settings weren't restored: {exc}"
+    finally:
+        os.unlink(f.name)
+    if result.returncode != 0:
+        return False, f" Station settings weren't restored: {(result.stderr or result.stdout).strip()}"
+    return True, " Station settings restored."
+
+
+def main(argv):
+    if len(argv) != 2 or argv[0] not in ("create", "list", "restore"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    try:
+        if argv[0] == "create":
+            print(create(argv[1]))
+        elif argv[0] == "list":
+            for path in backups(argv[1]):
+                print(path)
+        else:
+            report, station_ok = restore(argv[1])
+            print(report)
+            return 0 if station_ok else 1
+    except (OSError, tarfile.TarError) as exc:
+        print(f"Failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
