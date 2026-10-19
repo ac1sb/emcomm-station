@@ -36,6 +36,7 @@ APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply
 UPDATE_CMD = os.environ.get("EMCOMM_UPDATE", "sudo -n /usr/local/sbin/emcomm-update").split()
 RIGCTLD = ("127.0.0.1", 4532)
 BAUD_RATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
+GPS_FIXED = [("", "Automatic (u-blox USB GPS)")]
 PTT_CHOICES = [("CAT", "CAT command"), ("RTS", "RTS line (Digirig)"), ("DTR", "DTR line"), ("NONE", "VOX / none")]
 
 # Colours for the dark (default) and light themes; Settings switches between them.
@@ -217,6 +218,46 @@ def rigctld_query(host, port, command, timeout=1.0):
             return data.splitlines()[0].strip() if data else None
     except OSError:
         return None
+
+
+GPS_DEV = os.environ.get("EMCOMM_GPS_DEV", "/dev/gps0")
+GPSD = ("127.0.0.1", 2947)
+
+
+def gps_fix(timeout=2.5):
+    """(fix mode 2 or 3, lat, lon) from gpsd; None while it has no fix; False if gpsd isn't answering."""
+    try:
+        with socket.create_connection(GPSD, timeout=timeout) as s:
+            s.sendall(b'?WATCH={"enable":true,"json":true};\n')
+            buf, deadline = b"", time.time() + timeout
+            while time.time() < deadline:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                *lines, buf = buf.split(b"\n")
+                for line in lines:
+                    try:
+                        msg = json.loads(line)
+                    except ValueError:
+                        continue
+                    if msg.get("class") == "TPV":
+                        if msg.get("mode", 0) >= 2 and "lat" in msg and "lon" in msg:
+                            return msg["mode"], msg["lat"], msg["lon"]
+                        return None
+    except socket.timeout:
+        return None
+    except OSError:
+        return False
+    return None
+
+
+def latlon_to_grid(lat, lon):
+    """Six-character Maidenhead locator, such as FN31pr."""
+    lon = min(max(lon + 180, 0), 359.9999)
+    lat = min(max(lat + 90, 0), 179.9999)
+    return (chr(65 + int(lon // 20)) + chr(65 + int(lat // 10)) + str(int(lon % 20 // 2)) + str(int(lat % 10))
+            + chr(97 + int(lon % 2 * 12)) + chr(97 + int(lat % 1 * 24)))
 
 
 def format_freq(hz_text):
@@ -753,6 +794,13 @@ class Launcher(Gtk.Window):
         net_box.add(self.net_status)
         net_box.connect("button-press-event", lambda *_: self.stack.set_visible_child_name("wifi"))
         bar.pack_end(net_box, False, False, 0)
+        # GPS fix and grid; tap to put the GPS grid in Settings.
+        self.gps_status = Gtk.Label()
+        gps_box = Gtk.EventBox()
+        gps_box.add(self.gps_status)
+        gps_box.connect("button-press-event", lambda *_: self._grid_from_gps())
+        bar.pack_end(gps_box, False, False, 0)
+        self.gps_grid = None
         # Weather alerts in force; tap to read them.
         self.alert_status = Gtk.Label()
         alert_box = Gtk.EventBox()
@@ -777,10 +825,40 @@ class Launcher(Gtk.Window):
             audio = os.path.exists("/proc/asound/rigaudio")
             self._default_audio_to_radio(audio)
             net = self._network_summary()
-            GLib.idle_add(self._show_status, freq, audio, net)
+            gps = gps_fix() if os.path.exists(GPS_DEV) else "absent"
+            GLib.idle_add(self._show_status, freq, audio, net, gps)
 
         threading.Thread(target=work, daemon=True).start()
         return True
+
+    def _show_gps(self, gps):
+        """Top bar: GPS grid when there's a fix; nothing when no GPS is plugged in."""
+        self.gps_grid = latlon_to_grid(gps[1], gps[2]) if isinstance(gps, tuple) else None
+        if gps == "absent":
+            self.gps_status.set_text("")
+        elif self.gps_grid:
+            moved = self.gps_grid[:4].upper() != self.station.get("grid", "")[:4].upper()
+            colour = self.colours["accent"] if moved else self.colours["ok"]
+            hint = "  (tap to use)" if moved else ""
+            self.gps_status.set_markup(f"<span foreground='{colour}'>●</span>  GPS {self.gps_grid}{hint}")
+        else:
+            words = "no fix yet" if gps is None else "not answering"
+            self.gps_status.set_markup(f"<span foreground='{self.colours['muted']}'>○</span>  GPS {words}")
+        if hasattr(self, "grid_gps_btn"):
+            self.grid_gps_btn.set_sensitive(bool(self.gps_grid))
+
+    def _grid_from_gps(self, *_):
+        if not self.gps_grid:
+            return
+        grid = self.gps_grid
+        self.stack.set_visible_child_name("settings")
+        # After the page has filled itself in from the saved settings.
+        GLib.idle_add(self._set_grid_from_gps, grid)
+
+    def _set_grid_from_gps(self, grid):
+        self.grid_entry.set_text(grid)
+        self._set_message(f"Grid {grid} filled in from the GPS. Tap Save to use it.", True)
+        return False
 
     def _default_audio_to_radio(self, audio):
         """Each time the radio's sound card appears, make it the default audio device.
@@ -805,7 +883,7 @@ class Launcher(Gtk.Window):
         connected = ok and out.strip().startswith("connected")
         return ("Network" if connected else "No network"), connected
 
-    def _show_status(self, freq, audio, net=None):
+    def _show_status(self, freq, audio, net=None, gps="absent"):
         if freq:
             self.rig_status.set_markup(f"<span foreground='{self.colours['ok']}'>●</span>  Rig  <tt>{freq}</tt>")
         else:
@@ -818,6 +896,7 @@ class Launcher(Gtk.Window):
                    else f"<span foreground='{self.colours['muted']}'>○</span>")
             self.net_status.set_markup(f"{dot}  {GLib.markup_escape_text(net[0])}")
         self.net_connected = bool(net and net[1])
+        self._show_gps(gps)
         self.net_status.set_visible(bool(net))
         self._refresh_tiles()
         return False
@@ -1107,7 +1186,12 @@ class Launcher(Gtk.Window):
             self.preset_combo.append(preset_id, preset.get("radio_name", preset_id))
         self.preset_combo.connect("changed", self._preset_changed)
         operator.pack_start(self._field("Callsign", self.callsign_entry), False, False, 0)
-        operator.pack_start(self._field("Grid square", self.grid_entry), False, False, 0)
+        grid_row = Gtk.Box(spacing=8)
+        grid_row.pack_start(self.grid_entry, True, True, 0)
+        self.grid_gps_btn = self._navbtn("From GPS", self._grid_from_gps)
+        self.grid_gps_btn.set_sensitive(False)
+        grid_row.pack_start(self.grid_gps_btn, False, False, 0)
+        operator.pack_start(self._field("Grid square", grid_row), False, False, 0)
         operator.pack_start(self._field("Preset (fills in the radio)", self.preset_combo), False, False, 0)
         self.settings_message = Gtk.Label(xalign=0, wrap=True)
         self.settings_message.set_max_width_chars(30)
@@ -1138,9 +1222,11 @@ class Launcher(Gtk.Window):
         grid.attach(self._field("Baud rate (match the radio)", self.baud_combo), 1, 1, 1, 1)
         grid.attach(self._field("PTT", self.ptt_combo), 0, 2, 1, 1)
         grid.attach(self._field("PTT port", self.ptt_port_combo), 1, 2, 1, 1)
-        grid.attach(self._field("Sound card", self.audio_combo), 0, 3, 2, 1)
+        self.gps_combo = Gtk.ComboBoxText()
+        grid.attach(self._field("Sound card", self.audio_combo), 0, 3, 1, 1)
+        grid.attach(self._field("GPS", self.gps_combo), 1, 3, 1, 1)
         for combo in (self.preset_combo, self.mfg_combo, self.model_combo, self.cat_combo, self.baud_combo,
-                      self.ptt_combo, self.ptt_port_combo, self.audio_combo):
+                      self.ptt_combo, self.ptt_port_combo, self.audio_combo, self.gps_combo):
             # Long device names are cut off with "…" instead of widening the screen.
             for cell in combo.get_cells():
                 cell.set_property("ellipsize", Pango.EllipsizeMode.END)
@@ -1211,18 +1297,20 @@ class Launcher(Gtk.Window):
         preset_id = next((pid for pid, p in self.presets if p.get("radio_name") == st.get("radio_name")), "")
         self.preset_combo.set_active_id(preset_id)
         self._fill_radio(st)
+        self._fill_match_combo(self.gps_combo, self.serial_ports, st.get("gps_match") or "", fixed=GPS_FIXED)
         self._filling = False
         self.settings_message.set_text("")
 
     def _rescan_devices(self):
         self.serial_ports, self.sound_cards = detect_devices()
         current = {"cat_match": self._chosen(self.cat_combo), "ptt_match": self._chosen(self.ptt_port_combo),
-                   "audio_match": self._chosen(self.audio_combo)}
+                   "audio_match": self._chosen(self.audio_combo), "gps_match": self._chosen(self.gps_combo)}
         self._fill_match_combo(self.cat_combo, self.serial_ports, current["cat_match"])
         self._fill_match_combo(self.ptt_port_combo, self.serial_ports, current["ptt_match"],
                                fixed=[("cat", "Same as CAT port")])
         self._fill_match_combo(self.audio_combo, self.sound_cards, current["audio_match"],
                                fixed=[("", "Choose later")])
+        self._fill_match_combo(self.gps_combo, self.serial_ports, current["gps_match"], fixed=GPS_FIXED)
         found = len(self.serial_ports) + len(self.sound_cards)
         self._set_message(f"Found {len(self.serial_ports)} serial port(s) and {len(self.sound_cards)} USB sound card(s)."
                           if found else "No USB radio devices found. Plug in the radio and rescan.", found > 0)
@@ -1267,6 +1355,7 @@ class Launcher(Gtk.Window):
             "ptt_method": self.ptt_combo.get_active_id(),
             "ptt_match": self._chosen(self.ptt_port_combo),
             "audio_match": self._chosen(self.audio_combo) or None,
+            "gps_match": self._chosen(self.gps_combo) or None,
         }
         self._set_message("Saving…", None)
 

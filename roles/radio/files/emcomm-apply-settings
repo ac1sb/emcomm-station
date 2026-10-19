@@ -11,8 +11,8 @@ current settings.
   emcomm-apply-settings --check NEW.json  validate only
 
 Settings name any Hamlib rig model plus USB matches (vendor/product IDs,
-optional serial number and interface) for the CAT port, PTT port and sound
-card. Every value that reaches a udev rule is checked against a strict
+optional serial number and interface) for the CAT port, PTT port, sound
+card and GPS. Every value that reaches a udev rule is checked against a strict
 pattern first, so the settings file can't inject rule text.
 """
 
@@ -117,9 +117,15 @@ def validate(raw):
     if raw.get("audio_match"):
         audio_match = clean_match(raw.get("audio_match"), "Sound card")
 
+    gps_match = None
+    if raw.get("gps_match"):
+        gps_match = clean_match(raw.get("gps_match"), "GPS")
+        if gps_match == cat_match or gps_match == ptt_match:
+            raise SettingsError("the GPS can't use the radio's port")
+
     return {"callsign": callsign, "grid": grid, "radio_name": radio_name, "rig_model": rig_model,
             "cat_baud": baud, "cat_match": cat_match, "ptt_method": ptt, "ptt_match": ptt_match,
-            "audio_match": audio_match}
+            "audio_match": audio_match, "gps_match": gps_match}
 
 
 def udev_match(match):
@@ -139,6 +145,11 @@ def render(s):
     if s["audio_match"]:
         rules += ['# Sound card -> ALSA card id "rigaudio"',
                   f'SUBSYSTEM=="sound", KERNEL=="card*", {udev_match(s["audio_match"])}, ATTR{{id}}="rigaudio"']
+    # GPS -> /dev/gps0, which gpsd reads. Without a choice in Settings, any u-blox
+    # receiver (most USB GPS pucks) is used; their USB ID is never a radio's.
+    gps = udev_match(s["gps_match"]) if s.get("gps_match") else 'ENV{ID_VENDOR_ID}=="1546"'
+    rules += ["# GPS -> /dev/gps0. Plugging it in starts gpsd, which sets the clock through chrony.",
+              f'SUBSYSTEM=="tty", {gps}, SYMLINK+="gps0", TAG+="systemd", ENV{{SYSTEMD_WANTS}}+="gpsd.service"']
 
     args = [f"--model={s['rig_model']}", "--rig-file=/dev/rig-cat",
             f"--serial-speed={s['cat_baud']}", f"--ptt-type={s['ptt_method']}"]
@@ -184,6 +195,8 @@ def apply(settings):
         subprocess.run(["systemctl", "restart", "rigctld"], check=False)
     else:
         subprocess.run(["systemctl", "stop", "rigctld"], check=False)
+    if shutil.which("gpsd") and os.path.exists("/dev/gps0"):
+        subprocess.run(["systemctl", "restart", "gpsd"], check=False)
 
 
 def main(argv):

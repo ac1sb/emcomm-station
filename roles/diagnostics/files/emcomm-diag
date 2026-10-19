@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hardware and service status for the Diagnostics screen (and for SSH sessions).
-# Usage: emcomm-diag [usb|ports|audio|services|events|rig|all]
+# Usage: emcomm-diag [usb|ports|audio|services|events|rig|gps|all]
 set -u
 
 # shellcheck disable=SC1091
@@ -77,6 +77,26 @@ show_rig() {
   fi
 }
 
+show_gps() {
+  section "GPS and time"
+  if [ -e /dev/gps0 ]; then
+    printf '%-14s -> %s\n' /dev/gps0 "$(readlink -f /dev/gps0)"
+  else
+    echo "/dev/gps0      not present (plug in a USB GPS, or pick its port in Settings)"
+  fi
+  local tpv
+  tpv=$(timeout 4 gpspipe -w -n 12 2>/dev/null | grep '"class":"TPV"' | tail -n 1)
+  case "$tpv" in
+    *'"mode":3'*) echo "fix: 3D" ;;
+    *'"mode":2'*) echo "fix: 2D" ;;
+    "") echo "fix: no answer from gpsd" ;;
+    *) echo "fix: none yet (needs a view of the sky)" ;;
+  esac
+  [ -n "$tpv" ] && echo "$tpv" | grep -oE '"(lat|lon|time)":[^,]*' | tr '\n' ' ' && echo
+  chronyc -n tracking 2>/dev/null | grep -E '^(Reference ID|System time|Leap status)' ||
+    echo "chrony not running"
+}
+
 show_events() {
   section "Recent USB events (last 30 min)"
   journalctl -k --since "-30min" --no-pager -o short-monotonic 2>/dev/null |
@@ -91,6 +111,7 @@ case "${1:-all}" in
   services) show_services ;;
   rig) show_rig ;;
   events) show_events ;;
-  all) show_usb; show_ports; show_audio; show_services; show_rig; show_events ;;
-  *) echo "usage: $0 [usb|ports|audio|services|events|rig|all]" >&2; exit 2 ;;
+  gps) show_gps ;;
+  all) show_usb; show_ports; show_audio; show_services; show_rig; show_gps; show_events ;;
+  *) echo "usage: $0 [usb|ports|audio|services|events|rig|gps|all]" >&2; exit 2 ;;
 esac

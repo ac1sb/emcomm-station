@@ -18,6 +18,13 @@ environment.
   stable names (`/dev/rig-cat`, `/dev/rig-ptt`, ALSA card `rigaudio`) and restarts
   Hamlib's `rigctld`, which every app uses to reach the radio on `127.0.0.1:4532`.
   `rigctld` starts by itself whenever the radio is plugged in.
+- **GPS time and position:** plug in a USB GPS (any u-blox puck works with no
+  setup; for another kind, pick its port under **GPS** in Settings). gpsd reads it
+  and chrony sets the clock from it, so FT8, JS8Call and the logs keep the right
+  time with no internet. The top bar shows the GPS grid square; when it differs from
+  the saved one it says "tap to use", and tapping it (or **From GPS** next to the
+  grid in Settings) fills in the new grid, ready to save. Diagnostics shows the
+  fix and whether the clock is following the GPS.
 - **Presets** (`radios/`): Yaesu FT-891 with a Digirig, and Yaesu FT-710. Optional
   shortcuts that fill in every radio field at once, even before the radio is plugged in.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
@@ -223,7 +230,8 @@ The station boots straight into the Settings screen.
 2. Enter your **callsign** and **grid square**.
 3. Pick a **preset** if there's one for your setup, or pick the radio's
    **manufacturer** and **model**, then the **CAT port**, **PTT** method and port, and
-   the **sound card** from the lists of plugged-in devices. Tap **Rescan devices** if
+   the **sound card** from the lists of plugged-in devices. Leave **GPS** on
+   Automatic unless your GPS isn't a u-blox. Tap **Rescan devices** if
    you plugged something in after opening Settings.
 4. Check the **baud rate** matches the radio and tap **Save and restart rig control**.
 
