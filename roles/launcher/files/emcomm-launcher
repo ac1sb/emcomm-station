@@ -7,6 +7,7 @@ through emcomm-apply-settings. The app list comes from
 /etc/emcomm/launcher.json, which the playbook writes.
 """
 
+import csv
 import glob
 import json
 import os
@@ -81,6 +82,9 @@ entry, combobox button { background: $bg; color: $text; border: 1px solid $input
 .primary { background: $accent_fill; color: $on_accent; border: none; font-weight: 600; }
 .error { color: $danger_text; }
 .ok { color: $ok; }
+.freq { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: $accent; }
+.freq-row { padding: 6px 4px; border-bottom: 1px solid $line; }
+list, list row { background: $surface; color: $text; }
 textview, textview text { background: $surface; color: $text; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
 """)
 
@@ -282,6 +286,66 @@ def run_detached(argv):
 # ---- logs ------------------------------------------------------------------
 
 NOTES_PATH = os.path.expanduser("~/.local/share/emcomm/contacts.log")
+
+# Reference page: frequency lists (CSV: MHz,Mode,Name,Note) and text pages. The
+# operator's files, such as "My frequencies.csv", sit next to the standard ones
+# and replace a standard file of the same name.
+REFERENCE_DIR = os.environ.get("EMCOMM_REFERENCE", "/usr/share/emcomm/reference")
+USER_REFERENCE = os.path.expanduser("~/.local/share/emcomm/reference")
+MY_FREQS = os.path.join(USER_REFERENCE, "My frequencies.csv")
+FREQ_FIELDS = ["MHz", "Mode", "Name", "Note"]
+MODES = ["USB", "LSB", "FM", "AM", "CW", "PKTUSB", "PKTLSB", "PKTFM"]
+
+
+def reference_sections():
+    """[(title, path)]: the operator's frequencies first, then the standard pages in file order."""
+    files = {}
+    for folder in (REFERENCE_DIR, USER_REFERENCE):
+        for path in glob.glob(os.path.join(folder, "*.csv")) + glob.glob(os.path.join(folder, "*.txt")):
+            files[os.path.basename(path)] = path
+    sections = [(re.sub(r"^\d+\s+", "", os.path.splitext(name)[0]), files[name]) for name in sorted(files)]
+    mine = os.path.basename(MY_FREQS)
+    sections = [s for s in sections if os.path.basename(s[1]) != mine]
+    return [("My frequencies", MY_FREQS)] + sections
+
+
+def read_freqs(path):
+    """Rows of a frequency list; rows without a usable frequency are skipped."""
+    rows = []
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                try:
+                    mhz = float(row.get("MHz") or "")
+                except ValueError:
+                    continue
+                rows.append({"MHz": mhz, "Mode": (row.get("Mode") or "").strip().upper(),
+                             "Name": (row.get("Name") or "").strip(), "Note": (row.get("Note") or "").strip()})
+    except OSError:
+        pass
+    return rows
+
+
+def write_freqs(path, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        out = csv.DictWriter(f, FREQ_FIELDS)
+        out.writeheader()
+        for row in rows:
+            out.writerow({**row, "MHz": f"{row['MHz']:.6f}".rstrip("0").rstrip(".")})
+
+
+def tune_radio(mhz, mode):
+    """Set the radio's frequency and mode through rigctld. True if it took both."""
+    if rigctld_query(*RIGCTLD, f"F {round(mhz * 1_000_000)}") != "RPRT 0":
+        return False
+    if not mode:
+        return True
+    # Radios without a separate data mode get plain USB/LSB/FM instead.
+    for m in dict.fromkeys([mode, mode.removeprefix("PKT")]):
+        if rigctld_query(*RIGCTLD, f"M {m} 0") == "RPRT 0":
+            return True
+    return False
 PAT_MAILBOX = os.path.expanduser("~/.local/share/pat/mailbox")
 # (id, label, file). Pat's mailbox is a folder of messages, summarised by pat_mail_summary.
 LOG_SOURCES = [
@@ -363,6 +427,7 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._diag_page(), "diagnostics")
         self.stack.add_named(self._settings_page(), "settings")
         self.stack.add_named(self._logs_page(), "logs")
+        self.stack.add_named(self._reference_page(), "reference")
         root.pack_start(self.stack, True, True, 0)
 
         self._tick_clock()
@@ -374,9 +439,9 @@ class Launcher(Gtk.Window):
     # ---- keyboard ------------------------------------------------------
 
     def _on_key(self, _widget, event):
-        """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, 1-9 open a tile on Home."""
-        pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home",
-                 Gdk.KEY_F2: "diagnostics", Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs"}
+        """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, F5 Reference, 1-9 open a tile on Home."""
+        pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home", Gdk.KEY_F2: "diagnostics",
+                 Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs", Gdk.KEY_F5: "reference"}
         if event.keyval in pages:
             self.stack.set_visible_child_name(pages[event.keyval])
             return True
@@ -468,6 +533,7 @@ class Launcher(Gtk.Window):
         nav.pack_start(self._navbtn("Diagnostics  F2", lambda *_: self.stack.set_visible_child_name("diagnostics")), True, True, 0)
         nav.pack_start(self._navbtn("Settings  F3", lambda *_: self.stack.set_visible_child_name("settings")), True, True, 0)
         nav.pack_start(self._navbtn("Logs  F4", lambda *_: self.stack.set_visible_child_name("logs")), True, True, 0)
+        nav.pack_start(self._navbtn("Reference  F5", lambda *_: self.stack.set_visible_child_name("reference")), True, True, 0)
         nav.pack_start(self._navbtn("Power", self._power_dialog), True, True, 0)
         page.pack_end(nav, False, False, 0)
         return page
@@ -990,6 +1056,151 @@ class Launcher(Gtk.Window):
         self.note_text.set_text("")
         self.log_combo.set_active_id("notes")
         self._show_log()
+
+    # ---- reference -----------------------------------------------------
+
+    def _reference_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
+        title = Gtk.Label(label="Reference", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        self.ref_combo = Gtk.ComboBoxText()
+        self.ref_combo.connect("changed", lambda *_: self._show_reference())
+        header.pack_start(self.ref_combo, False, False, 0)
+        self.ref_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.ref_status.get_style_context().add_class("muted")
+        header.pack_start(self.ref_status, True, True, 0)
+        header.pack_end(self._navbtn("Add frequency", self._add_frequency, "primary"), False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        self.ref_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.ref_text = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                     left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD)
+        self.ref_stack = Gtk.Stack()
+        for name, child in (("list", self.ref_list), ("text", self.ref_text)):
+            scroller = Gtk.ScrolledWindow()
+            scroller.add(child)
+            self.ref_stack.add_named(scroller, name)
+        page.pack_start(self.ref_stack, True, True, 0)
+        page.connect("map", lambda *_: self._load_reference_sections())
+        return page
+
+    def _load_reference_sections(self, select=None):
+        current = select or self.ref_combo.get_active_id()
+        self.ref_sections = dict((path, title) for title, path in reference_sections())
+        self.ref_combo.remove_all()
+        for path, title in self.ref_sections.items():
+            self.ref_combo.append(path, title)
+        # Start on the operator's own list once it has something in it.
+        if current not in self.ref_sections:
+            others = [p for p in self.ref_sections if p.endswith(".csv") and p != MY_FREQS]
+            current = MY_FREQS if read_freqs(MY_FREQS) or not others else others[0]
+        self.ref_combo.set_active_id(current)
+
+    def _show_reference(self):
+        path = self.ref_combo.get_active_id()
+        if not path:
+            return
+        self.ref_status.set_text("")
+        if path.endswith(".txt"):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    text = f.read()
+            except OSError:
+                text = ""
+            self.ref_text.get_buffer().set_text(text)
+            self.ref_stack.set_visible_child_name("text")
+            return
+        for child in self.ref_list.get_children():
+            self.ref_list.remove(child)
+        rows = read_freqs(path)
+        mine = path == MY_FREQS
+        if not rows:
+            self.ref_status.set_text("Nothing here yet. Tune the radio and tap Add frequency." if mine else "")
+        for index, row in enumerate(rows):
+            self.ref_list.add(self._freq_row(row, index if mine else None))
+        self.ref_list.show_all()
+        self.ref_stack.set_visible_child_name("list")
+
+    def _freq_row(self, row, my_index=None):
+        box = Gtk.Box(spacing=16)
+        box.get_style_context().add_class("freq-row")
+        mhz = f"{row['MHz']:.4f}"
+        freq = Gtk.Label(label=mhz[:-1] if mhz.endswith("0") else mhz, xalign=1, width_chars=9)
+        freq.get_style_context().add_class("freq")
+        box.pack_start(freq, False, False, 0)
+        mode = Gtk.Label(label=row["Mode"].replace("PKT", "DATA-"), xalign=0, width_chars=7)
+        mode.get_style_context().add_class("mono")
+        mode.get_style_context().add_class("muted")
+        box.pack_start(mode, False, False, 0)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        name = Gtk.Label(label=row["Name"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        name.get_style_context().add_class("tile-name")
+        text.pack_start(name, False, False, 0)
+        if row["Note"]:
+            note = Gtk.Label(label=row["Note"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            note.get_style_context().add_class("tile-detail")
+            text.pack_start(note, False, False, 0)
+        box.pack_start(text, True, True, 0)
+        if my_index is not None:
+            box.pack_end(self._navbtn("Remove", lambda *_: self._remove_frequency(my_index)), False, False, 0)
+        box.pack_end(self._navbtn("Tune", lambda *_: self._tune(row)), False, False, 0)
+        return box
+
+    def _tune(self, row):
+        label = f"{row['MHz']:g} MHz {row['Mode']}".strip()
+        if tune_radio(row["MHz"], row["Mode"]):
+            self.ref_status.set_text(f"Radio on {label}")
+        else:
+            self.ref_status.set_text(f"The radio didn't take {label}; check it's connected and on the right band.")
+
+    def _add_frequency(self, *_):
+        dialog = Gtk.Dialog(title="Add frequency", transient_for=self, modal=True)
+        dialog.set_default_size(560, -1)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Add", Gtk.ResponseType.OK)
+        grid = Gtk.Grid(column_spacing=12, row_spacing=12, margin=16)
+        mhz = Gtk.Entry(placeholder_text="14.300", input_purpose=Gtk.InputPurpose.NUMBER)
+        mode = Gtk.ComboBoxText()
+        for m in MODES:
+            mode.append(m, m.replace("PKT", "DATA-"))
+        name = Gtk.Entry(placeholder_text="County ARES net")
+        note = Gtk.Entry(placeholder_text="Sundays 19:00 local")
+        # Start from where the radio is now.
+        hz = rigctld_query(*RIGCTLD, "f")
+        if hz and hz.isdigit():
+            mhz.set_text(f"{int(hz) / 1_000_000:.6f}".rstrip("0").rstrip("."))
+        current_mode = rigctld_query(*RIGCTLD, "m")
+        mode.set_active_id(current_mode if current_mode in MODES else "USB")
+        for i, (label, widget) in enumerate((("MHz", mhz), ("Mode", mode), ("Name", name), ("Note", note))):
+            grid.attach(Gtk.Label(label=label, xalign=0), 0, i, 1, 1)
+            widget.set_hexpand(True)
+            grid.attach(widget, 1, i, 1, 1)
+        dialog.get_content_area().add(grid)
+        dialog.show_all()
+        while dialog.run() == Gtk.ResponseType.OK:
+            try:
+                value = float(mhz.get_text().strip())
+            except ValueError:
+                mhz.grab_focus()
+                continue
+            rows = read_freqs(MY_FREQS)
+            rows.append({"MHz": value, "Mode": mode.get_active_id(),
+                         "Name": name.get_text().strip() or f"{value:g} MHz", "Note": note.get_text().strip()})
+            write_freqs(MY_FREQS, rows)
+            self._load_reference_sections(select=MY_FREQS)
+            break
+        dialog.destroy()
+
+    def _remove_frequency(self, index):
+        rows = read_freqs(MY_FREQS)
+        if index >= len(rows):
+            return
+        if self._confirm(f"Remove {rows[index]['Name']}?", "It comes off My frequencies."):
+            del rows[index]
+            write_freqs(MY_FREQS, rows)
+            self._show_reference()
 
     def _diag_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)

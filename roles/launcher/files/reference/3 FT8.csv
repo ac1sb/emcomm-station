@@ -1,0 +1,12 @@
+MHz,Mode,Name,Note
+1.840,PKTUSB,FT8 160 m,Dial frequency
+3.573,PKTUSB,FT8 80 m,Dial frequency
+7.074,PKTUSB,FT8 40 m,Dial frequency
+10.136,PKTUSB,FT8 30 m,Dial frequency
+14.074,PKTUSB,FT8 20 m,Dial frequency
+18.100,PKTUSB,FT8 17 m,Dial frequency
+21.074,PKTUSB,FT8 15 m,Dial frequency
+24.915,PKTUSB,FT8 12 m,Dial frequency
+28.074,PKTUSB,FT8 10 m,Dial frequency
+50.313,PKTUSB,FT8 6 m,Dial frequency
+144.174,PKTUSB,FT8 2 m,Dial frequency
