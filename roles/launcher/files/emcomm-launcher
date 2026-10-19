@@ -10,6 +10,7 @@ through emcomm-apply-settings. The app list comes from
 import csv
 import glob
 import json
+import math
 import os
 import re
 import shutil
@@ -298,6 +299,76 @@ FREQ_FIELDS = ["MHz", "Mode", "Name", "Note"]
 MODES = ["USB", "LSB", "FM", "AM", "CW", "PKTUSB", "PKTLSB", "PKTFM"]
 
 
+GATEWAYS = "winlink-gateways"  # the Reference page's gateway finder, built from Pat's list
+RMSLIST = os.path.expanduser("~/.local/share/pat/rmslist.json")
+GATEWAY_MODES = {"all": "All modes", "vara hf": "VARA HF", "ardop": "ARDOP", "vara fm": "VARA FM",
+                 "packet": "Packet"}
+
+
+def grid_to_latlon(grid):
+    """Centre of a Maidenhead square (4 or 6 characters), or None."""
+    grid = (grid or "").strip()
+    if not re.fullmatch(r"[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?", grid):
+        return None
+    lon = (ord(grid[0].upper()) - 65) * 20 - 180 + int(grid[2]) * 2
+    lat = (ord(grid[1].upper()) - 65) * 10 - 90 + int(grid[3])
+    if len(grid) == 6:
+        lon += (ord(grid[4].lower()) - 97) * 5 / 60 + 2.5 / 60
+        lat += (ord(grid[5].lower()) - 97) * 2.5 / 60 + 1.25 / 60
+    else:
+        lon, lat = lon + 1, lat + 0.5
+    return lat, lon
+
+
+def distance_bearing(a, b):
+    """Great-circle miles and initial bearing in degrees from a to b, both (lat, lon)."""
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    d = 2 * math.asin(math.sqrt(math.sin((lat2 - lat1) / 2) ** 2
+                                + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2))
+    y = math.sin(lon2 - lon1) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(lon2 - lon1)
+    return d * 3958.8, (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def gateway_matches(modes, want):
+    modes = modes.upper()
+    if want == "vara fm":
+        return modes.startswith("VARA FM")
+    if want == "vara hf":
+        return modes.startswith("VARA") and not modes.startswith("VARA FM")
+    return want == "all" or want.upper() in modes
+
+
+def nearest_gateways(grid, want="all", limit=60):
+    """Winlink gateway channels nearest the station, as Reference rows, from Pat's list."""
+    here = grid_to_latlon(grid)
+    try:
+        with open(RMSLIST, encoding="utf-8") as f:
+            gateways = json.load(f).get("Gateways") or []
+    except (OSError, ValueError):
+        return None
+    rows = []
+    for gw in gateways:
+        for ch in gw.get("GatewayChannels") or []:
+            modes, freq = ch.get("SupportedModes", ""), ch.get("Frequency") or 0
+            if not freq or not gateway_matches(modes, want):
+                continue
+            there = grid_to_latlon(ch.get("Gridsquare")) or (gw.get("Latitude"), gw.get("Longitude"))
+            if here and None not in there:
+                miles, bearing = distance_bearing(here, there)
+                where = f"{miles:,.0f} mi at {bearing:03.0f}°"
+            else:
+                miles, where = float("inf"), ch.get("Gridsquare", "")
+            fm = "FM" in modes.upper() or "PACKET" in modes.upper()
+            # Pat lists the centre frequency; HF modes are dialled 1.5 kHz lower.
+            dial = freq if fm else freq - 1500
+            rows.append({"MHz": dial / 1e6, "Mode": "FM" if fm else "PKTUSB",
+                         "Name": f"{gw.get('Callsign', '')}  ·  {modes}",
+                         "Note": f"{where} · hours {ch.get('OperatingHours') or '?'} UTC", "miles": miles})
+    rows.sort(key=lambda r: (r["miles"], r["MHz"]))
+    return rows[:limit]
+
+
 def reference_sections():
     """[(title, path)]: the operator's frequencies first, then the standard pages in file order."""
     files = {}
@@ -307,7 +378,7 @@ def reference_sections():
     sections = [(re.sub(r"^\d+\s+", "", os.path.splitext(name)[0]), files[name]) for name in sorted(files)]
     mine = os.path.basename(MY_FREQS)
     sections = [s for s in sections if os.path.basename(s[1]) != mine]
-    return [("My frequencies", MY_FREQS)] + sections
+    return [("My frequencies", MY_FREQS), ("Nearest Winlink gateways", GATEWAYS)] + sections
 
 
 def read_freqs(path):
@@ -1290,7 +1361,16 @@ class Launcher(Gtk.Window):
         self.ref_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         self.ref_status.get_style_context().add_class("muted")
         header.pack_start(self.ref_status, True, True, 0)
-        header.pack_end(self._navbtn("Add frequency", self._add_frequency, "primary"), False, False, 0)
+        self.ref_add = self._navbtn("Add frequency", self._add_frequency, "primary")
+        header.pack_end(self.ref_add, False, False, 0)
+        self.ref_gw_update = self._navbtn("Update list", self._update_gateway_list)
+        header.pack_end(self.ref_gw_update, False, False, 0)
+        self.ref_gw_mode = Gtk.ComboBoxText()
+        for key, label in GATEWAY_MODES.items():
+            self.ref_gw_mode.append(key, label)
+        self.ref_gw_mode.set_active_id("all")
+        self.ref_gw_mode.connect("changed", lambda *_: self._show_reference())
+        header.pack_end(self.ref_gw_mode, False, False, 0)
         page.pack_start(header, False, False, 0)
 
         self.ref_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
@@ -1322,6 +1402,13 @@ class Launcher(Gtk.Window):
         if not path:
             return
         self.ref_status.set_text("")
+        gateways = path == GATEWAYS
+        self.ref_gw_mode.set_visible(gateways)
+        self.ref_gw_update.set_visible(gateways)
+        self.ref_add.set_visible(not gateways)
+        if gateways:
+            self._show_gateways()
+            return
         if path.endswith(".txt"):
             try:
                 with open(path, encoding="utf-8") as f:
@@ -1331,16 +1418,62 @@ class Launcher(Gtk.Window):
             self.ref_text.get_buffer().set_text(text)
             self.ref_stack.set_visible_child_name("text")
             return
-        for child in self.ref_list.get_children():
-            self.ref_list.remove(child)
         rows = read_freqs(path)
         mine = path == MY_FREQS
         if not rows:
             self.ref_status.set_text("Nothing here yet. Tune the radio and tap Add frequency." if mine else "")
+        self._fill_ref_list(rows, my_index=mine)
+
+    def _fill_ref_list(self, rows, my_index=False):
+        for child in self.ref_list.get_children():
+            self.ref_list.remove(child)
         for index, row in enumerate(rows):
-            self.ref_list.add(self._freq_row(row, index if mine else None))
+            self.ref_list.add(self._freq_row(row, index if my_index else None))
         self.ref_list.show_all()
         self.ref_stack.set_visible_child_name("list")
+
+    def _show_gateways(self):
+        rows = nearest_gateways(self.station.get("grid", ""), self.ref_gw_mode.get_active_id() or "all")
+        if rows is None:
+            self._fill_ref_list([])
+            if shutil.which("pat"):
+                # Pat writes its list the first time it's asked (from its built-in copy when offline).
+                self._update_gateway_list(force=False)
+            else:
+                self.ref_status.set_text("Install Winlink mail (Pat) from its tile to get the gateway list.")
+            return
+        self._fill_ref_list(rows)
+        try:
+            updated = time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(RMSLIST)))
+        except OSError:
+            updated = "?"
+        self.ref_status.set_text(f"Nearest to {self.station.get('grid', '?')} · list from {updated}")
+
+    def _update_gateway_list(self, *_, force=True):
+        if not shutil.which("pat"):
+            self.ref_status.set_text("Install Winlink mail (Pat) from its tile to get the gateway list.")
+            return
+        self.ref_status.set_text("Getting the gateway list…")
+        self.ref_gw_update.set_sensitive(False)
+
+        def work():
+            args = ["pat", "rmslist"] + (["--force-download"] if force else [])
+            try:
+                result = subprocess.run(args, capture_output=True, text=True, timeout=60)
+                ok = result.returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                ok = False
+            GLib.idle_add(self._gateway_list_done, ok)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _gateway_list_done(self, ok):
+        self.ref_gw_update.set_sensitive(True)
+        if self.ref_combo.get_active_id() == GATEWAYS:
+            self._show_gateways()
+            if not ok:
+                self.ref_status.set_text("Couldn't download a new gateway list; the station needs internet for that.")
+        return False
 
     def _freq_row(self, row, my_index=None):
         box = Gtk.Box(spacing=16)
