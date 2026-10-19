@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Station map</title>
+<link rel="stylesheet" href="file://@MAP_DIR@/leaflet.css">
+<link rel="stylesheet" href="file://@MAP_DIR@/map.css">
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <span class="dot" style="background:#F2A33A"></span><span>You</span>
+  <label><input type="checkbox" id="show-gateways" checked> Gateways
+    <span class="dot" style="background:#2E6FD8"></span>HF <span class="dot" style="background:#2E9D5A"></span>VHF</label>
+  <select id="gateway-filter">
+    <option value="all">All gateways</option>
+    <option value="hf">HF only</option>
+    <option value="vhf">VHF/UHF only</option>
+  </select>
+  <label><input type="checkbox" id="show-heard" checked> Heard <span class="dot" style="background:#C2410C"></span></label>
+  <label><input type="checkbox" id="show-grid" checked> Grid</label>
+  <button id="home">Centre on station</button>
+  <span id="note"></span>
+</div>
+<script src="file://@MAP_DIR@/leaflet.js"></script>
+<script src="file://@MAP_DIR@/basemap.js"></script>
+<script src="data.js"></script>
+<script src="file://@MAP_DIR@/map.js"></script>
+</body>
+</html>

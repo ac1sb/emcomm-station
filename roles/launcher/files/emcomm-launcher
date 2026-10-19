@@ -7,6 +7,7 @@ through emcomm-apply-settings. The app list comes from
 /etc/emcomm/launcher.json, which the playbook writes.
 """
 
+import csv
 import glob
 import json
 import os
@@ -79,8 +80,12 @@ combobox button { padding: 0 10px; }
 entry, combobox button { background: $bg; color: $text; border: 1px solid $input_line; border-radius: 8px;
                          min-height: 44px; font-size: 16px; background-image: none; box-shadow: none; }
 .primary { background: $accent_fill; color: $on_accent; border: none; font-weight: 600; }
+.primary:hover, .primary:active { background: $accent_fill; color: $on_accent; opacity: 0.85; }
 .error { color: $danger_text; }
 .ok { color: $ok; }
+.freq { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: $accent; }
+.freq-row { padding: 6px 4px; border-bottom: 1px solid $line; }
+list, list row { background: $surface; color: $text; }
 textview, textview text { background: $surface; color: $text; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
 """)
 
@@ -282,6 +287,123 @@ def run_detached(argv):
 # ---- logs ------------------------------------------------------------------
 
 NOTES_PATH = os.path.expanduser("~/.local/share/emcomm/contacts.log")
+
+# Reference page: frequency lists (CSV: MHz,Mode,Name,Note) and text pages. The
+# operator's files, such as "My frequencies.csv", sit next to the standard ones
+# and replace a standard file of the same name.
+REFERENCE_DIR = os.environ.get("EMCOMM_REFERENCE", "/usr/share/emcomm/reference")
+USER_REFERENCE = os.path.expanduser("~/.local/share/emcomm/reference")
+MY_FREQS = os.path.join(USER_REFERENCE, "My frequencies.csv")
+FREQ_FIELDS = ["MHz", "Mode", "Name", "Note"]
+MODES = ["USB", "LSB", "FM", "AM", "CW", "PKTUSB", "PKTLSB", "PKTFM"]
+
+
+def reference_sections():
+    """[(title, path)]: the operator's frequencies first, then the standard pages in file order."""
+    files = {}
+    for folder in (REFERENCE_DIR, USER_REFERENCE):
+        for path in glob.glob(os.path.join(folder, "*.csv")) + glob.glob(os.path.join(folder, "*.txt")):
+            files[os.path.basename(path)] = path
+    sections = [(re.sub(r"^\d+\s+", "", os.path.splitext(name)[0]), files[name]) for name in sorted(files)]
+    mine = os.path.basename(MY_FREQS)
+    sections = [s for s in sections if os.path.basename(s[1]) != mine]
+    return [("My frequencies", MY_FREQS)] + sections
+
+
+def read_freqs(path):
+    """Rows of a frequency list; rows without a usable frequency are skipped."""
+    rows = []
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                try:
+                    mhz = float(row.get("MHz") or "")
+                except ValueError:
+                    continue
+                rows.append({"MHz": mhz, "Mode": (row.get("Mode") or "").strip().upper(),
+                             "Name": (row.get("Name") or "").strip(), "Note": (row.get("Note") or "").strip()})
+    except OSError:
+        pass
+    return rows
+
+
+def write_freqs(path, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        out = csv.DictWriter(f, FREQ_FIELDS)
+        out.writeheader()
+        for row in rows:
+            out.writerow({**row, "MHz": f"{row['MHz']:.6f}".rstrip("0").rstrip(".")})
+
+
+def nmcli_fields(line):
+    """Split one line of `nmcli -t` output; colons inside a field come escaped as \\:."""
+    fields, cur, i = [], "", 0
+    while i < len(line):
+        if line[i] == "\\" and i + 1 < len(line):
+            cur += line[i + 1]
+            i += 2
+            continue
+        if line[i] == ":":
+            fields.append(cur)
+            cur = ""
+        else:
+            cur += line[i]
+        i += 1
+    return fields + [cur]
+
+
+def nmcli(*args, timeout=30):
+    """Run nmcli; (ok, output or error message)."""
+    try:
+        result = subprocess.run(["nmcli", *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout).strip().removeprefix("Error: ")
+    return True, result.stdout
+
+
+def wifi_state():
+    """(wifi device or None, its state, connected network or ''), from NetworkManager."""
+    ok, out = nmcli("-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", timeout=10)
+    if not ok:
+        return None, out, ""
+    for line in out.splitlines():
+        dev, kind, state, conn = (nmcli_fields(line) + ["", "", "", ""])[:4]
+        if kind == "wifi":
+            return dev, state, conn if state == "connected" else ""
+    return None, "no Wi-Fi adapter", ""
+
+
+def wifi_networks():
+    """Visible networks, strongest first: [{ssid, signal, secure, in_use}], one per name."""
+    ok, out = nmcli("-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan", "yes")
+    if not ok:
+        return None, out
+    best = {}
+    for line in out.splitlines():
+        in_use, ssid, signal, security = (nmcli_fields(line) + ["", "", "", ""])[:4]
+        if not ssid:
+            continue
+        net = {"ssid": ssid, "signal": int(signal) if signal.isdigit() else 0,
+               "secure": security not in ("", "--"), "in_use": in_use == "*"}
+        if ssid not in best or net["in_use"] or net["signal"] > best[ssid]["signal"]:
+            best[ssid] = {**net, "in_use": net["in_use"] or best.get(ssid, {}).get("in_use", False)}
+    return sorted(best.values(), key=lambda n: (not n["in_use"], -n["signal"])), ""
+
+
+def tune_radio(mhz, mode):
+    """Set the radio's frequency and mode through rigctld. True if it took both."""
+    if rigctld_query(*RIGCTLD, f"F {round(mhz * 1_000_000)}") != "RPRT 0":
+        return False
+    if not mode:
+        return True
+    # Radios without a separate data mode get plain USB/LSB/FM instead.
+    for m in dict.fromkeys([mode, mode.removeprefix("PKT")]):
+        if rigctld_query(*RIGCTLD, f"M {m} 0") == "RPRT 0":
+            return True
+    return False
 PAT_MAILBOX = os.path.expanduser("~/.local/share/pat/mailbox")
 # (id, label, file). Pat's mailbox is a folder of messages, summarised by pat_mail_summary.
 LOG_SOURCES = [
@@ -363,6 +485,8 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._diag_page(), "diagnostics")
         self.stack.add_named(self._settings_page(), "settings")
         self.stack.add_named(self._logs_page(), "logs")
+        self.stack.add_named(self._reference_page(), "reference")
+        self.stack.add_named(self._wifi_page(), "wifi")
         root.pack_start(self.stack, True, True, 0)
 
         self._tick_clock()
@@ -374,9 +498,9 @@ class Launcher(Gtk.Window):
     # ---- keyboard ------------------------------------------------------
 
     def _on_key(self, _widget, event):
-        """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, 1-9 open a tile on Home."""
-        pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home",
-                 Gdk.KEY_F2: "diagnostics", Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs"}
+        """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, F5 Reference, F6 Wi-Fi, 1-9 open a tile on Home."""
+        pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home", Gdk.KEY_F2: "diagnostics",
+                 Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs", Gdk.KEY_F5: "reference", Gdk.KEY_F6: "wifi"}
         if event.keyval in pages:
             self.stack.set_visible_child_name(pages[event.keyval])
             return True
@@ -405,6 +529,12 @@ class Launcher(Gtk.Window):
         bar.pack_end(self.clock, False, False, 0)
         self.audio_status = Gtk.Label()
         bar.pack_end(self.audio_status, False, False, 0)
+        # Tap the network status to open the Wi-Fi page.
+        self.net_status = Gtk.Label()
+        net_box = Gtk.EventBox()
+        net_box.add(self.net_status)
+        net_box.connect("button-press-event", lambda *_: self.stack.set_visible_child_name("wifi"))
+        bar.pack_end(net_box, False, False, 0)
         self.rig_status = Gtk.Label()
         bar.pack_end(self.rig_status, False, False, 0)
         return bar
@@ -422,7 +552,8 @@ class Launcher(Gtk.Window):
             freq = format_freq(rigctld_query(*RIGCTLD, "f"))
             audio = os.path.exists("/proc/asound/rigaudio")
             self._default_audio_to_radio(audio)
-            GLib.idle_add(self._show_status, freq, audio)
+            net = self._network_summary()
+            GLib.idle_add(self._show_status, freq, audio, net)
 
         threading.Thread(target=work, daemon=True).start()
         return True
@@ -438,7 +569,19 @@ class Launcher(Gtk.Window):
         elif not card:
             self.default_audio_card = None
 
-    def _show_status(self, freq, audio):
+    @staticmethod
+    def _network_summary():
+        """('Wi-Fi NAME' / 'Network' / 'No network', connected?), or None without NetworkManager."""
+        if not shutil.which("nmcli"):
+            return None
+        _dev, _state, ssid = wifi_state()
+        if ssid:
+            return f"Wi-Fi {ssid}", True
+        ok, out = nmcli("-t", "-f", "STATE", "general", timeout=5)
+        connected = ok and out.strip().startswith("connected")
+        return ("Network" if connected else "No network"), connected
+
+    def _show_status(self, freq, audio, net=None):
         if freq:
             self.rig_status.set_markup(f"<span foreground='{self.colours['ok']}'>●</span>  Rig  <tt>{freq}</tt>")
         else:
@@ -446,6 +589,11 @@ class Launcher(Gtk.Window):
         dot = (f"<span foreground='{self.colours['ok']}'>●</span>" if audio
                else f"<span foreground='{self.colours['muted']}'>○</span>")
         self.audio_status.set_markup(f"{dot}  Radio audio")
+        if net:
+            dot = (f"<span foreground='{self.colours['ok']}'>●</span>" if net[1]
+                   else f"<span foreground='{self.colours['muted']}'>○</span>")
+            self.net_status.set_markup(f"{dot}  {GLib.markup_escape_text(net[0])}")
+        self.net_status.set_visible(bool(net))
         self._refresh_tiles()
         return False
 
@@ -456,8 +604,9 @@ class Launcher(Gtk.Window):
         grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
         self.tiles = []
         apps = self.config.get("apps", [])
-        # Three across fits nine tiles on a 600-pixel-high screen; more go four across.
-        columns = 3 if len(apps) <= 9 else 4
+        # Three rows fit a 600-pixel-high screen: three across for up to nine tiles,
+        # then wider rows.
+        columns = max(3, -(-len(apps) // 3))
         for i, app in enumerate(apps):
             tile = self._tile(app, i + 1 if i < 9 else None)
             self.tiles.append(tile)
@@ -468,6 +617,7 @@ class Launcher(Gtk.Window):
         nav.pack_start(self._navbtn("Diagnostics  F2", lambda *_: self.stack.set_visible_child_name("diagnostics")), True, True, 0)
         nav.pack_start(self._navbtn("Settings  F3", lambda *_: self.stack.set_visible_child_name("settings")), True, True, 0)
         nav.pack_start(self._navbtn("Logs  F4", lambda *_: self.stack.set_visible_child_name("logs")), True, True, 0)
+        nav.pack_start(self._navbtn("Reference  F5", lambda *_: self.stack.set_visible_child_name("reference")), True, True, 0)
         nav.pack_start(self._navbtn("Power", self._power_dialog), True, True, 0)
         page.pack_end(nav, False, False, 0)
         return page
@@ -485,9 +635,10 @@ class Launcher(Gtk.Window):
             hint = Gtk.Label(label=str(key), yalign=0)
             hint.get_style_context().add_class("key-hint")
             top.pack_end(hint, False, False, 0)
-        name = Gtk.Label(label=app.get("name", ""), xalign=0)
+        # Ellipsize, so five tiles across still fit a 1024-pixel screen.
+        name = Gtk.Label(label=app.get("name", ""), xalign=0, ellipsize=Pango.EllipsizeMode.END)
         name.get_style_context().add_class("tile-name")
-        detail = Gtk.Label(xalign=0)
+        detail = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         detail.get_style_context().add_class("tile-detail")
         box.pack_start(top, True, True, 0)
         box.pack_start(name, False, False, 0)
@@ -619,7 +770,7 @@ class Launcher(Gtk.Window):
         installable = bool(btn.app.get("app"))
         btn.detail.set_text({"ready": btn.app.get("detail", ""),
                              "setup": "Tap to set up",
-                             "missing": "Not installed · tap to install" if installable else "Not installed",
+                             "missing": "Tap to install" if installable else "Not installed",
                              }[btn.app_state])
         btn.set_sensitive(btn.app_state != "missing" or installable)
         ctx = btn.get_style_context()
@@ -713,6 +864,7 @@ class Launcher(Gtk.Window):
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
         header.pack_end(self._navbtn("Rescan devices", lambda *_: self._rescan_devices()), False, False, 0)
+        header.pack_end(self._navbtn("Wi-Fi  F6", lambda *_: self.stack.set_visible_child_name("wifi")), False, False, 0)
         header.pack_end(self._navbtn("Update station", self._update_station), False, False, 0)
         header.pack_end(self._navbtn(self._theme_button_label(), self._toggle_theme), False, False, 0)
         page.pack_start(header, False, False, 0)
@@ -990,6 +1142,283 @@ class Launcher(Gtk.Window):
         self.note_text.set_text("")
         self.log_combo.set_active_id("notes")
         self._show_log()
+
+    # ---- wi-fi ---------------------------------------------------------
+
+    def _wifi_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
+        title = Gtk.Label(label="Wi-Fi", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        self.wifi_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.wifi_status.get_style_context().add_class("muted")
+        header.pack_start(self.wifi_status, True, True, 0)
+        self.wifi_disconnect = self._navbtn("Disconnect", self._wifi_disconnect_clicked)
+        header.pack_end(self._navbtn("Scan again", lambda *_: self._wifi_refresh()), False, False, 0)
+        header.pack_end(self.wifi_disconnect, False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        self.wifi_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        scroller = Gtk.ScrolledWindow()
+        scroller.add(self.wifi_list)
+        page.pack_start(scroller, True, True, 0)
+        page.connect("map", lambda *_: self._wifi_refresh())
+        self.wifi_device = None
+        return page
+
+    def _wifi_refresh(self, message=None):
+        self.wifi_status.set_text(message or "Looking for networks…")
+
+        def work():
+            if not shutil.which("nmcli"):
+                GLib.idle_add(self._wifi_show, None, [], "NetworkManager isn't installed; tap Update station.")
+                return
+            dev, state, ssid = wifi_state()
+            if not dev:
+                GLib.idle_add(self._wifi_show, None, [], f"No Wi-Fi: {state}.")
+                return
+            if state == "unmanaged":
+                GLib.idle_add(self._wifi_show, None, [],
+                              "This Wi-Fi adapter was set up by the Debian installer. To pick networks "
+                              "here, remove its lines from /etc/network/interfaces and restart.")
+                return
+            nets, error = wifi_networks()
+            GLib.idle_add(self._wifi_show, dev, nets or [], message or (
+                f"Connected to {ssid}" if ssid else error or "Not connected. Tap a network to join it."))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _wifi_show(self, dev, nets, status):
+        self.wifi_device = dev
+        self.wifi_status.set_text(status)
+        self.wifi_disconnect.set_visible(any(n["in_use"] for n in nets))
+        for child in self.wifi_list.get_children():
+            self.wifi_list.remove(child)
+        for net in nets:
+            self.wifi_list.add(self._wifi_row(net))
+        self.wifi_list.show_all()
+        return False
+
+    def _wifi_row(self, net):
+        box = Gtk.Box(spacing=16)
+        box.get_style_context().add_class("freq-row")
+        bars = "▂▄▆█"[:max(1, min(4, (net["signal"] + 24) // 25))]
+        strength = Gtk.Label(label=bars.ljust(4), xalign=0, width_chars=5)
+        strength.get_style_context().add_class("freq")
+        box.pack_start(strength, False, False, 0)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        name = Gtk.Label(label=net["ssid"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        name.get_style_context().add_class("tile-name")
+        text.pack_start(name, False, False, 0)
+        detail = ("Connected · " if net["in_use"] else "") + ("Password" if net["secure"] else "Open") + f" · {net['signal']}%"
+        info = Gtk.Label(label=detail, xalign=0)
+        info.get_style_context().add_class("tile-detail")
+        text.pack_start(info, False, False, 0)
+        box.pack_start(text, True, True, 0)
+        if not net["in_use"]:
+            box.pack_end(self._navbtn("Connect", lambda *_: self._wifi_connect(net), "primary"), False, False, 0)
+        return box
+
+    def _wifi_connect(self, net):
+        # "private": the network is saved for the station user, which the person at
+        # the screen may do without an admin password.
+        args = ["device", "wifi", "connect", net["ssid"], "private", "yes"]
+        known, _ = nmcli("-t", "-f", "NAME", "connection", "show", net["ssid"], timeout=10)
+        if net["secure"] and not known:
+            password = self._ask_password(net["ssid"])
+            if password is None:
+                return
+            args += ["password", password]
+        if self.wifi_device:
+            args += ["ifname", self.wifi_device]
+        self.wifi_status.set_text(f"Connecting to {net['ssid']}…")
+
+        def work():
+            ok, out = nmcli(*args, timeout=60)
+            if not ok and known:
+                # A saved password that no longer works: forget it so the next tap asks again.
+                nmcli("connection", "delete", net["ssid"], timeout=10)
+            message = f"Connected to {net['ssid']}" if ok else f"Couldn't join {net['ssid']}: {out}"
+            GLib.idle_add(self._wifi_refresh, message)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ask_password(self, ssid):
+        dialog = Gtk.Dialog(title=f"Join {ssid}", transient_for=self, modal=True)
+        dialog.set_default_size(520, -1)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Connect", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        box.pack_start(Gtk.Label(label=f"Password for {ssid}", xalign=0), False, False, 0)
+        entry = Gtk.Entry(visibility=False, activates_default=True, input_purpose=Gtk.InputPurpose.PASSWORD)
+        box.pack_start(entry, False, False, 0)
+        show = Gtk.CheckButton(label="Show password")
+        show.connect("toggled", lambda b: entry.set_visibility(b.get_active()))
+        box.pack_start(show, False, False, 0)
+        dialog.get_content_area().add(box)
+        dialog.show_all()
+        response = dialog.run()
+        password = entry.get_text()
+        dialog.destroy()
+        return password if response == Gtk.ResponseType.OK and password else None
+
+    def _wifi_disconnect_clicked(self, *_):
+        if not self.wifi_device:
+            return
+        self.wifi_status.set_text("Disconnecting…")
+
+        def work():
+            ok, out = nmcli("device", "disconnect", self.wifi_device)
+            GLib.idle_add(self._wifi_refresh, "Disconnected" if ok else f"Couldn't disconnect: {out}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---- reference -----------------------------------------------------
+
+    def _reference_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
+        title = Gtk.Label(label="Reference", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        self.ref_combo = Gtk.ComboBoxText()
+        self.ref_combo.connect("changed", lambda *_: self._show_reference())
+        header.pack_start(self.ref_combo, False, False, 0)
+        self.ref_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.ref_status.get_style_context().add_class("muted")
+        header.pack_start(self.ref_status, True, True, 0)
+        header.pack_end(self._navbtn("Add frequency", self._add_frequency, "primary"), False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        self.ref_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.ref_text = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                     left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD)
+        self.ref_stack = Gtk.Stack()
+        for name, child in (("list", self.ref_list), ("text", self.ref_text)):
+            scroller = Gtk.ScrolledWindow()
+            scroller.add(child)
+            self.ref_stack.add_named(scroller, name)
+        page.pack_start(self.ref_stack, True, True, 0)
+        page.connect("map", lambda *_: self._load_reference_sections())
+        return page
+
+    def _load_reference_sections(self, select=None):
+        current = select or self.ref_combo.get_active_id()
+        self.ref_sections = dict((path, title) for title, path in reference_sections())
+        self.ref_combo.remove_all()
+        for path, title in self.ref_sections.items():
+            self.ref_combo.append(path, title)
+        # Start on the operator's own list once it has something in it.
+        if current not in self.ref_sections:
+            others = [p for p in self.ref_sections if p.endswith(".csv") and p != MY_FREQS]
+            current = MY_FREQS if read_freqs(MY_FREQS) or not others else others[0]
+        self.ref_combo.set_active_id(current)
+
+    def _show_reference(self):
+        path = self.ref_combo.get_active_id()
+        if not path:
+            return
+        self.ref_status.set_text("")
+        if path.endswith(".txt"):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    text = f.read()
+            except OSError:
+                text = ""
+            self.ref_text.get_buffer().set_text(text)
+            self.ref_stack.set_visible_child_name("text")
+            return
+        for child in self.ref_list.get_children():
+            self.ref_list.remove(child)
+        rows = read_freqs(path)
+        mine = path == MY_FREQS
+        if not rows:
+            self.ref_status.set_text("Nothing here yet. Tune the radio and tap Add frequency." if mine else "")
+        for index, row in enumerate(rows):
+            self.ref_list.add(self._freq_row(row, index if mine else None))
+        self.ref_list.show_all()
+        self.ref_stack.set_visible_child_name("list")
+
+    def _freq_row(self, row, my_index=None):
+        box = Gtk.Box(spacing=16)
+        box.get_style_context().add_class("freq-row")
+        mhz = f"{row['MHz']:.4f}"
+        freq = Gtk.Label(label=mhz[:-1] if mhz.endswith("0") else mhz, xalign=1, width_chars=9)
+        freq.get_style_context().add_class("freq")
+        box.pack_start(freq, False, False, 0)
+        mode = Gtk.Label(label=row["Mode"].replace("PKT", "DATA-"), xalign=0, width_chars=7)
+        mode.get_style_context().add_class("mono")
+        mode.get_style_context().add_class("muted")
+        box.pack_start(mode, False, False, 0)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        name = Gtk.Label(label=row["Name"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        name.get_style_context().add_class("tile-name")
+        text.pack_start(name, False, False, 0)
+        if row["Note"]:
+            note = Gtk.Label(label=row["Note"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            note.get_style_context().add_class("tile-detail")
+            text.pack_start(note, False, False, 0)
+        box.pack_start(text, True, True, 0)
+        if my_index is not None:
+            box.pack_end(self._navbtn("Remove", lambda *_: self._remove_frequency(my_index)), False, False, 0)
+        box.pack_end(self._navbtn("Tune", lambda *_: self._tune(row)), False, False, 0)
+        return box
+
+    def _tune(self, row):
+        label = f"{row['MHz']:g} MHz {row['Mode']}".strip()
+        if tune_radio(row["MHz"], row["Mode"]):
+            self.ref_status.set_text(f"Radio on {label}")
+        else:
+            self.ref_status.set_text(f"The radio didn't take {label}; check it's connected and on the right band.")
+
+    def _add_frequency(self, *_):
+        dialog = Gtk.Dialog(title="Add frequency", transient_for=self, modal=True)
+        dialog.set_default_size(560, -1)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Add", Gtk.ResponseType.OK)
+        grid = Gtk.Grid(column_spacing=12, row_spacing=12, margin=16)
+        mhz = Gtk.Entry(placeholder_text="14.300", input_purpose=Gtk.InputPurpose.NUMBER)
+        mode = Gtk.ComboBoxText()
+        for m in MODES:
+            mode.append(m, m.replace("PKT", "DATA-"))
+        name = Gtk.Entry(placeholder_text="County ARES net")
+        note = Gtk.Entry(placeholder_text="Sundays 19:00 local")
+        # Start from where the radio is now.
+        hz = rigctld_query(*RIGCTLD, "f")
+        if hz and hz.isdigit():
+            mhz.set_text(f"{int(hz) / 1_000_000:.6f}".rstrip("0").rstrip("."))
+        current_mode = rigctld_query(*RIGCTLD, "m")
+        mode.set_active_id(current_mode if current_mode in MODES else "USB")
+        for i, (label, widget) in enumerate((("MHz", mhz), ("Mode", mode), ("Name", name), ("Note", note))):
+            grid.attach(Gtk.Label(label=label, xalign=0), 0, i, 1, 1)
+            widget.set_hexpand(True)
+            grid.attach(widget, 1, i, 1, 1)
+        dialog.get_content_area().add(grid)
+        dialog.show_all()
+        while dialog.run() == Gtk.ResponseType.OK:
+            try:
+                value = float(mhz.get_text().strip())
+            except ValueError:
+                mhz.grab_focus()
+                continue
+            rows = read_freqs(MY_FREQS)
+            rows.append({"MHz": value, "Mode": mode.get_active_id(),
+                         "Name": name.get_text().strip() or f"{value:g} MHz", "Note": note.get_text().strip()})
+            write_freqs(MY_FREQS, rows)
+            self._load_reference_sections(select=MY_FREQS)
+            break
+        dialog.destroy()
+
+    def _remove_frequency(self, index):
+        rows = read_freqs(MY_FREQS)
+        if index >= len(rows):
+            return
+        if self._confirm(f"Remove {rows[index]['Name']}?", "It comes off My frequencies."):
+            del rows[index]
+            write_freqs(MY_FREQS, rows)
+            self._show_reference()
 
     def _diag_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)

@@ -43,6 +43,9 @@ def main(argv):
 
     bar = Gtk.Box(spacing=8, margin=6)
     view = WebKit2.WebView()
+    if url.startswith("file://"):
+        # The station map is a page on disk that loads its scripts from disk too.
+        view.get_settings().set_allow_file_access_from_file_urls(True)
     back = Gtk.Button(label="‹ Back")
     back.connect("clicked", lambda *_: view.go_back())
     reload_btn = Gtk.Button(label="Reload")

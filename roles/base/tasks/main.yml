@@ -24,6 +24,15 @@
     groups: [dialout, audio, plugdev, video, sudo]
     append: true
 
+# NetworkManager lets the user at the station's screen join Wi-Fi from the
+# launcher's Wi-Fi page (polkit's standard rules for the active local session).
+# Interfaces the Debian installer wrote to /etc/network/interfaces (usually the
+# wired one) stay with ifupdown, so the network doesn't drop mid-install.
+- name: Install NetworkManager, for joining Wi-Fi from the Wi-Fi page
+  ansible.builtin.apt:
+    name: [network-manager, polkitd]
+    install_recommends: false
+
 - name: Enable SSH for remote troubleshooting
   ansible.builtin.systemd:
     name: ssh

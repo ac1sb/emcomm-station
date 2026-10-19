@@ -1,0 +1,23 @@
+MHz,Mode,Name,Note
+3.750,LSB,IARU emergency centre of activity,80 m. US: Extra-class phone only
+3.985,LSB,IARU emergency centre of activity,80 m
+7.060,LSB,IARU emergency centre of activity,40 m. Not a US phone frequency
+7.240,LSB,IARU emergency centre of activity,40 m
+14.300,USB,IARU emergency centre of activity,20 m. Also the Maritime Mobile Service Net
+18.160,USB,IARU emergency centre of activity,17 m
+21.360,USB,IARU emergency centre of activity,15 m
+7.268,LSB,Hurricane Watch Net (night),Active when a hurricane threatens land
+14.325,USB,Hurricane Watch Net (day),Active when a hurricane threatens land
+14.265,USB,SATERN,Salvation Army Team Emergency Radio Network
+5.3305,USB,60 m channel 1,US: 100 W ERP; USB dial frequency
+5.3465,USB,60 m channel 2,US: 100 W ERP; USB dial frequency
+5.3570,USB,60 m channel 3,US: 100 W ERP; USB dial frequency
+5.3715,USB,60 m channel 4,US: 100 W ERP; USB dial frequency
+5.4035,USB,60 m channel 5,US: 100 W ERP; USB dial frequency
+50.125,USB,6 m SSB calling,
+52.525,FM,6 m FM simplex calling,
+144.200,USB,2 m SSB calling,
+146.520,FM,2 m FM simplex calling,National simplex calling frequency
+223.500,FM,1.25 m FM simplex calling,
+446.000,FM,70 cm FM simplex calling,
+144.390,FM,APRS (North America),Use the APRS tile

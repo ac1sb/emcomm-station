@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Turn Natural Earth GeoJSON files into the station map's offline base map.
+
+  emcomm-map-prepare SOURCE_DIR OUTPUT.js
+
+Keeps only what the map draws (names, and roads in North America), rounds
+coordinates to about 100 m, and writes one script the map page loads, since a
+page opened from disk can't fetch files.
+"""
+
+import json
+import os
+import sys
+
+ROAD_TYPES = {"Major Highway", "Secondary Highway", "Beltway", "Bypass"}
+
+
+def rounded(coords, digits):
+    if isinstance(coords, (int, float)):
+        return round(coords, digits)
+    return [rounded(c, digits) for c in coords]
+
+
+def load(src, name):
+    with open(os.path.join(src, name + ".geojson"), encoding="utf-8") as f:
+        return json.load(f)["features"]
+
+
+def collection(features, props, digits=3, keep=lambda p: True):
+    out = []
+    for feat in features:
+        p = feat.get("properties") or {}
+        geom = feat.get("geometry")
+        if not geom or not keep(p):
+            continue
+        out.append({"type": "Feature",
+                    "properties": {k: p.get(k) for k in props},
+                    "geometry": {"type": geom["type"], "coordinates": rounded(geom["coordinates"], digits)}})
+    return {"type": "FeatureCollection", "features": out}
+
+
+def main(argv):
+    if len(argv) != 2:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    src, dest = argv
+    basemap = {
+        "countries": collection(load(src, "ne_50m_admin_0_countries"), ["NAME"]),
+        "lakes": collection(load(src, "ne_50m_lakes"), []),
+        "states": collection(load(src, "ne_50m_admin_1_states_provinces_lines"), []),
+        "counties": collection(load(src, "ne_10m_admin_2_counties"), ["NAME", "REGION"]),
+        "roads": collection(load(src, "ne_10m_roads"), ["type"],
+                            keep=lambda p: str(p.get("continent", "")).startswith("North America")
+                            and p.get("type") in ROAD_TYPES),
+        "places": collection(load(src, "ne_10m_populated_places_simple"), ["name", "scalerank"], digits=4),
+    }
+    tmp = dest + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("window.BASEMAP = ")
+        json.dump(basemap, f, separators=(",", ":"))
+        f.write(";\n")
+    os.replace(tmp, dest)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
