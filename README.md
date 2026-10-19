@@ -150,8 +150,8 @@ seconds (connect an antenna or dummy load first).
 ### 6. Set up the apps
 
 - **VARA HF / VARA FM:** tap the tile. The first time, Winlink's download page
-  opens: tap "VARA HF … setup.zip" (or VARA FM), wait for "Saved … to Downloads" at
-  the top, and close the window. Setup carries on by itself (Wine takes several
+  opens: tap "VARA HF … setup.zip" (or VARA FM). A green "Saved" bar shows and the
+  window closes by itself, then setup carries on (Wine takes several
   minutes the first time). Winlink doesn't allow scripted downloads, which is why
   this step is yours. Without internet on the station, download the .zip on another
   computer, put it on a USB stick, plug it in and tap the tile.

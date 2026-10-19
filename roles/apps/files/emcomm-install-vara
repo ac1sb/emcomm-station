@@ -57,9 +57,9 @@ if [ -z "$installer" ]; then
   # Winlink's server refuses scripted downloads, so open its download page for
   # the operator to tap the file; the window saves it to ~/Downloads.
   echo "No $product setup file in Downloads or on a USB stick."
-  echo "Opening Winlink's download page: tap \"$product ... setup.zip\", wait for"
-  echo "\"Saved\" at the top, then close that window."
-  emcomm-webview "$DOWNLOADS" "Winlink downloads" >/dev/null 2>&1
+  echo "Opening Winlink's download page: tap \"$product ... setup.zip\"."
+  echo "The window closes by itself when the download is saved."
+  emcomm-webview --close-after-download "$DOWNLOADS" "Winlink downloads" >/dev/null 2>&1
   installer=$(find_installer) ||
     finish "No $product setup file yet. Download it from winlink.org (Downloads > VARA Products), on this station or another computer, put the .zip in Downloads or on a USB stick, and tap the tile again." 1
 fi
