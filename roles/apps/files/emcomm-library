@@ -107,13 +107,21 @@ def download(folder, name, progress):
         raise OSError("the Kiwix server doesn't have this book any more")
     os.makedirs(LIBRARY, exist_ok=True)
     part = os.path.join(LIBRARY, filename + ".part")
-    with urllib.request.urlopen(MIRROR + folder + "/" + filename, timeout=60) as r, open(part, "wb") as out:
-        total, done = int(r.headers.get("Content-Length") or 0), 0
-        while chunk := r.read(1 << 20):
-            out.write(chunk)
-            done += len(chunk)
-            progress(done, total)
-    os.replace(part, os.path.join(LIBRARY, filename))
+    try:
+        with urllib.request.urlopen(MIRROR + folder + "/" + filename, timeout=60) as r, open(part, "wb") as out:
+            total, done = int(r.headers.get("Content-Length") or 0), 0
+            while chunk := r.read(1 << 20):
+                out.write(chunk)
+                done += len(chunk)
+                progress(done, total)
+        if total and done < total:
+            raise OSError("the download was cut short")
+        os.replace(part, os.path.join(LIBRARY, filename))
+    except BaseException:
+        # Don't leave a half-downloaded book taking space in ~/Library.
+        if os.path.exists(part):
+            os.remove(part)
+        raise
     for old in glob.glob(os.path.join(LIBRARY, f"{name}_*.zim")):
         if os.path.basename(old) != filename:
             os.remove(old)
@@ -228,7 +236,18 @@ def window():
     win.connect("key-press-event", lambda _w, e: e.keyval == 0xff1b and (win.destroy() or True))
     mount_usb_sticks()
     fill()
-    GLib.timeout_add_seconds(5, lambda: (not busy and fill()) or True)  # sticks plugged in later
+    shown = [None]
+
+    def check_sticks():
+        """Refill only when books come or go (a stick plugged in), so focus stays put."""
+        books = sorted(find_books().items())
+        if not busy and books != shown[0]:
+            shown[0] = books
+            fill()
+        return True
+
+    shown[0] = sorted(find_books().items())
+    GLib.timeout_add_seconds(5, check_sticks)
     win.show_all()
     win.maximize()
     Gtk.main()
