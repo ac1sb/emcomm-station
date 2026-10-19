@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Fill in ICS forms as printable pages, from the station's own records.
+
+  emcomm-ics 309 NET.json [OUT.html]          Communications Log for a net
+  emcomm-ics 205 [--incident NAME] [OUT.html] Radio Communications Plan from My frequencies
+
+The launcher's Net control page keeps each net as a JSON file:
+  {"name", "incident", "operator", "callsign", "started", "closed",
+   "entries": [{"time", "from", "to", "message"}]}
+with times in seconds since 1970 (UTC). Without OUT.html the page is written to
+~/ICS forms/ and its path printed.
+"""
+
+import csv
+import html
+import json
+import os
+import sys
+import time
+
+FORMS_DIR = os.path.expanduser("~/ICS forms")
+STATION = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
+REFERENCE_DIR = os.environ.get("EMCOMM_REFERENCE", "/usr/share/emcomm/reference")
+MY_FREQS = os.path.join(os.path.expanduser("~/.local/share/emcomm/reference"), "My frequencies.csv")
+ROWS_309 = 30   # rows per printed page, as on the paper form
+ROWS_205 = 16
+
+CSS = """
+@page { size: letter landscape; margin: 0.4in; }
+body { font: 11px/1.25 Arial, Helvetica, sans-serif; color: #000; background: #fff; margin: 0; }
+.page { page-break-after: always; }
+.page:last-child { page-break-after: auto; }
+table { border-collapse: collapse; width: 100%; }
+td, th { border: 1px solid #000; padding: 3px 5px; vertical-align: top; text-align: left; }
+th { background: #e8e8e8; font-weight: bold; }
+.title td { font-size: 14px; font-weight: bold; }
+.label { font-size: 9px; font-weight: bold; display: block; }
+.log td { height: 15px; }
+.foot td { font-size: 10px; }
+@media screen { body { padding: 16px; } .page { margin-bottom: 24px; } }
+"""
+
+
+def esc(value):
+    return html.escape(str(value if value is not None else ""))
+
+
+def utc(seconds, fmt="%Y-%m-%d %H:%MZ"):
+    return time.strftime(fmt, time.gmtime(seconds)) if seconds else ""
+
+
+def chunks(rows, size):
+    return [rows[i:i + size] for i in range(0, len(rows), size)] or [[]]
+
+
+def document(title, pages):
+    return (f"<!doctype html><html><head><meta charset='utf-8'><title>{esc(title)}</title>"
+            f"<style>{CSS}</style></head><body>{''.join(pages)}</body></html>\n")
+
+
+def field(label, value, colspan=1):
+    return f"<td colspan='{colspan}'><span class='label'>{esc(label)}</span>{esc(value)}</td>"
+
+
+def ics309(net):
+    """The ICS 309 Communications Log for one net, as an HTML page."""
+    operator = " ".join(filter(None, [net.get("operator", ""), net.get("callsign", "")]))
+    period = f"From {utc(net.get('started'))} to {utc(net.get('closed')) or 'open'}"
+    entries = sorted(net.get("entries", []), key=lambda e: e.get("time", 0))
+    pages = chunks(entries, ROWS_309)
+    out = []
+    for number, rows in enumerate(pages, 1):
+        body = "".join(
+            f"<tr><td>{esc(utc(e.get('time'), '%m/%d %H%M'))}</td><td>{esc(e.get('from', ''))}</td>"
+            f"<td>{esc(e.get('from_msg', ''))}</td><td>{esc(e.get('to', ''))}</td>"
+            f"<td>{esc(e.get('to_msg', ''))}</td><td>{esc(e.get('message', ''))}</td></tr>"
+            for e in rows)
+        body += "<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>" * (ROWS_309 - len(rows))
+        out.append(
+            "<div class='page'><table>"
+            "<tr class='title'><td colspan='6'>COMMUNICATIONS LOG (ICS 309)</td></tr>"
+            f"<tr>{field('1. Incident Name', net.get('incident', ''), 2)}"
+            f"{field('2. Operational Period (Date/Time)', period, 4)}</tr>"
+            f"<tr>{field('3. Radio Net Name or Position/Tactical Call', net.get('name', ''), 2)}"
+            f"{field('4. Radio Operator (Name, Call Sign)', operator, 4)}</tr>"
+            "<tr><th colspan='6'>5. Communications Log</th></tr>"
+            "<tr><th rowspan='2' style='width:9%'>Date/Time</th><th colspan='2'>From</th>"
+            "<th colspan='2'>To</th><th rowspan='2'>Message</th></tr>"
+            "<tr><th style='width:11%'>Call Sign/ID</th><th style='width:6%'>Msg #</th>"
+            "<th style='width:11%'>Call Sign/ID</th><th style='width:6%'>Msg #</th></tr>"
+            f"<tbody class='log'>{body}</tbody>"
+            f"<tr class='foot'>{field('6. Prepared By (Name, Call Sign)', operator, 3)}"
+            f"{field('Date/Time Prepared', utc(time.time()), 2)}"
+            f"<td>ICS 309 &nbsp; Page {number} of {len(pages)}</td></tr>"
+            "</table></div>")
+    return document(f"ICS 309 {net.get('name', '')}", out)
+
+
+def read_freqs(path):
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            return list(csv.DictReader(f))
+    except OSError:
+        return []
+
+
+def number(text):
+    try:
+        return float(str(text).strip().replace("+", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def channel(row):
+    """One row of the ICS 205 table from a My frequencies row, or None if it has no frequency."""
+    rx = number(row.get("MHz"))
+    if rx is None:
+        return None
+    offset, tone = number(row.get("Offset")), number(row.get("Tone"))
+    mode = (row.get("Mode") or "").strip().upper()
+    tx = rx + offset if offset else rx
+    wide = "W" if mode in ("FM", "PKTFM") else "N" if mode in ("NFM",) else ""
+    return {"name": (row.get("Name") or "").strip(), "assignment": (row.get("Note") or "").strip(),
+            "rx": f"{rx:.4f}", "tx": f"{tx:.4f}", "wide": wide, "tone": f"{tone:g}" if tone else "",
+            "mode": mode}
+
+
+def ics205(rows, incident="", prepared_by="", now=None):
+    """The ICS 205 Incident Radio Communications Plan for a list of frequencies, as an HTML page."""
+    now = now or time.time()
+    channels = [c for c in map(channel, rows) if c]
+    pages = chunks(channels, ROWS_205)
+    out = []
+    count = 0
+    for number_, chans in enumerate(pages, 1):
+        body = ""
+        for c in chans:
+            count += 1
+            body += (f"<tr><td>{count}</td><td></td><td>{esc(c['name'])}</td><td>{esc(c['assignment'])}</td>"
+                     f"<td>{c['rx']}</td><td>{c['wide']}</td><td>{esc(c['tone'])}</td>"
+                     f"<td>{c['tx']}</td><td>{c['wide']}</td><td>{esc(c['tone'])}</td>"
+                     f"<td>A</td><td>{esc(c['mode'])}</td></tr>")
+        body += ("<tr>" + "<td></td>" * 12 + "</tr>") * (ROWS_205 - len(chans))
+        out.append(
+            "<div class='page'><table>"
+            "<tr class='title'><td colspan='12'>INCIDENT RADIO COMMUNICATIONS PLAN (ICS 205)</td></tr>"
+            f"<tr>{field('1. Incident Name', incident, 4)}"
+            f"{field('2. Date/Time Prepared', utc(now), 4)}"
+            f"{field('3. Operational Period', '', 4)}</tr>"
+            "<tr><th colspan='12'>4. Basic Radio Channel Use</th></tr>"
+            "<tr><th>Ch #</th><th>Function</th><th>Channel Name/ Trunked Radio System Talkgroup</th>"
+            "<th>Assignment</th><th>RX Freq (MHz)</th><th>N or W</th><th>RX Tone/ NAC</th>"
+            "<th>TX Freq (MHz)</th><th>N or W</th><th>TX Tone/ NAC</th><th>Mode (A, D, or M)</th>"
+            "<th>Remarks</th></tr>"
+            f"<tbody class='log'>{body}</tbody>"
+            f"<tr>{field('5. Special Instructions', '', 12)}</tr>"
+            f"<tr class='foot'>{field('6. Prepared By (Communications Unit Leader)', prepared_by, 6)}"
+            f"{field('Date/Time', utc(now), 4)}<td colspan='2'>ICS 205 &nbsp; Page {number_} of {len(pages)}</td></tr>"
+            "</table></div>")
+    return document(f"ICS 205 {incident}", out)
+
+
+def safe_name(text):
+    return "".join(c if c.isalnum() or c in " -_" else "-" for c in text).strip() or "form"
+
+
+def write_out(text, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    print(path)
+
+
+def main(argv):
+    if not argv or argv[0] not in ("309", "205"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    try:
+        with open(STATION, encoding="utf-8") as f:
+            station = json.load(f)
+    except (OSError, ValueError):
+        station = {}
+    if argv[0] == "309":
+        if len(argv) < 2:
+            print("emcomm-ics 309 NET.json [OUT.html]", file=sys.stderr)
+            return 2
+        with open(argv[1], encoding="utf-8") as f:
+            net = json.load(f)
+        net.setdefault("callsign", station.get("callsign", ""))
+        out = argv[2] if len(argv) > 2 else os.path.join(
+            FORMS_DIR, f"ICS-309 {utc(net.get('started'), '%Y-%m-%d %H%MZ')} {safe_name(net.get('name', 'net'))}.html")
+        write_out(ics309(net), out)
+        return 0
+    args = argv[1:]
+    incident = ""
+    if "--incident" in args:
+        i = args.index("--incident")
+        incident = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+    path = MY_FREQS if os.path.exists(MY_FREQS) else os.path.join(REFERENCE_DIR, "My frequencies.csv")
+    rows = read_freqs(path)
+    if not rows:
+        print("My frequencies is empty: add some on the Reference page first.", file=sys.stderr)
+        return 1
+    out = args[0] if args else os.path.join(
+        FORMS_DIR, f"ICS-205 {utc(time.time(), '%Y-%m-%d %H%MZ')} {safe_name(incident or 'plan')}.html")
+    write_out(ics205(rows, incident, station.get("callsign", "")), out)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
