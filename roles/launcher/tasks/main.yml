@@ -22,12 +22,12 @@
     mode: "0644"
     directory_mode: "0755"
 
-- name: Install the launcher and its Online page and ICS form helpers
+- name: Install the launcher and its helpers (Online page, ICS forms, backup)
   ansible.builtin.copy:
     src: "{{ item }}"
     dest: "/usr/local/bin/{{ item }}"
     mode: "0755"
-  loop: [emcomm-launcher, emcomm-online, emcomm-ics]
+  loop: [emcomm-launcher, emcomm-online, emcomm-ics, emcomm-backup]
 
 - name: Write launcher settings
   ansible.builtin.copy:

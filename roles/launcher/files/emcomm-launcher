@@ -32,6 +32,7 @@ CONFIG_PATH = os.environ.get("EMCOMM_LAUNCHER_CONFIG", "/etc/emcomm/launcher.jso
 STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 PRESETS_DIR = os.environ.get("EMCOMM_PRESETS", "/usr/share/emcomm/radios")
 FAKE_DEVICES = os.environ.get("EMCOMM_FAKE_DEVICES")  # JSON file of devices, for testing without hardware
+BACKUP_CMD = os.environ.get("EMCOMM_BACKUP", "emcomm-backup")
 APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply-settings").split()
 UPDATE_CMD = os.environ.get("EMCOMM_UPDATE", "sudo -n /usr/local/sbin/emcomm-update").split()
 RIGCTLD = ("127.0.0.1", 4532)
@@ -1251,6 +1252,7 @@ class Launcher(Gtk.Window):
         header.pack_end(self._navbtn("Rescan devices", lambda *_: self._rescan_devices()), False, False, 0)
         header.pack_end(self._navbtn("Wi-Fi  F6", lambda *_: self.stack.set_visible_child_name("wifi")), False, False, 0)
         header.pack_end(self._navbtn("Update station", self._update_station), False, False, 0)
+        header.pack_end(self._navbtn("Backup", self._backup_dialog), False, False, 0)
         header.pack_end(self._navbtn(self._theme_button_label(), self._toggle_theme), False, False, 0)
         page.pack_start(header, False, False, 0)
 
@@ -1478,6 +1480,124 @@ class Launcher(Gtk.Window):
             self.callsign_entry.set_text(self.station.get("callsign", ""))
             self.grid_entry.set_text(self.station.get("grid", ""))
         return False
+
+    def _backup_dialog(self, *_):
+        """Back up to a USB stick, or restore from a backup on one."""
+        dialog = Gtk.Dialog(title="Backup", transient_for=self, modal=True)
+        dialog.set_default_size(820, 420)
+        dialog.add_buttons("Close", Gtk.ResponseType.CLOSE)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        dialog.get_content_area().pack_start(box, True, True, 0)
+        top = Gtk.Box(spacing=12)
+        sticks = Gtk.ComboBoxText()
+        top.pack_start(sticks, True, True, 0)
+        look = self._navbtn("Look again", lambda *_: find())
+        back_up = self._navbtn("Back up now", lambda *_: run(["create", sticks.get_active_id()]), "primary")
+        top.pack_start(look, False, False, 0)
+        top.pack_start(back_up, False, False, 0)
+        box.pack_start(top, False, False, 0)
+        message = Gtk.Label(xalign=0, wrap=True)
+        box.pack_start(message, False, False, 0)
+        listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.add(listbox)
+        box.pack_start(scroller, True, True, 0)
+        hint = Gtk.Label(xalign=0, wrap=True, label=(
+            "A backup holds the station settings, contact notes, nets, ICS forms, My frequencies, tile pictures, "
+            "Winlink mail and the apps' settings and logs. Passwords and keys aren't included, so enter them "
+            "again after a restore (Accounts on the Online page, and Pat's Winlink password)."))
+        hint.set_max_width_chars(100)
+        hint.get_style_context().add_class("muted")
+        box.pack_start(hint, False, False, 0)
+
+        def say(text, ok=None):
+            ctx = message.get_style_context()
+            for name in ("ok", "error"):
+                ctx.remove_class(name)
+            if ok is not None:
+                ctx.add_class("ok" if ok else "error")
+            message.set_text(text)
+
+        def find():
+            mount_usb_sticks()
+            sticks.remove_all()
+            user = os.environ.get("USER", "")
+            for path in glob.glob(f"/media/{user}/*") + glob.glob(f"/run/media/{user}/*"):
+                if os.access(path, os.W_OK):
+                    sticks.append(path, f"USB stick: {os.path.basename(path)}")
+            sticks.set_active(0)
+            found = sticks.get_active_id() is not None
+            back_up.set_sensitive(found)
+            sticks.set_sensitive(found)
+            if not found:
+                say("Plug in a USB stick, then tap Look again.")
+            else:
+                say("")
+            list_backups()
+
+        def list_backups(*_):
+            for child in listbox.get_children():
+                listbox.remove(child)
+            stick = sticks.get_active_id()
+            paths = []
+            if stick:
+                result = subprocess.run([BACKUP_CMD, "list", stick], capture_output=True, text=True, check=False)
+                paths = result.stdout.split("\n")[:8] if result.returncode == 0 else []
+            for path in filter(None, paths):
+                stamp = re.search(r"(\d{8})-(\d{4})Z", path)
+                when = (f"{stamp[1][:4]}-{stamp[1][4:6]}-{stamp[1][6:]} {stamp[2]}Z" if stamp else "")
+                size = os.path.getsize(path) if os.path.exists(path) else 0
+                size = f"{size / 1e6:.1f} MB" if size >= 1e6 else f"{size // 1000 + 1} kB" if size else ""
+                listbox.add(self._info_row("Backup", when, " · ".join(filter(None, [os.path.basename(path), size])),
+                                           [("Restore", lambda *_, p=path: confirm_restore(p))]))
+            listbox.show_all()
+
+        def run(args):
+            say("Backing up…" if args[0] == "create" else "Restoring…")
+            for widget in (back_up, look):
+                widget.set_sensitive(False)
+
+            def work():
+                try:
+                    result = subprocess.run([BACKUP_CMD] + args, capture_output=True, text=True, timeout=600,
+                                            check=False)
+                    ok, out = result.returncode == 0, (result.stdout or result.stderr).strip()
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    ok, out = False, str(exc)
+                if ok and args[0] == "create":
+                    subprocess.run(["sync"], check=False)
+                    out = f"Backed up to {os.path.basename(out)}. You can unplug the stick."
+                GLib.idle_add(done, ok, out, args[0])
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def done(ok, out, action):
+            say(out, ok)
+            for widget in (back_up, look):
+                widget.set_sensitive(True)
+            list_backups()
+            if action == "restore":
+                self._saved(ok, out)
+                self._apply_theme(load_theme())
+                self._refresh_tiles()
+            return False
+
+        def confirm_restore(path):
+            ask = Gtk.MessageDialog(transient_for=dialog, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                    text="Restore this backup?",
+                                    secondary_text=f"{os.path.basename(path)}\n\nThe station's settings, logs "
+                                                   "and app settings are replaced by the ones in the backup.")
+            ask.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Restore", Gtk.ResponseType.OK)
+            response = ask.run()
+            ask.destroy()
+            if response == Gtk.ResponseType.OK:
+                run(["restore", path])
+
+        sticks.connect("changed", list_backups)
+        dialog.show_all()
+        find()
+        dialog.run()
+        dialog.destroy()
 
     def _set_message(self, text, ok):
         ctx = self.settings_message.get_style_context()

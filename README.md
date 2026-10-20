@@ -280,6 +280,17 @@ seconds (connect an antenna or dummy load first).
   ready to use once installed from their tiles. fldigi needs its rig
   control pointed at `localhost:4532` once (see "Using the apps" above).
 
+### Backing up
+
+Plug in a USB stick, open **Settings** and tap **Backup**, then **Back up now**. The
+backup (`EmcommBackup/emcomm-backup-CALL-DATE.tar.gz` on the stick) holds the
+station settings, contact notes, nets, ICS forms, My frequencies, tile pictures,
+Winlink mail, and the apps' settings and logs. To move to a rebuilt or spare
+station, plug the stick in there, tap **Backup** and **Restore** next to the
+backup. Passwords and keys aren't in the backup, so a lost stick gives none away:
+enter them again after a restore (Accounts on the Online page, and Pat's Winlink
+password).
+
 ### Updating
 
 Tap **Update station** in Settings. It downloads the latest Emcomm-CNC and installs
