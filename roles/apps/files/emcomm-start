@@ -23,18 +23,81 @@ node_ports() {
   done
 }
 
-# Pick the node's serial port, asking if there's more than one. Runs in a terminal.
-pick_node_port() {
-  local ports
+BT_SEARCH="Search for a Bluetooth radio"
+
+# Bluetooth devices already paired, as "MAC Name" lines.
+paired_bt() {
+  command -v bluetoothctl >/dev/null || return 0
+  bluetoothctl devices Paired 2>/dev/null | sed -n 's/^Device \([0-9A-F:]\{17\}\) \(.*\)$/\1 \2/p'
+}
+
+# Look for Bluetooth radios nearby, pick one and pair with it (the radio shows
+# or uses a PIN: Meshtastic shows it on its screen or uses 123456, MeshCore
+# uses 123456 unless it was changed). Prints the radio's address.
+search_bt() {
+  local devices dev mac
+  if ! command -v bluetoothctl >/dev/null; then
+    echo "Bluetooth isn't set up on this station. Run Update station in Settings." >&2; return 1
+  fi
+  bluetoothctl power on >/dev/null 2>&1
+  if ! bluetoothctl show 2>/dev/null | grep -q "Powered: yes"; then
+    echo "This computer's Bluetooth is off or missing." >&2; return 1
+  fi
+  echo "Looking for Bluetooth radios for 10 seconds. Turn on the $1 radio's Bluetooth..." >&2
+  bluetoothctl --timeout 10 scan on >/dev/null 2>&1
+  # Named devices only: a radio always has a name, phones' random addresses often don't.
+  mapfile -t devices < <(bluetoothctl devices 2>/dev/null |
+    sed -n 's/^Device \([0-9A-F:]\{17\}\) \(.*\)$/\1 \2/p' |
+    awk '{ name = $0; sub(/^[^ ]+ /, "", name); gsub(/[-:]/, "", name); if (name != "" && name !~ /^[0-9A-F]+$/) print }')
+  if [ ${#devices[@]} -eq 0 ]; then
+    echo "No Bluetooth radios found. Check the radio's Bluetooth is on and tap the tile again." >&2; return 1
+  fi
+  echo "Which is the $1 radio?" >&2
+  select dev in "${devices[@]}"; do
+    [ -n "$dev" ] && break
+  done
+  [ -n "${dev:-}" ] || return 1
+  mac=${dev%% *}
+  if ! bluetoothctl info "$mac" 2>/dev/null | grep -q "Paired: yes"; then
+    echo "Pairing with ${dev#* }. Type the radio's PIN when asked (often 123456)." >&2
+    if ! bluetoothctl --agent KeyboardOnly pair "$mac" >&2; then
+      echo "Pairing didn't work. Check the PIN and try again." >&2; return 1
+    fi
+  fi
+  bluetoothctl trust "$mac" >/dev/null 2>&1
+  echo "$mac"
+}
+
+# Pick the node: a USB serial port ("usb PORT") or a Bluetooth address ("ble MAC").
+# One USB radio and nothing paired by Bluetooth: use it without asking. Runs in a terminal.
+pick_node() {
+  local ports bt choices choice i
   mapfile -t ports < <(node_ports)
-  case ${#ports[@]} in
-    0) echo "No $1 radio found. Plug it in by USB and tap the tile again." >&2; return 1 ;;
-    1) echo "${ports[0]}" ;;
-    *) echo "More than one USB device is plugged in. Which is the $1 radio?" >&2
-       select port in "${ports[@]##*/}"; do
-         [ -n "$port" ] && { echo "/dev/serial/by-id/$port"; return 0; }
-       done
-       return 1 ;;
+  mapfile -t bt < <(paired_bt)
+  if [ ${#ports[@]} -eq 1 ] && [ ${#bt[@]} -eq 0 ]; then
+    echo "usb ${ports[0]}"; return 0
+  fi
+  if [ ${#ports[@]} -eq 0 ] && [ ${#bt[@]} -eq 0 ]; then
+    if ! command -v bluetoothctl >/dev/null; then
+      echo "No $1 radio found. Plug it in by USB and tap the tile again." >&2; return 1
+    fi
+    echo "No $1 radio is plugged in by USB." >&2
+    choice=$(search_bt "$1") || return 1
+    echo "ble $choice"; return 0
+  fi
+  choices=()
+  for i in "${ports[@]}"; do choices+=("USB: ${i##*/}"); done
+  for i in "${bt[@]}"; do choices+=("Bluetooth: ${i#* } (${i%% *})"); done
+  command -v bluetoothctl >/dev/null && choices+=("$BT_SEARCH")
+  echo "How is the $1 radio connected?" >&2
+  select choice in "${choices[@]}"; do
+    [ -n "$choice" ] && break
+  done
+  case "${choice:-}" in
+    "USB: "*) echo "usb /dev/serial/by-id/${choice#USB: }" ;;
+    "Bluetooth: "*) i=${choice##*(}; echo "ble ${i%)}" ;;
+    "$BT_SEARCH") choice=$(search_bt "$1") || return 1; echo "ble $choice" ;;
+    *) return 1 ;;
   esac
 }
 
@@ -93,13 +156,15 @@ case "${1:-}" in
     ;;
   meshtastic)
     [ -t 1 ] || in_terminal "Meshtastic" "$0" meshtastic
-    port=$(pick_node_port Meshtastic) || exit 1
-    exec contact --port "$port"
+    node=$(pick_node Meshtastic) || exit 1
+    if [ "${node%% *}" = ble ]; then exec contact --ble "${node#* }"; fi
+    exec contact --port "${node#* }"
     ;;
   meshcore)
     [ -t 1 ] || in_terminal "MeshCore" "$0" meshcore
-    port=$(pick_node_port MeshCore) || exit 1
-    exec meshcore-cli -s "$port"
+    node=$(pick_node MeshCore) || exit 1
+    if [ "${node%% *}" = ble ]; then exec meshcore-cli -a "${node#* }"; fi
+    exec meshcore-cli -s "${node#* }"
     ;;
   *)
     echo "usage: $0 js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore" >&2
