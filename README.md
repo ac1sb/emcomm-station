@@ -65,7 +65,10 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   place to move it there; **Remove page** folds the page shown into the one
   before it. Folders hold related apps under one tile: **Email** (Winlink mail,
   VARA HF, VARA FM) and **Mesh & APRS** (Meshtastic, MeshCore, APRS) come as
-  standard. Tap a folder to open it; Esc or ‹ Home closes it. While arranging,
+  standard. Tap a folder to open it; Esc or ‹ Home closes it. The quickest way
+  to file an app is its long-press (or right-click) menu: **Move to a folder**
+  lists the folders and **New folder…**, and an app in a folder has **Take it
+  out**. While arranging,
   tap an app then a folder to put it in, **New folder** makes one (holding the
   app picked, if any), and a picked folder can be opened (to reorder or **Take
   out of folder** what's inside), renamed or removed (its apps go back on Home
