@@ -12,12 +12,14 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 ## What's in it so far
 
 - **Base system:** a `radio` user, SSH for remote troubleshooting, PipeWire audio.
-- **Settings screen:** a page of large tiles: User (callsign and grid), Radio,
+- **Settings screen:** a page of large tiles: User (callsign, grid and time zone), Radio,
   Devices (GPS, and what's plugged in), Display, Wi-Fi, Accounts,
   Backup, Update station, Audio (the radio's sound card, and in desktop mode when
   it's the computer's default), Power and Home tiles (Diagnostics is on Home's
   buttons and F2). User opens
-  automatically on first boot. Any radio Hamlib supports can be picked by
+  automatically on first boot. The time zone (Settings > User) sets the local time
+  shown next to UTC in the top bar; while the computer is on UTC, only UTC shows
+  (in desktop mode the computer's own time zone is used). Any radio Hamlib supports can be picked by
   manufacturer and model; the CAT port, PTT port and sound card are picked from the
   USB devices that are plugged in, with a Rescan button. Saving gives those devices
   stable names (`/dev/rig-cat`, `/dev/rig-ptt`, ALSA card `rigaudio`) and restarts
@@ -37,7 +39,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   to the launcher (the GRUB menu still shows briefly, for recovery mode). Apps
   open maximized under a thin **Home bar** across the top of the screen: **⌂ Home**
   brings the launcher back, each open app has a button to bring it to the front
-  (and ✕ to close it), and the bar shows the callsign and UTC time. Tapping the
+  (and ✕ to close it), and the bar shows the callsign, local time and UTC. Tapping the
   tile of an app that's already open brings it to the front instead of starting a
   second copy. With a keyboard, Alt+Tab also switches apps.
 - **Several apps at once:** every app reaches the radio's sound card through
