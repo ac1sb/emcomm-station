@@ -47,8 +47,8 @@ launcher_apps:
   - { code: MCR, icon: meshcore, name: MeshCore, detail: Mesh text over LoRa, command: meshcore-cli, app: meshcore, run: [emcomm-start, meshcore] }
   - { code: MAP, icon: map, name: Map, detail: Gateways · stations heard, command: emcomm-map, app: map, run: [emcomm-map] }
   - { code: CHP, icon: chirp, name: CHIRP, detail: Program handhelds · mobiles, command: chirp, app: chirp, run: [chirp] }
-  - { code: SCN, icon: scanner, name: Scanner, detail: RTL-SDR · police fire EMS, command: emcomm-scanner, app: scanner, run: [emcomm-scanner] }
-  - { code: SDR, icon: sdr, name: Gqrx, detail: RTL-SDR · tune anywhere, command: gqrx, app: sdr, run: [emcomm-start, sdr] }
+  - { code: SCN, icon: scanner, name: Scanner, detail: SDR · police fire EMS, command: emcomm-scanner, app: scanner, run: [emcomm-scanner] }
+  - { code: SDR, icon: sdr, name: Gqrx, detail: Any SDR · HF to UHF, command: gqrx, app: sdr, run: [emcomm-start, sdr] }
   - { code: LIB, icon: library, name: Library, detail: Offline books · first aid, command: emcomm-library, app: library, run: [emcomm-library] }
   - { code: WEB, icon: browser, name: Browser, detail: Chromium · ham bookmarks, command: chromium, app: browser, run: [chromium, --password-store=basic] }
   - { code: FT8, icon: wsjtx, name: WSJT-X, detail: FT8 · band check, command: wsjtx, app: wsjtx, run: [emcomm-start, wsjtx] }

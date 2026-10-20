@@ -263,12 +263,20 @@ def detect_devices():
     return ports, cards
 
 
-RTL_USB_IDS = {("0bda", "2838"), ("0bda", "2832")}
 SDR_LOCK = os.path.expanduser("~/.local/state/emcomm/sdr.json")
+# SDR receivers by USB vendor:product, for the Devices page.
+SDR_USB_IDS = {
+    ("0bda", "2838"): "RTL-SDR", ("0bda", "2832"): "RTL-SDR", ("1d50", "60a1"): "Airspy",
+    ("03eb", "800c"): "Airspy HF+", ("1d50", "6089"): "HackRF", ("1d50", "cc15"): "HackRF (rad1o)",
+    ("1df7", "2500"): "SDRplay RSP1", ("1df7", "3000"): "SDRplay RSP1A", ("1df7", "3010"): "SDRplay RSP2",
+    ("1df7", "3020"): "SDRplay RSPduo", ("1df7", "3030"): "SDRplay RSPdx", ("1df7", "3050"): "SDRplay RSP1B",
+    ("1df7", "3060"): "SDRplay RSPdx-R2", ("0403", "601f"): "LimeSDR Mini", ("1d50", "6108"): "LimeSDR",
+    ("2cf0", "5246"): "bladeRF", ("2cf0", "5250"): "bladeRF 2.0", ("0456", "b673"): "ADALM-Pluto",
+}
 
 
-def rtl_dongles(sysfs="/sys/bus/usb/devices"):
-    """Labels for the RTL-SDR dongles plugged in, in the order librtlsdr numbers them (roughly)."""
+def sdr_receivers(sysfs="/sys/bus/usb/devices"):
+    """(kind, label) for each SDR receiver plugged in, RTL-SDR dongles in the order librtlsdr numbers them."""
     found = []
     for base in sorted(glob.glob(os.path.join(sysfs, "*"))):
         def attr(name, base=base):
@@ -277,10 +285,11 @@ def rtl_dongles(sysfs="/sys/bus/usb/devices"):
                     return f.read().strip()
             except OSError:
                 return ""
-        if (attr("idVendor"), attr("idProduct")) in RTL_USB_IDS:
-            name = " ".join(x for x in (attr("manufacturer"), attr("product")) if x) or "RTL2832U dongle"
+        kind = SDR_USB_IDS.get((attr("idVendor"), attr("idProduct")))
+        if kind:
+            name = " ".join(x for x in (attr("manufacturer"), attr("product")) if x)
             serial = attr("serial")
-            found.append(f"{name}" + (f" · serial {serial}" if serial else ""))
+            found.append((kind, " · ".join(x for x in (kind, name, serial and f"serial {serial}") if x)))
     return found
 
 
@@ -2161,9 +2170,10 @@ class Launcher(Gtk.Window):
         lines += [f"  {label}" for label, _m in self.serial_ports] or ["  none"]
         lines += ["", "USB sound cards:"]
         lines += [f"  {label}" for label, _m in self.sound_cards] or ["  none"]
-        dongles = rtl_dongles()
-        lines += ["", "RTL-SDR receivers (Scanner, Gqrx, weather radio alerts):"]
-        lines += [f"  {i + 1}. {label}" for i, label in enumerate(dongles)] or ["  none"]
+        sdrs = sdr_receivers()
+        dongles = [label for kind, label in sdrs if kind == "RTL-SDR"]
+        lines += ["", "SDR receivers (Scanner, Gqrx; weather radio alerts use an RTL-SDR):"]
+        lines += [f"  {label}" for _kind, label in sdrs] or ["  none"]
         if dongles:
             user = sdr_user()
             nwr = read_json(NWR_CONFIG, {}).get("freq")

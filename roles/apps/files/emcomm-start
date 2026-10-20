@@ -23,18 +23,6 @@ node_ports() {
   done
 }
 
-# RTL-SDR dongles plugged in (RTL2832U with the usual USB IDs).
-rtl_dongles() {
-  local dev n=0
-  for dev in /sys/bus/usb/devices/*; do
-    [ -f "$dev/idVendor" ] || continue
-    case "$(cat "$dev/idVendor"):$(cat "$dev/idProduct")" in
-      0bda:2838|0bda:2832) n=$((n + 1)) ;;
-    esac
-  done
-  echo "$n"
-}
-
 BT_SEARCH="Search for a Bluetooth radio"
 
 # Bluetooth devices already paired, as "MAC Name" lines.
@@ -179,32 +167,34 @@ case "${1:-}" in
     exec meshcore-cli -s "${node#* }"
     ;;
   sdr)
-    # Gqrx on the RTL-SDR, with the scanner's channel list as bookmarks. The
-    # weather radio listener uses the first dongle; it lets go of it while
-    # sdr.json names a running app. With two dongles Gqrx takes the second.
-    index=0
-    if [ "$(rtl_dongles)" -gt 1 ] && grep -q '"freq": *[0-9]' "$HOME/.config/emcomm/nwr.json" 2>/dev/null; then
-      index=1
-    fi
-    conf="$HOME/.config/gqrx/default.conf"
+    # Gqrx on any SDR receiver (RTL-SDR, Airspy, HackRF, SDRplay...), with the
+    # scanner's channel list as bookmarks. With more than one receiver, or an
+    # RTL-SDR that can also do HF by direct sampling, it asks which. Each choice
+    # keeps its own Gqrx settings (~/.config/gqrx/KEY.conf). The weather radio
+    # listener uses the first RTL-SDR and lets go of it while sdr.json names a
+    # running app.
+    choice=$(emcomm-scanner --pick-receiver 2>/dev/null) || exit 0
+    IFS=$'\t' read -r key device rate start rtl_index <<< "$choice"
     mkdir -p "$HOME/.config/gqrx"
+    conf="$HOME/.config/gqrx/$key.conf"
     if [ ! -f "$conf" ]; then
-      printf '[General]\nconfigversion=4\ncrashed=false\n\n[input]\ndevice="rtl=%s"\nsample_rate=1800000\nfrequency=162550000\n' \
-        "$index" > "$conf"
+      printf '[General]\nconfigversion=4\ncrashed=false\n\n[input]\ndevice="%s"\nsample_rate=%s\nfrequency=%s\n' \
+        "$device" "$rate" "$start" > "$conf"
     else
-      sed -i "s/^device=\"rtl=[0-9]*\"/device=\"rtl=$index\"/" "$conf"
+      # An RTL-SDR's number can change when dongles are plugged in a different order.
+      sed -i "s|^device=.*|device=\"$device\"|" "$conf"
     fi
     marks="$HOME/.config/gqrx/bookmarks.csv"
     if [ ! -f "$marks" ] || head -1 "$marks" | grep -q "Emcomm-CNC"; then
       emcomm-scanner --gqrx-bookmarks > "$marks.tmp" 2>/dev/null && mv "$marks.tmp" "$marks"
       rm -f "$marks.tmp"
     fi
-    if [ "$index" = 0 ]; then
+    if [ "$rtl_index" = 0 ]; then
       printf '{"pid": %s, "app": "Gqrx"}\n' "$$" > "$STATE/sdr.json"
       trap 'rm -f "$STATE/sdr.json"' EXIT
       sleep 3  # the weather radio listener checks every 2 seconds
     fi
-    gqrx
+    gqrx -c "$key.conf"
     exit 0
     ;;
   *)

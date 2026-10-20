@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Scan a channel list on an RTL-SDR dongle, like a police/fire scanner.
+"""Scan a channel list on an SDR receiver, like a police/fire scanner.
 
   emcomm-scanner                 open the scanner window
   emcomm-scanner --list [FILE]   print the channels it would scan, as JSON lines
   emcomm-scanner --gqrx-bookmarks   print the channel list as Gqrx bookmarks
+  emcomm-scanner --receivers     list the SDR receivers plugged in, as JSON lines
+  emcomm-scanner --pick-receiver ask which receiver Gqrx should use (for emcomm-start)
 
 The channel list is ~/Scanner channels.csv. The station ships Vermont's
 emergency channels; replace the file (or use "Load a list" in the window) with
@@ -13,18 +15,19 @@ any CSV that has a Frequency column. Recognised columns, any order:
 Channels with a site location are filtered by distance from the station's grid
 square (Settings > User); channels without one (statewide) are always kept.
 
-The dongle is read through librtlsdr at 240 kS/s, tuned 60 kHz below the
-channel so the dongle's DC spike stays out of it. Narrow FM is demodulated
-here with numpy. The squelch is the classic FM noise squelch: with no carrier
-the demodulated audio is loud hiss above 6 kHz, and it goes quiet as a signal
-comes up, so it works the same whatever the antenna or gain. Tone squelch
-checks the CTCSS (PL) tone before stopping on a channel; DPL (DCS) channels
-stop on any carrier. Audio plays through PipeWire (pacat), so the recorder and
-Broadcastify stream can't hear it, but anyone in the room can.
+Receivers: an RTL-SDR is read through librtlsdr at 240 kS/s; anything else
+SoapySDR knows (Airspy, Airspy HF+, HackRF, SDRplay, LimeSDR, bladeRF...) at
+its lowest usable rate. The receiver is tuned 60 kHz below the channel so its
+DC spike stays out of it, and narrow FM is demodulated here with numpy. The
+squelch is the classic FM noise squelch: with no carrier the demodulated audio
+is loud hiss above 6 kHz, and it goes quiet as a signal comes up, so it works
+the same whatever the antenna, gain or receiver. Tone squelch checks the CTCSS
+(PL) tone before stopping on a channel; DPL (DCS) channels stop on any carrier.
+Audio plays through PipeWire (pacat).
 
-The weather radio alert listener (emcomm-nwr) uses the first dongle. While the
+The weather radio alert listener (emcomm-nwr) uses the first RTL-SDR. While the
 scanner holds that dongle it writes ~/.local/state/emcomm/sdr.json and the
-listener pauses; with two dongles plugged in the scanner uses the second.
+listener pauses; given another receiver, the scanner leaves the dongle alone.
 """
 
 import csv
@@ -77,7 +80,7 @@ CTCSS = [67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5, 94.8, 97.4,
          203.5, 206.5, 210.7, 218.1, 225.7, 229.1, 233.6, 241.8, 250.3, 254.1]
 RTL_USB_IDS = {("0bda", "2838"), ("0bda", "2832")}
 DEFAULTS = {"groups_off": [], "miles": 25, "lockouts": [], "squelch": 4, "volume": 70,
-            "tone_squelch": True, "gain": 40, "ppm": 0}
+            "tone_squelch": True, "gain": 40, "ppm": 0, "receiver": ""}
 
 
 # ---- channel list -------------------------------------------------------
@@ -118,7 +121,7 @@ def load_channels(path=CHANNELS):
             continue
         if mhz > 10000:  # given in Hz
             mhz /= 1e6
-        if not 24 <= mhz <= 1766:  # what an RTL-SDR tunes
+        if not 0.1 <= mhz <= 6000:  # what any receiver here tunes
             continue
         try:
             lat, lon = float(_col(row, "latitude", "lat")), float(_col(row, "longitude", "lon"))
@@ -148,14 +151,14 @@ def manual_channel(mhz, name=None):
 
 
 def parse_mhz(text):
-    """MHz from what was typed ("155.475", "155,475", "155475000" Hz), or None if an RTL-SDR can't tune it."""
+    """MHz from what was typed ("155.475", "155,475", "155475000" Hz), or None if no receiver tunes it."""
     try:
         mhz = float(text.strip().replace(",", "."))
     except ValueError:
         return None
     if mhz > 10000:
         mhz /= 1e6
-    return round(mhz, 5) if 24 <= mhz <= 1766 else None
+    return round(mhz, 5) if 0.1 <= mhz <= 6000 else None
 
 
 def append_channel(path, mhz, name, group="My channels"):
@@ -296,6 +299,151 @@ def release_sdr():
         pass
 
 
+# ---- receivers ------------------------------------------------------------------
+
+# What each SoapySDR driver is assumed to do when it can't be asked (it's busy):
+# (scanner sample rate, Gqrx sample rate, lowest MHz, highest MHz).
+DRIVER_DEFAULTS = {
+    "rtlsdr": (240000, 1800000, 24, 1766), "airspyhf": (192000, 768000, 0.009, 260),
+    "airspy": (2500000, 2500000, 24, 1800), "hackrf": (2000000, 2000000, 1, 6000),
+    "sdrplay": (2000000, 2000000, 0.001, 2000), "lime": (2000000, 2000000, 0.1, 3800),
+    "uhd": (1000000, 1000000, 10, 6000), "bladerf": (2000000, 2000000, 47, 6000),
+}
+GENERIC = (2000000, 2000000, 24, 1766)
+# Asked for by name, so SoapySDR doesn't also list sound cards and network servers as receivers.
+RECEIVER_DRIVERS = ["rtlsdr", "airspyhf", "airspy", "hackrf", "sdrplay", "lime", "bladerf", "uhd", "plutosdr"]
+HF_BELOW = 10  # MHz: a receiver reaching below this covers the HF bands that matter
+
+
+def soapy():
+    try:
+        import SoapySDR  # python3-soapysdr
+    except ImportError:
+        return None
+    SoapySDR.setLogLevel(SoapySDR.SOAPY_SDR_CRITICAL)
+    return SoapySDR
+
+
+def _pick_rate(rates, ranges, want, ceiling=None):
+    """The smallest supported rate at or above want (or the largest there is)."""
+    choices = sorted(r for r in rates if r > 0)
+    for lo, hi in ranges:
+        if lo <= want <= hi:
+            choices.append(float(want))
+        elif lo > want:
+            choices.append(float(lo))
+    above = sorted(r for r in choices if r >= want and (ceiling is None or r <= ceiling))
+    return int(above[0]) if above else int(max(choices)) if choices else None
+
+
+def _probe(sd, args):
+    """(scan rate, gqrx rate, low MHz, high MHz) asked of the device itself, or None if it's busy."""
+    rx = sd.SOAPY_SDR_RX
+    try:
+        dev = sd.Device(args)
+    except Exception:  # busy or no permission: SoapySDR raises RuntimeError
+        return None
+    try:
+        rates = list(dev.listSampleRates(rx, 0))
+        ranges = [(r.minimum(), r.maximum()) for r in dev.getSampleRateRange(rx, 0)]
+        freqs = [(r.minimum(), r.maximum()) for r in dev.getFrequencyRange(rx, 0)]
+        scan = _pick_rate(rates, ranges, 192000, ceiling=3000000)
+        gqrx = _pick_rate(rates, ranges, 1500000)
+        if not (scan and gqrx and freqs):
+            return None
+        return scan, gqrx, min(f[0] for f in freqs) / 1e6, max(f[1] for f in freqs) / 1e6
+    except Exception:
+        return None
+    finally:
+        del dev
+
+
+def receivers(probe=True):
+    """Every SDR receiver plugged in, as dicts: key, label, driver, args, scan_rate, gqrx_rate,
+    low_mhz, high_mhz, gqrx (Gqrx's device string), rtl_index (-1 if not an RTL-SDR)."""
+    sd = soapy()
+    found, rtl_count = [], 0
+    if sd:
+        listed = []
+        for driver in RECEIVER_DRIVERS:
+            try:
+                listed += [dict(a) for a in sd.Device.enumerate(f"driver={driver}")]
+            except Exception:  # no module for it
+                pass
+    else:  # without SoapySDR, RTL-SDR dongles only, from sysfs
+        listed = [{"driver": "rtlsdr", "label": "RTL-SDR dongle"} for _ in range(usb_dongles())]
+    for args in listed:
+        args = {k: str(v) for k, v in args.items()}
+        driver = args.get("driver", "")
+        if driver in ("audio", "remote", "") or args.get("remote"):
+            continue  # sound cards and network devices aren't receivers plugged in here
+        scan, gqrx, low, high = DRIVER_DEFAULTS.get(driver, GENERIC)
+        if probe and sd and driver != "rtlsdr":  # an RTL may be in use by the weather radio listener
+            scan, gqrx, low, high = _probe(sd, args) or (scan, gqrx, low, high)
+        rtl_index = -1
+        if driver == "rtlsdr":
+            rtl_index, rtl_count = rtl_count, rtl_count + 1
+        label = args.get("label") or " ".join(x for x in (args.get("manufacturer"), args.get("product")) if x) \
+            or driver
+        serial = args.get("serial", "")
+        key = re.sub(r"[^a-z0-9]+", "-", f"{driver}-{serial or rtl_index if driver == 'rtlsdr' else serial}".lower())
+        key = key.strip("-") or driver
+        if driver == "rtlsdr":
+            device = f"rtl={serial or rtl_index}" if serial and serial != "00000001" else f"rtl={rtl_index}"
+            if "V4" in label.upper():
+                low = 0.5  # the RTL-SDR Blog V4 has an HF upconverter built in
+        else:
+            device = "soapy=0," + ",".join(f"{k}={args[k]}" for k in ("driver", "serial") if args.get(k))
+        found.append({"key": key, "label": label, "driver": driver, "args": args, "scan_rate": scan,
+                      "gqrx_rate": gqrx, "low_mhz": low, "high_mhz": high, "gqrx": device,
+                      "rtl_index": rtl_index})
+    keys = set()
+    for rx in found:  # two receivers with no serial number: keep keys apart
+        while rx["key"] in keys:
+            rx["key"] += "-2"
+        keys.add(rx["key"])
+    return found
+
+
+def gqrx_choices(rxs):
+    """What the Gqrx tile offers: each receiver, plus an HF entry for an RTL-SDR that needs direct sampling."""
+    choices = []
+    for rx in rxs:
+        hf = rx["low_mhz"] < HF_BELOW
+        reach = (f"{fmt_mhz(rx['low_mhz'])} to {fmt_mhz(rx['high_mhz'])}"
+                 + ("  ·  HF and up" if hf else ""))
+        choices.append(dict(rx, detail=reach, start_hz=7200000 if hf else 162550000))
+        if rx["driver"] == "rtlsdr" and not hf:
+            choices.append(dict(rx, key=rx["key"] + "-hf", label=rx["label"] + " on HF (direct sampling)",
+                                gqrx=rx["gqrx"] + ",direct_samp=2", low_mhz=0.5, high_mhz=28.8,
+                                detail="0.5 to 28.8 MHz with an HF antenna on the dongle's input. "
+                                       "Works on RTL-SDR Blog V3 and similar; deafer than a real HF receiver.",
+                                start_hz=7200000))
+    return choices
+
+
+def fmt_mhz(mhz):
+    if mhz >= 1000:
+        return f"{mhz / 1000:g} GHz"
+    if mhz < 1:
+        return f"{mhz * 1000:g} kHz"
+    return f"{mhz:g} MHz"
+
+
+def pick_receiver(key, rxs, nwr):
+    """The receiver the scanner uses: the one chosen, else one that leaves the weather radio its dongle."""
+    for rx in rxs:
+        if key and rx["key"] == key:
+            return rx
+    rtls = [rx for rx in rxs if rx["driver"] == "rtlsdr"]
+    others = [rx for rx in rxs if rx["driver"] != "rtlsdr" and rx["high_mhz"] >= 150]
+    if nwr and others:
+        return others[0]
+    if nwr and len(rtls) > 1:
+        return rtls[1]
+    return (rtls + others)[0] if rtls or others else None
+
+
 # ---- signal processing ----------------------------------------------------
 
 def lowpass(cutoff, rate, taps):
@@ -309,32 +457,61 @@ def bandpass(low, high, rate, taps):
     return h.astype(np.float32)
 
 
-class Demod:
-    """Narrow FM from one channel of 240 kS/s IQ: audio at 48 kHz, plus how much hiss is left."""
+class Decimator:
+    """Low-pass filter and keep every nth sample, carrying state from block to block."""
 
-    def __init__(self):
-        self.chan_taps = lowpass(7500, RATE, 97)
-        self.audio_taps = bandpass(300, 3400, AUDIO_RATE, 511)
+    def __init__(self, taps, factor):
+        self.taps, self.factor = taps, factor
+        self.reset()
+
+    def reset(self):
+        self.tail = np.zeros(len(self.taps) - 1, np.complex64)
+        self.offset = 0
+
+    def __call__(self, x):
+        joined = np.concatenate([self.tail, x])
+        self.tail = joined[-(len(self.taps) - 1):]
+        filtered = np.convolve(joined, self.taps, mode="valid")
+        out = filtered[self.offset::self.factor]
+        self.offset = (self.offset - len(filtered)) % self.factor
+        return out
+
+
+class Demod:
+    """Narrow FM from one channel of IQ at any sample rate: audio near 48 kHz, plus how much hiss is left.
+
+    A fast receiver (HackRF, Airspy, SDRplay: 2 MS/s and up) first comes down to
+    200-400 kS/s through a short filter, then the 7.5 kHz channel filter takes it
+    to about 48 kHz. An RTL-SDR at 240 kS/s goes straight to the channel filter."""
+
+    def __init__(self, rate=RATE):
+        self.rate = rate
+        first = max(1, int(rate // 200000))
+        mid = rate / first
+        second = max(1, round(mid / 48000))
+        self.audio_rate = mid / second
+        self.stages = []
+        if first > 1:
+            self.stages.append(Decimator(lowpass(0.4 * mid, rate, 8 * first + 1), first))
+        self.stages.append(Decimator(lowpass(7500, mid, int(97 * mid / RATE) | 1), second))
+        self.audio_taps = bandpass(300, 3400, self.audio_rate, 511)
         self.reset()
 
     def reset(self):
         self.phase = 0
-        self.iq_tail = np.zeros(len(self.chan_taps) - 1, np.complex64)
+        for stage in self.stages:
+            stage.reset()
         self.audio_tail = np.zeros(len(self.audio_taps) - 1, np.float32)
         self.last = np.complex64(1)
-        self.offset = 0  # keeps decimation in step across blocks
 
     def channel(self, iq):
-        """Mix the channel down to 0 Hz, filter it and drop to 48 kS/s."""
+        """Mix the channel down to 0 Hz, filter it and drop to about 48 kS/s."""
         n = np.arange(self.phase, self.phase + len(iq))
-        self.phase = (self.phase + len(iq)) % RATE
-        mixed = iq * np.exp(-2j * np.pi * OFFSET / RATE * n).astype(np.complex64)
-        joined = np.concatenate([self.iq_tail, mixed])
-        self.iq_tail = joined[-(len(self.chan_taps) - 1):]
-        filtered = np.convolve(joined, self.chan_taps, mode="valid")
-        out = filtered[self.offset::DECIM]
-        self.offset = (self.offset - len(filtered)) % DECIM
-        return out
+        self.phase = (self.phase + len(iq)) % int(self.rate)
+        mixed = (iq * np.exp(-2j * np.pi * OFFSET / self.rate * n)).astype(np.complex64)
+        for stage in self.stages:
+            mixed = stage(mixed)
+        return mixed
 
     def discriminate(self, base):
         joined = np.concatenate([[self.last], base])
@@ -344,21 +521,21 @@ class Demod:
     def process(self, iq):
         """(audio -1..1 with the PL tone removed, raw discriminator output, hiss 0..~1)."""
         fm = self.discriminate(self.channel(iq))
-        return self.audio(fm), fm, hiss(fm)
+        return self.audio(fm), fm, hiss(fm, self.audio_rate)
 
     def audio(self, fm):
         joined = np.concatenate([self.audio_tail, fm])
         self.audio_tail = joined[-(len(self.audio_taps) - 1):]
         voice = np.convolve(joined, self.audio_taps, mode="valid")
-        return np.clip(voice / (2 * np.pi * DEVIATION / AUDIO_RATE), -1, 1)
+        return np.clip(voice / (2 * np.pi * DEVIATION / self.audio_rate), -1, 1)
 
 
-def hiss(fm):
+def hiss(fm, audio_rate=AUDIO_RATE):
     """Discriminator power from 6 to 11 kHz, relative to what no signal gives (about 1)."""
     if len(fm) < 256:
         return 1.0
     spec = np.abs(np.fft.rfft(fm * np.hanning(len(fm)))) ** 2
-    freqs = np.fft.rfftfreq(len(fm), 1 / AUDIO_RATE)
+    freqs = np.fft.rfftfreq(len(fm), 1 / audio_rate)
     band = spec[(freqs >= 6000) & (freqs <= 11000)].mean()
     # Uniform phase noise has variance pi^2/3 spread evenly over 0..24 kHz; after the
     # 7.5 kHz channel filter the 6-11 kHz band keeps about a fifth of that (measured).
@@ -366,12 +543,12 @@ def hiss(fm):
     return float(band / flat)
 
 
-def has_tone(fm, tone):
+def has_tone(fm, tone, audio_rate=AUDIO_RATE):
     """Whether the discriminator output carries the CTCSS tone (within 1%)."""
-    if len(fm) < AUDIO_RATE // 4:
+    if len(fm) < audio_rate // 4:
         return False
     spec = np.abs(np.fft.rfft(fm * np.hanning(len(fm)))) ** 2
-    freqs = np.fft.rfftfreq(len(fm), 1 / AUDIO_RATE)
+    freqs = np.fft.rfftfreq(len(fm), 1 / audio_rate)
     sub = (freqs >= 60) & (freqs <= 260)
     near = sub & (np.abs(freqs - tone) <= max(1.5, tone * 0.01))
     if not near.any():
@@ -415,6 +592,7 @@ class Dongle:
                 lib.rtlsdr_set_tuner_gain(self.dev, min(gains[:count], key=lambda g: abs(g - gain_db * 10)))
         lib.rtlsdr_reset_buffer(self.dev)
         self.buf = ctypes.create_string_buffer(LISTEN * 2)
+        self.rate = RATE
 
     @staticmethod
     def count():
@@ -442,11 +620,60 @@ class Dongle:
         self.lib.rtlsdr_close(self.dev)
 
 
+class SoapySource:
+    """Any receiver SoapySDR knows (Airspy, HackRF, SDRplay, LimeSDR, USRP...), read as complex IQ."""
+
+    def __init__(self, args, rate, gain_db):
+        sd = soapy()
+        if sd is None:
+            raise OSError("SoapySDR isn't installed. Run Update station in Settings.")
+        self.sd, rx = sd, sd.SOAPY_SDR_RX
+        try:
+            self.dev = sd.Device(args)
+            self.dev.setSampleRate(rx, 0, rate)
+            self.rate = self.dev.getSampleRate(rx, 0)
+            if gain_db in (None, "auto"):
+                if self.dev.hasGainMode(rx, 0):
+                    self.dev.setGainMode(rx, 0, True)
+            else:
+                self.dev.setGain(rx, 0, float(gain_db))
+            self.stream = self.dev.setupStream(rx, sd.SOAPY_SDR_CF32)
+            self.dev.activateStream(self.stream)
+        except Exception as err:  # SoapySDR raises RuntimeError for busy, missing and bad settings
+            raise OSError(f"busy: {err}") from err
+        self.buf = np.empty(65536, np.complex64)
+
+    def tune(self, mhz):
+        self.dev.setFrequency(self.sd.SOAPY_SDR_RX, 0, mhz * 1e6 - OFFSET)
+
+    def read(self, samples):
+        out, got, misses = np.empty(samples, np.complex64), 0, 0
+        while got < samples:
+            want = min(samples - got, len(self.buf))
+            result = self.dev.readStream(self.stream, [self.buf], want, timeoutUs=500000)
+            if result.ret > 0:
+                out[got:got + result.ret] = self.buf[:result.ret]
+                got += result.ret
+            elif result.ret != self.sd.SOAPY_SDR_OVERFLOW:
+                misses += 1
+                if misses > 6:
+                    raise OSError("The receiver stopped sending (unplugged?).")
+        return out
+
+    def close(self):
+        try:
+            self.dev.deactivateStream(self.stream)
+            self.dev.closeStream(self.stream)
+        except Exception:
+            pass
+
+
 class FakeDongle:
     """Noise everywhere, and a talking-ish FM signal on the test frequencies (EMCOMM_SCANNER_FAKE)."""
 
     def __init__(self, busy_mhz, tone=None):
         self.busy, self.tone, self.mhz, self.n = busy_mhz, tone, None, 0
+        self.rate = RATE
         self.rng = np.random.default_rng(1)
 
     def tune(self, mhz):
@@ -460,18 +687,19 @@ class FakeDongle:
         pass
 
 
-def fm_test_signal(samples, start, on, tone, rng, advance=None, snr_db=25):
-    """IQ at RATE: noise, plus (if on) a narrow FM carrier OFFSET above centre with a 1 kHz note and tone."""
-    noise = (rng.standard_normal(samples) + 1j * rng.standard_normal(samples)) * 0.05
+def fm_test_signal(samples, start, on, tone, rng, advance=None, snr_db=25, rate=RATE):
+    """IQ at rate: noise, plus (if on) a narrow FM carrier OFFSET above centre with a 1 kHz note and tone.
+    snr_db is over 240 kHz, whatever the rate, so it means the same in the channel."""
+    noise = (rng.standard_normal(samples) + 1j * rng.standard_normal(samples)) * 0.05 * math.sqrt(rate / RATE)
     if advance is not None:
         advance.n += samples
     if not on:
         return noise.astype(np.complex64)
-    t = (np.arange(samples) + start) / RATE
+    t = (np.arange(samples) + start) / rate
     message = 0.6 * np.sin(2 * np.pi * 1000 * t) * DEVIATION
     if tone:
         message = message + 0.15 * DEVIATION * np.sin(2 * np.pi * tone * t)
-    phase = 2 * np.pi * (OFFSET * t + np.cumsum(message) / RATE)
+    phase = 2 * np.pi * (OFFSET * t + np.cumsum(message) / rate)
     amp = 0.05 * math.sqrt(2) * 10 ** (snr_db / 20)
     return (noise + amp * np.exp(1j * phase)).astype(np.complex64)
 
@@ -491,6 +719,8 @@ class Scanner(threading.Thread):
         self.stopping = False
         self.dongle = None
         self.audio = None
+        self.demod = None
+        self.receiver = None
         self.wake = threading.Event()
 
     def configure(self, channels, settings):
@@ -515,27 +745,33 @@ class Scanner(threading.Thread):
             busy = [float(x) for x in FAKE.split(",") if x.strip()]
             self.dongle = FakeDongle(busy, tone=float(os.environ.get("EMCOMM_SCANNER_FAKE_TONE", "0")) or None)
             return
-        count = Dongle.count()
-        if count < 0:
-            raise OSError("The RTL-SDR library isn't installed. Run Update station in Settings.")
-        if count == 0:
-            raise OSError("No RTL-SDR dongle found. Plug one in with a VHF/UHF antenna.")
-        index = 1 if count > 1 and nwr_in_use() else 0
-        if index == 0:
-            claim_sdr("Scanner")  # the weather radio listener lets go of the dongle
+        rx = pick_receiver(self.settings.get("receiver"), receivers(), nwr_in_use())
+        if rx is None:
+            raise OSError("No SDR receiver found. Plug one in (RTL-SDR, Airspy, HackRF, SDRplay...) "
+                          "with a VHF/UHF antenna.")
+        self.receiver = rx
+        if rx["driver"] == "rtlsdr":
+            if Dongle.count() < 0:
+                raise OSError("The RTL-SDR library isn't installed. Run Update station in Settings.")
+            if rx["rtl_index"] == 0:
+                claim_sdr("Scanner")  # the weather radio listener lets go of the dongle
+            make = lambda: Dongle(rx["rtl_index"], self.settings.get("gain"), self.settings.get("ppm"))  # noqa: E731
+        else:
+            make = lambda: SoapySource(rx["args"], rx["scan_rate"], self.settings.get("gain"))  # noqa: E731
         for _ in range(12):
             try:
-                self.dongle = Dongle(index, self.settings.get("gain"), self.settings.get("ppm"))
+                self.dongle = make()
                 return
             except OSError:
                 time.sleep(0.5)
-        raise OSError("The RTL-SDR is busy in another app (Gqrx?). Close it and tap Scan.")
+        raise OSError(f"The {rx['label']} is busy in another app (Gqrx?). Close it and tap Scan.")
 
     def _play(self, samples):
         if self.audio is None or self.audio.poll() is not None:
+            rate = round(self.demod.audio_rate)
             try:
                 self.audio = subprocess.Popen(["pacat", "--playback", "--raw", "--format=s16le",
-                                               f"--rate={AUDIO_RATE}", "--channels=1", "--latency-msec=150",
+                                               f"--rate={rate}", "--channels=1", "--latency-msec=150",
                                                "--client-name=Scanner"], stdin=subprocess.PIPE)
             except OSError:
                 self.audio = None
@@ -554,7 +790,7 @@ class Scanner(threading.Thread):
             release_sdr()
             self.on_state({"state": "error", "text": str(err)})
             return
-        demod = Demod()
+        demod = self.demod = Demod(self.dongle.rate)
         position = 0
         try:
             while not self.stopping:
@@ -585,9 +821,11 @@ class Scanner(threading.Thread):
         """Look at one channel; stay while it's active. True if it was active."""
         threshold = SQUELCH_LEVELS.get(int(settings.get("squelch", 4)), 0.38)
         self.dongle.tune(ch["mhz"])
-        self.dongle.read(SETTLE)
+        def samples(count):  # the block sizes are set for 240 kS/s
+            return int(count * self.dongle.rate / RATE)
+        self.dongle.read(samples(SETTLE))
         demod.reset()
-        _audio, fm, noise = demod.process(self.dongle.read(LOOK))
+        _audio, fm, noise = demod.process(self.dongle.read(samples(LOOK)))
         if not held:
             self.on_state({"state": "scanning", "channel": ch, "level": noise})
         if noise > threshold:
@@ -602,13 +840,13 @@ class Scanner(threading.Thread):
             if self.skip_now:
                 self.skip_now = False
                 return True
-            audio, fm, noise = demod.process(self.dongle.read(LISTEN))
+            audio, fm, noise = demod.process(self.dongle.read(samples(LISTEN)))
             if not toned:
                 heard.append(fm)
                 joined = np.concatenate(heard)
-                if has_tone(joined, ch["tone"]):
+                if has_tone(joined, ch["tone"], demod.audio_rate):
                     toned = True
-                elif len(joined) >= TONE_WAIT * AUDIO_RATE:
+                elif len(joined) >= TONE_WAIT * demod.audio_rate:
                     if held:
                         heard = heard[-2:]
                         self.on_state({"state": "holding", "channel": ch, "level": noise, "open": False,
@@ -672,31 +910,79 @@ dialog .muted {{ color: {muted}; }}
 dialog .error {{ color: {danger_text}; }}
 entry {{ background: {bg}; color: {text}; border: 1px solid {input_line}; border-radius: 8px; min-height: 44px;
          font-size: 16px; background-image: none; box-shadow: none; }}
+.pick-name {{ font-size: 17px; font-weight: 600; }}
 .section-title {{ font-size: 12px; font-weight: 600; color: {muted}; letter-spacing: 1px; }}
 """
 
 
-def window_main():
+def theme():
+    try:
+        with open(THEME_PATH, encoding="utf-8") as f:
+            return THEMES.get(f.read().strip(), THEMES["dark"])
+    except OSError:
+        return THEMES["dark"]
+
+
+def gtk_with_theme():
     import gi
     gi.require_version("Gtk", "3.0")
-    from gi.repository import GLib, Gtk, Gdk
+    from gi.repository import Gdk, GLib, Gtk
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS.format(**theme()).encode())
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
+                                             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    return Gtk, GLib
 
-    def theme():
-        try:
-            with open(THEME_PATH, encoding="utf-8") as f:
-                return THEMES.get(f.read().strip(), THEMES["dark"])
-        except OSError:
-            return THEMES["dark"]
+
+def pick_for_gqrx():
+    """Ask which receiver Gqrx should use (only if there's a choice) and print it for emcomm-start:
+    key, Gqrx device string, sample rate, start frequency (Hz), RTL index (-1 if none), tab-separated."""
+    choices = gqrx_choices(receivers())
+    chosen = choices[0] if len(choices) == 1 else None
+    if len(choices) != 1:
+        Gtk, _GLib = gtk_with_theme()
+        dialog = Gtk.Dialog(title="Which receiver?", modal=True)
+        dialog.set_default_size(620, -1)
+        dialog.set_position(Gtk.WindowPosition.CENTER)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=16)
+        head = Gtk.Label(xalign=0, wrap=True, label=(
+            "Pick the receiver for Gqrx." if choices else
+            "No SDR receiver found. Plug one in (RTL-SDR, Airspy, HackRF, SDRplay...) and tap Gqrx again."))
+        box.pack_start(head, False, False, 0)
+        picked = []
+        for choice in choices:
+            btn = Gtk.Button()
+            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin=6)
+            name = Gtk.Label(label=choice["label"], xalign=0)
+            name.get_style_context().add_class("pick-name")
+            detail = Gtk.Label(label=choice["detail"], xalign=0, wrap=True, max_width_chars=60)
+            detail.get_style_context().add_class("muted")
+            inner.pack_start(name, False, False, 0)
+            inner.pack_start(detail, False, False, 0)
+            btn.add(inner)
+            btn.connect("clicked", lambda _b, c=choice: (picked.append(c), dialog.response(Gtk.ResponseType.OK)))
+            box.pack_start(btn, False, False, 0)
+        dialog.add_buttons("Cancel" if choices else "OK", Gtk.ResponseType.CANCEL)
+        dialog.get_content_area().add(box)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+        chosen = picked[0] if picked else None
+    if not chosen:
+        return 1
+    print("\t".join(str(x) for x in (chosen["key"], chosen["gqrx"], chosen["gqrx_rate"], chosen["start_hz"],
+                                     chosen["rtl_index"])))
+    return 0
+
+
+def window_main():
+    Gtk, GLib = gtk_with_theme()
 
     class Window(Gtk.Window):
         def __init__(self):
             super().__init__(title="Scanner")
             self.set_wmclass("emcomm-scanner", "Scanner")
             self.set_default_size(1024, 552)
-            provider = Gtk.CssProvider()
-            provider.load_from_data(CSS.format(**theme()).encode())
-            Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
-                                                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
             self.settings = load_settings()
             self.scanner = None
             self.state = {}
@@ -792,7 +1078,7 @@ def window_main():
             side.pack_start(self.where_label, False, False, 0)
             row = Gtk.Box(spacing=6)
             row.pack_start(self._button("Load a list", self._load_list), True, True, 0)
-            row.pack_start(self._button("Dongle", self._dongle_dialog), True, True, 0)
+            row.pack_start(self._button("Receiver", self._dongle_dialog), True, True, 0)
             side.pack_end(row, False, False, 0)
             body.pack_start(side, False, False, 0)
 
@@ -1003,8 +1289,8 @@ def window_main():
             box.pack_start(name, False, False, 0)
             hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=40)
             hint.get_style_context().add_class("muted")
-            hint.set_text("Any frequency from 24 to 1766 MHz, narrow FM. The − and + beside the frequency "
-                          "step 12.5 kHz at a time.")
+            hint.set_text("Any frequency your receiver reaches (an RTL-SDR: 24 to 1766 MHz), narrow FM. "
+                          "For HF and SSB use Gqrx. The − and + beside the frequency step 12.5 kHz at a time.")
             box.pack_start(hint, False, False, 0)
             dialog.get_content_area().add(box)
             dialog.show_all()
@@ -1014,7 +1300,7 @@ def window_main():
                     break
                 mhz = parse_mhz(entry.get_text())
                 if mhz is None:
-                    hint.set_text("That isn't a frequency an RTL-SDR can tune: type MHz between 24 and 1766.")
+                    hint.set_text("That isn't a frequency: type it in MHz, for example 155.475.")
                     hint.get_style_context().add_class("error")
                     continue
                 label = name.get_text().strip()[:24]
@@ -1130,9 +1416,18 @@ def window_main():
                       f"~/{os.path.basename(CHANNELS)}.old")
 
         def _dongle_dialog(self, *_):
-            dialog = Gtk.Dialog(title="RTL-SDR dongle", transient_for=self, modal=True)
+            dialog = Gtk.Dialog(title="Receiver", transient_for=self, modal=True)
             dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
             grid = Gtk.Grid(row_spacing=10, column_spacing=12, margin=16)
+            which = Gtk.ComboBoxText()
+            which.append("", "Automatic")
+            for rx in receivers(probe=False):
+                which.append(rx["key"], rx["label"])
+            which.set_active_id(self.settings.get("receiver") or "")
+            if which.get_active_id() is None:
+                which.set_active_id("")
+            grid.attach(Gtk.Label(label="Receiver", xalign=0), 0, 3, 1, 1)
+            grid.attach(which, 1, 3, 1, 1)
             gain = Gtk.ComboBoxText()
             gain.append("auto", "Automatic")
             for db in (20, 30, 35, 40, 45, 49):
@@ -1146,18 +1441,21 @@ def window_main():
             grid.attach(gain, 1, 0, 1, 1)
             grid.attach(Gtk.Label(label="Frequency correction (ppm)", xalign=0), 0, 1, 1, 1)
             grid.attach(ppm, 1, 1, 1, 1)
+            using = self.scanner.receiver["label"] if self.scanner and self.scanner.receiver else "none yet"
             note = Gtk.Label(xalign=0, wrap=True, max_width_chars=50, label=(
                 "Lower the gain if strong local stations show up on the wrong channels. "
-                "Most dongles need 0 to 60 ppm; a TCXO dongle needs 0. "
-                f"Dongles plugged in: {usb_dongles()}."))
+                "Most RTL-SDR dongles need 0 to 60 ppm; a TCXO dongle or other SDRs need 0. "
+                "Automatic uses an RTL-SDR, or another receiver when the weather radio has the RTL-SDR. "
+                f"Using now: {using}."))
             note.get_style_context().add_class("muted")
-            grid.attach(note, 0, 2, 2, 1)
+            grid.attach(note, 0, 4, 2, 1)
             dialog.get_content_area().add(grid)
             dialog.show_all()
             if dialog.run() == Gtk.ResponseType.OK:
                 value = gain.get_active_id()
                 self.settings["gain"] = "auto" if value == "auto" else int(value)
                 self.settings["ppm"] = int(ppm.get_value())
+                self.settings["receiver"] = which.get_active_id() or ""
                 save_settings(self.settings)
                 self._restart()
             dialog.destroy()
@@ -1205,6 +1503,12 @@ def gqrx_bookmarks(channels):
 
 
 def main(argv):
+    if argv == ["--pick-receiver"]:
+        return pick_for_gqrx()
+    if argv == ["--receivers"]:
+        for rx in receivers():
+            print(json.dumps({k: v for k, v in rx.items()}))
+        return 0
     if argv == ["--gqrx-bookmarks"]:
         ensure_list()
         sys.stdout.write(gqrx_bookmarks(load_channels()))

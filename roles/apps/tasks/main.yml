@@ -201,16 +201,28 @@
       when: apps_natural_earth is changed or not apps_basemap.stat.exists
       changed_when: true
 
-# RTL-SDR receivers. The Scanner is the station's own (numpy narrow-FM demod on
-# librtlsdr, audio through PipeWire); Gqrx is for tuning around freely. Both
-# install together and share ~/Scanner channels.csv (Gqrx gets it as bookmarks).
-- name: Install the RTL-SDR scanner and Gqrx
+# SDR receivers. The Scanner is the station's own (numpy narrow-FM demod, audio
+# through PipeWire); Gqrx is for tuning anywhere, HF included. Both use any
+# receiver SoapySDR knows (RTL-SDR, Airspy, HackRF, LimeSDR, bladeRF...), install
+# together and share ~/Scanner channels.csv (Gqrx gets it as bookmarks).
+- name: Install the SDR scanner and Gqrx
   tags: [scanner, sdr]
   block:
-    - name: Install the RTL-SDR library, numpy, the audio player and Gqrx
+    - name: Install the SDR libraries, numpy, the audio player and Gqrx
       ansible.builtin.apt:
-        name: [rtl-sdr, python3-numpy, python3-gi, pulseaudio-utils, gqrx-sdr]
+        name: [rtl-sdr, python3-numpy, python3-gi, pulseaudio-utils, gqrx-sdr, python3-soapysdr, soapysdr-tools,
+               soapysdr-module-rtlsdr, soapysdr-module-airspy, soapysdr-module-hackrf, soapysdr-module-lms7,
+               soapysdr-module-bladerf]
         install_recommends: false
+
+    # Not every Debian release packages these; the station works without them.
+    - name: Install SoapySDR drivers for the Airspy HF+ and ADALM-Pluto, where Debian has them
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        install_recommends: false
+      loop: [soapysdr-module-airspyhf, soapysdr-module-plutosdr]
+      register: apps_sdr_optional
+      failed_when: false
 
     - name: Create the scanner's list folder
       ansible.builtin.file:

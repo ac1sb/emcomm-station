@@ -7,7 +7,9 @@ Run: python3 tests/test_scanner.py
 import importlib.machinery
 import importlib.util
 import os
+import sys
 import tempfile
+import types
 import unittest
 
 import numpy as np
@@ -94,7 +96,8 @@ class Manual(unittest.TestCase):
         self.assertEqual(sc.parse_mhz("155.475"), 155.475)
         self.assertEqual(sc.parse_mhz("155,475"), 155.475)
         self.assertEqual(sc.parse_mhz("155475000"), 155.475)
-        self.assertIsNone(sc.parse_mhz("14.074"))  # below what an RTL-SDR tunes
+        self.assertEqual(sc.parse_mhz("29.6"), 29.6)  # 10 m FM, for a receiver that reaches it
+        self.assertIsNone(sc.parse_mhz("0.01"))
         self.assertIsNone(sc.parse_mhz("abc"))
 
     def test_save_to_the_users_list_keeps_its_columns(self):
@@ -109,6 +112,95 @@ class Manual(unittest.TestCase):
             self.assertEqual((last["mhz"], last["name"], last["group"]), (155.475, "STATE MUTUAL AID", "My channels"))
             sc.append_channel(os.path.join(d, "new.csv"), 462.5625, "FRS 1")
             self.assertEqual(sc.load_channels(os.path.join(d, "new.csv"))[0]["name"], "FRS 1")
+
+
+class FakeRange:
+    def __init__(self, lo, hi):
+        self.lo, self.hi = lo, hi
+
+    def minimum(self):
+        return self.lo
+
+    def maximum(self):
+        return self.hi
+
+
+def fake_soapy(devices, busy=()):
+    """A stand-in SoapySDR module listing the given devices (dicts with driver, label, serial)."""
+    class Device:
+        def __init__(self, args):
+            if args.get("driver") in busy:
+                raise RuntimeError("device busy")
+            self.args = args
+
+        @staticmethod
+        def enumerate(query):
+            driver = query.split("=", 1)[1]
+            return [d for d in devices if d["driver"] == driver]
+
+        def listSampleRates(self, _dir, _ch):
+            return [912000.0, 768000.0, 456000.0, 384000.0, 256000.0, 192000.0]
+
+        def getSampleRateRange(self, _dir, _ch):
+            return []
+
+        def getFrequencyRange(self, _dir, _ch):
+            return [FakeRange(9e3, 31e6), FakeRange(60e6, 260e6)]
+
+    return types.SimpleNamespace(Device=Device, SOAPY_SDR_RX=0, SOAPY_SDR_CRITICAL=0, setLogLevel=lambda _l: None)
+
+
+class Receivers(unittest.TestCase):
+    DEVICES = [{"driver": "rtlsdr", "label": "Generic RTL2832U OEM :: 00000001", "serial": "00000001"},
+               {"driver": "rtlsdr", "label": "RTLSDRBlog, Blog V4", "serial": "00000002"},
+               {"driver": "airspyhf", "label": "AirSpy HF+ [12345]", "serial": "12345"},
+               {"driver": "hackrf", "label": "HackRF One #0 abcd", "serial": "abcd"}]
+
+    def setUp(self):
+        sys.modules["SoapySDR"] = fake_soapy(self.DEVICES, busy=("hackrf",))
+
+    def tearDown(self):
+        del sys.modules["SoapySDR"]
+
+    def test_every_receiver_with_gqrx_strings(self):
+        rxs = {rx["driver"] + str(rx["rtl_index"]): rx for rx in sc.receivers()}
+        self.assertEqual(rxs["rtlsdr0"]["gqrx"], "rtl=0")  # the factory serial isn't unique
+        self.assertEqual(rxs["rtlsdr1"]["gqrx"], "rtl=00000002")
+        self.assertEqual(rxs["rtlsdr1"]["low_mhz"], 0.5)  # V4: HF built in
+        hf = rxs["airspyhf-1"]
+        self.assertEqual(hf["gqrx"], "soapy=0,driver=airspyhf,serial=12345")
+        self.assertEqual((hf["scan_rate"], hf["gqrx_rate"], hf["high_mhz"]), (192000, 912000, 260))
+        self.assertEqual(rxs["hackrf-1"]["scan_rate"], 2000000)  # busy: the driver's usual values
+
+    def test_gqrx_offers_hf_by_direct_sampling_only_where_needed(self):
+        choices = sc.gqrx_choices(sc.receivers())
+        hf = [c for c in choices if c["key"].endswith("-hf")]
+        self.assertEqual([c["gqrx"] for c in hf], ["rtl=0,direct_samp=2"])
+        self.assertTrue(all(c["start_hz"] == 7200000 for c in choices if c["low_mhz"] < sc.HF_BELOW))
+
+    def test_scanner_leaves_the_weather_radio_its_dongle(self):
+        rxs = sc.receivers()
+        self.assertEqual(sc.pick_receiver("", rxs, nwr=False)["rtl_index"], 0)
+        self.assertEqual(sc.pick_receiver("", rxs, nwr=True)["driver"], "airspyhf")
+        self.assertEqual(sc.pick_receiver("hackrf-abcd", rxs, nwr=True)["driver"], "hackrf")
+        self.assertIsNone(sc.pick_receiver("", [], nwr=False))
+
+
+class OtherRates(unittest.TestCase):
+    def test_squelch_and_tone_at_other_receivers_rates(self):
+        for rate in (192000, 768000, 2000000, 2500000):
+            demod, rng, start, levels, fms = sc.Demod(rate), np.random.default_rng(5), 0, [], []
+            n = rate // 10
+            for _ in range(6):
+                _audio, fm, level = demod.process(sc.fm_test_signal(n, start, True, 118.8, rng, rate=rate))
+                start += n
+                levels.append(level)
+                fms.append(fm)
+            self.assertLess(np.median(levels), sc.SQUELCH_LEVELS[6], rate)
+            self.assertTrue(sc.has_tone(np.concatenate(fms), 118.8, demod.audio_rate), rate)
+            quiet = sc.Demod(rate)
+            noise = [quiet.process(sc.fm_test_signal(n, 0, False, None, rng, rate=rate))[2] for _ in range(4)]
+            self.assertGreater(np.median(noise), sc.SQUELCH_LEVELS[4], rate)
 
 
 class Gqrx(unittest.TestCase):
