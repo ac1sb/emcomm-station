@@ -57,7 +57,9 @@ BAUD_RATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200
 GPS_FIXED = [("", "Automatic (u-blox USB GPS)")]
 PTT_CHOICES = [("CAT", "CAT command"), ("RTS", "RTS line (Digirig)"), ("DTR", "DTR line"), ("NONE", "VOX / none")]
 
-# Colours for the dark (default) and light themes; Settings switches between them.
+# The colour themes Settings > Display offers (Amber dark is the default). Night
+# keeps everything red, which spares night vision; Sunlight is the most contrast
+# a screen in daylight can give. The same names are in emcomm-scanner.
 THEMES = {
     "dark": dict(bg="#101214", bar="#15181B", surface="#1A1D21", hover="#22262B", line="#2A2F35",
                  input_line="#3A4048", text="#E8E6E1", label="#C9CDD1", muted="#9AA0A6",
@@ -67,7 +69,22 @@ THEMES = {
                   input_line="#BDB8AE", text="#1D1F22", label="#3C4043", muted="#5F6368",
                   accent="#A85F00", accent_fill="#F2A33A", on_accent="#101214", ok="#00796B",
                   danger="#C62828", danger_text="#B71C1C", danger_bg="#FDECEA"),
+    "slate": dict(bg="#0E1318", bar="#121A21", surface="#16202A", hover="#1C2834", line="#253342",
+                  input_line="#344658", text="#E6EBF0", label="#C3CDD7", muted="#8D9BAA",
+                  accent="#6CB4EE", accent_fill="#3D8FD6", on_accent="#FFFFFF", ok="#4FC3B8",
+                  danger="#E5534B", danger_text="#F4B4AF", danger_bg="#2B1B1F"),
+    "night": dict(bg="#090505", bar="#0E0707", surface="#140A0A", hover="#1D0E0E", line="#2B1414",
+                  input_line="#3E1C1B", text="#E0675C", label="#C9584E", muted="#94463F",
+                  accent="#FF5A47", accent_fill="#B52F25", on_accent="#0F0606", ok="#D9614F",
+                  danger="#FF3B30", danger_text="#FF8C82", danger_bg="#2A0B09"),
+    "sunlight": dict(bg="#FFFFFF", bar="#FFFFFF", surface="#FFFFFF", hover="#EDEDED", line="#1A1A1A",
+                     input_line="#000000", text="#000000", label="#000000", muted="#333333",
+                     accent="#0B3C9C", accent_fill="#0B4FD1", on_accent="#FFFFFF", ok="#006B3C",
+                     danger="#B00020", danger_text="#8A0019", danger_bg="#FFE5E9"),
 }
+THEME_NAMES = [("dark", "Amber dark (default)"), ("light", "Light (easier in daylight)"),
+               ("slate", "Slate blue"), ("night", "Night red (keeps night vision)"),
+               ("sunlight", "Sunlight (highest contrast)")]
 THEME_PATH = os.path.expanduser("~/.config/emcomm/theme")
 DISPLAY_PATH = os.path.expanduser("~/.config/emcomm/display.json")
 DISPLAY_CMD = os.environ.get("EMCOMM_DISPLAY", "emcomm-display")
@@ -97,13 +114,16 @@ ICON_COLOUR = "#F2A33A"  # the stroke colour in the standard tile icons
 
 CSS = string.Template("""
 window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', sans-serif; }
-.topbar { background: $bar; border-bottom: 1px solid $line; padding: 0 20px; min-height: 60px; }
+.topbar { background: $bar; border-bottom: 2px solid alpha($accent_fill, 0.55); padding: 0 20px; min-height: 60px; }
 .callsign { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 600; color: $accent; }
 .muted { color: $muted; }
 .mono { font-family: 'IBM Plex Mono', monospace; }
 .tile, .navbtn, .tile label, .navbtn label { background-image: none; box-shadow: none; text-shadow: none; }
-.tile { background: $surface; border: 1px solid $line; border-radius: 12px; padding: 12px 16px; }
-.tile:hover { background: $hover; }
+.tile { background-color: $surface; border: 1px solid $line; border-radius: 12px; padding: 12px 16px;
+        background-image: linear-gradient(to bottom, alpha($text, 0.035), alpha($text, 0)); }
+.tile:hover { background-color: $hover; border-color: alpha($accent_fill, 0.6); }
+.tile:active { background-color: $hover; border-color: $accent_fill; }
+.tile-icon { background: alpha($accent_fill, 0.12); border-radius: 10px; padding: 7px; }
 .tile:focus, .navbtn:focus { border: 2px solid $accent_fill; outline: none; }
 .key-hint { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: $muted; }
 .tile:disabled, .tile.not-ready { opacity: 0.5; }
@@ -133,7 +153,8 @@ entry.formfield { min-height: 0; padding: 0 4px; border-radius: 3px; border: 1px
 entry.formfield:focus, textview.formfield:focus { border: 2px solid #F2A33A; }
 textview.formfield { border: 1px solid #3B82F6; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; }
 .section { background: $surface; border: 1px solid $line; border-radius: 12px; padding: 12px 16px; }
-.section-title { font-size: 12px; font-weight: 600; color: $muted; letter-spacing: 1px; }
+.section-title { font-size: 12px; font-weight: 600; color: $muted; letter-spacing: 1px;
+                 border-left: 3px solid $accent_fill; padding-left: 8px; }
 .field-label { font-size: 14px; color: $label; }
 combobox button, .picklist { padding: 0 10px; }
 .picklist-pop list, .picklist-pop row { background: $surface; color: $text; }
@@ -167,7 +188,7 @@ checkbutton.pick check:checked { background-color: $accent_fill; border-color: $
                                 -gtk-icon-source: -gtk-icontheme("object-select-symbolic"); }
 .topbar .navbtn { min-height: 40px; padding: 0 12px; }
 .home-nav .navbtn { min-height: 44px; font-size: 15px; padding: 0 14px; }
-.homebar { background: $bar; border-bottom: 1px solid $line; padding: 0 8px; }
+.homebar { background: $bar; border-bottom: 2px solid alpha($accent_fill, 0.55); padding: 0 8px; }
 .homebar .navbtn { min-height: 38px; font-size: 16px; padding: 0 12px; }
 .homebar .navbtn.current { border-color: $accent_fill; color: $accent; }
 .homebar .linked .navbtn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
@@ -2636,7 +2657,7 @@ class Launcher(Gtk.Window):
         btn.connect("popup-menu", lambda *_: self._icon_menu(btn) or True)
 
     def _apply_theme(self, name):
-        """Switch between the dark and light colours, now and on later starts."""
+        """Switch to one of the colour themes, now and on later starts."""
         self.theme = name
         self.colours = THEMES[name]
         screen = Gdk.Screen.get_default()
@@ -2698,7 +2719,7 @@ class Launcher(Gtk.Window):
             grid.attach(widget, 1, row, 1, 1)
             return widget
 
-        theme = combo(0, "Colours", [("dark", "Dark (for night)"), ("light", "Light (easier in daylight)")], self.theme)
+        theme = combo(0, "Colours", THEME_NAMES, self.theme)
         modes = [("auto", "Automatic" + (f" ({output['preferred']})" if output and output["preferred"] else ""))]
         modes += [(m, m.replace("x", " × ")) for m in (output["modes"] if output else [])]
         mode = combo(1, "Resolution", modes, old["mode"])
@@ -2873,7 +2894,10 @@ class Launcher(Gtk.Window):
                     image.get_style_context().add_class("key-hint")
                 image.set_size_request(20, 20)
                 grid.attach(image, n % 2, n // 2, 1, 1)
-            btn.icon_slot.pack_start(grid, False, False, 0)
+            badge = Gtk.Box(halign=Gtk.Align.START)
+            badge.get_style_context().add_class("tile-icon")
+            badge.pack_start(grid, False, False, 0)
+            btn.icon_slot.pack_start(badge, False, False, 0)
             btn.icon_slot.show_all()
             return
         path = find_icon(btn.app.get("icon", ""))
@@ -2887,6 +2911,11 @@ class Launcher(Gtk.Window):
             # No icon, or it can't be read: show the short code instead.
             widget = Gtk.Label(label=btn.app.get("code", ""))
             widget.get_style_context().add_class("tile-code")
+        else:  # the icon sits on a softly tinted square
+            badge = Gtk.Box()
+            badge.get_style_context().add_class("tile-icon")
+            badge.pack_start(widget, False, False, 0)
+            widget = badge
         widget.set_halign(Gtk.Align.START)
         btn.icon_slot.pack_start(widget, False, False, 0)
         btn.icon_slot.show_all()

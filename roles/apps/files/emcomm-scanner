@@ -1093,6 +1093,15 @@ THEMES = {
     "light": dict(bg="#F4F2EE", surface="#FFFFFF", hover="#EFECE6", line="#D6D2CA", input_line="#BDB8AE",
                   text="#1D1F22", muted="#5F6368", accent="#A85F00", accent_fill="#F2A33A", on_accent="#101214",
                   ok="#00796B", danger_text="#B71C1C"),
+    "slate": dict(bg="#0E1318", surface="#16202A", hover="#1C2834", line="#253342", input_line="#344658",
+                  text="#E6EBF0", muted="#8D9BAA", accent="#6CB4EE", accent_fill="#3D8FD6", on_accent="#FFFFFF",
+                  ok="#4FC3B8", danger_text="#F4B4AF"),
+    "night": dict(bg="#090505", surface="#140A0A", hover="#1D0E0E", line="#2B1414", input_line="#3E1C1B",
+                  text="#E0675C", muted="#94463F", accent="#FF5A47", accent_fill="#B52F25", on_accent="#0F0606",
+                  ok="#D9614F", danger_text="#FF8C82"),
+    "sunlight": dict(bg="#FFFFFF", surface="#FFFFFF", hover="#EDEDED", line="#1A1A1A", input_line="#000000",
+                     text="#000000", muted="#333333", accent="#0B3C9C", accent_fill="#0B4FD1", on_accent="#FFFFFF",
+                     ok="#006B3C", danger_text="#8A0019"),
 }
 CSS = """
 window, .page {{ background: {bg}; color: {text}; font-family: 'IBM Plex Sans', sans-serif; }}
@@ -1110,6 +1119,10 @@ button.on, button.primary {{ background: {accent_fill}; color: {on_accent}; bord
 button.on label, button.primary label {{ color: {on_accent}; }}
 checkbutton {{ font-size: 16px; padding: 6px 0; }}
 checkbutton check {{ min-width: 22px; min-height: 22px; }}
+checkbutton check, treeview check {{ background-image: none; box-shadow: none; border: 2px solid {input_line};
+                                   border-radius: 5px; background-color: {bg}; }}
+checkbutton check:checked, treeview check:checked {{ background-color: {accent_fill}; border-color: {accent_fill};
+                                   color: {on_accent}; -gtk-icon-source: -gtk-icontheme("object-select-symbolic"); }}
 treeview {{ font-size: 15px; background: {surface}; color: {text}; }}
 treeview:selected {{ background: {hover}; color: {text}; }}
 treeview header button {{ min-height: 30px; font-size: 13px; color: {muted}; border-radius: 0; }}
@@ -1119,6 +1132,7 @@ combobox button {{ min-height: 40px; }}
 .picklist-pop row {{ font-size: 16px; min-height: 40px; }}
 .picklist-pop row:selected {{ background: {accent_fill}; color: {on_accent}; }}
 scale trough {{ min-height: 8px; }}
+scale highlight {{ background-image: none; background-color: {accent_fill}; border-color: {accent_fill}; }}
 levelbar trough {{ background: {bg}; border: 1px solid {line}; border-radius: 4px; min-height: 12px; }}
 levelbar block.filled {{ background: {ok}; border: none; border-radius: 4px; }}
 levelbar block.empty {{ background: transparent; border: none; }}
