@@ -164,9 +164,11 @@ environment.
     XML Logbook Data subscribers.
 - **NOAA Weather Radio alerts, no internet needed:** plug in an RTL-SDR dongle
   (any RTL2832U stick, about $30) with an antenna for 162 MHz, then on the Online
-  page's Weather alerts tap **Set up** next to NOAA Weather Radio and pick your
-  nearest transmitter's channel and your counties' SAME codes (both listed at
-  weather.gov/nwr). The station decodes the SAME burst at the start of every
+  page's Weather alerts tap **Set up** next to NOAA Weather Radio, pick your
+  nearest transmitter's channel (weather.gov/nwr lists them), then pick a state
+  and county and tap **Add county** for each county you want alerts for. Every
+  US county, parish and territory district is listed; a code for part of a
+  county (first digit not 0) can be typed in instead. The station decodes the SAME burst at the start of every
   alert: alerts for your counties join the internet ones in the list and the top
   bar, and warnings pop up on screen. The weekly test is noted but not shown as an
   alert, so you can see the receiver is working.

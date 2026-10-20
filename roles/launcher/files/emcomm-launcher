@@ -87,6 +87,7 @@ window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', san
 .tile.picked { border: 3px solid $accent_fill; background: $hover; }
 .tile.gap, .tile.gap:hover { background: transparent; border: 1px dashed transparent; }
 .arranging .tile.gap { border-color: $input_line; }
+dialog button.chip-x { min-height: 28px; padding: 0 8px; }
 .page-dots { font-size: 15px; color: $muted; }
 .arrange-bar .navbtn { min-height: 40px; }
 .page-bar .navbtn { min-height: 30px; min-width: 64px; padding: 0 12px; }
@@ -844,6 +845,44 @@ def iso_epoch(text):
 
 
 NWR_CONFIG = os.path.expanduser("~/.config/emcomm/nwr.json")
+SAME_CODES = os.environ.get("EMCOMM_SAME_CODES", "/usr/share/emcomm/same-codes.csv")
+
+
+def same_codes(path=SAME_CODES):
+    """{state: [(county, 6-digit SAME code)]} from the bundled list, states and counties in order."""
+    by_state = {}
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            rows = csv.DictReader(line for line in f if not line.startswith("#"))
+            for row in rows:
+                if re.fullmatch(r"\d{6}", row.get("SAME") or ""):
+                    by_state.setdefault(row["State"], []).append((row["County"], row["SAME"]))
+    except OSError:
+        pass
+    return dict(sorted(by_state.items()))
+
+
+def same_label(code, by_state):
+    """'Bennington County, Vermont' for a SAME code, or the code itself if it isn't a whole county."""
+    for state, counties in by_state.items():
+        for county, same in counties:
+            if same == code:
+                return f"{county}, {state}"
+    if re.fullmatch(r"[1-9]\d{5}", code):  # first digit: a part of a county
+        whole = same_label("0" + code[1:], by_state)
+        if whole != "0" + code[1:]:
+            return f"Part of {whole}"
+    return code
+
+
+def county_names(codes, by_state=None):
+    """'Bennington, Rutland and part of Bennington' for a list of SAME codes."""
+    by_state = same_codes() if by_state is None else by_state
+    names = [re.sub(r" County, .*| Parish, .*|, .*", "", same_label(c, by_state)).replace("Part of", "part of")
+             for c in codes]
+    return ", ".join(names[:-1]) + " and " + names[-1] if len(names) > 1 else "".join(names)
+
+
 NWR_CHANNELS = ["162.400", "162.425", "162.450", "162.475", "162.500", "162.525", "162.550"]
 
 
@@ -3788,7 +3827,7 @@ class Launcher(Gtk.Window):
         if record.get("listening") and not record.get("error"):
             colour, lead = self.colours["ok"], "Listening"
             detail = [f"{record['listening']:.3f} MHz",
-                      "your counties " + " ".join(config.get("codes") or []) if config.get("codes")
+                      "your counties: " + county_names(config.get("codes")) if config.get("codes")
                       else "every county it hears"]
             test = record.get("last_test")
             detail.append(f"{test['event']} heard {ago(test['time'])}" if test else "no weekly test heard yet")
@@ -3809,31 +3848,94 @@ class Launcher(Gtk.Window):
         for mhz in NWR_CHANNELS:
             channel.append(mhz, f"{mhz} MHz")
         channel.set_active_id(f"{config['freq']:.3f}" if isinstance(config.get("freq"), (int, float)) else "")
-        codes = Gtk.Entry(placeholder_text="e.g. 025017 025021 (blank keeps every alert heard)")
-        codes.set_text(" ".join(config.get("codes") or []))
+        # Counties: pick a state, then a county, and add it to the list.
+        by_state = same_codes()
+        chosen = [c for c in config.get("codes") or [] if re.fullmatch(r"\d{6}", str(c))]
+        state = Gtk.ComboBoxText()
+        state.append("", "Pick a state")
+        for name in by_state:
+            state.append(name, name)
+        county = Gtk.ComboBoxText()
+        add = self._navbtn("Add county", lambda *_: None)
+        here = next((s for s, counties in by_state.items() for _c, code in counties if chosen and code == chosen[0]),
+                    "")
         grid = Gtk.Grid(column_spacing=16, row_spacing=10, column_homogeneous=True)
-        grid.attach(self._field("Channel (your nearest transmitter)", channel), 0, 0, 1, 1)
-        grid.attach(self._field("County SAME codes", codes), 1, 0, 1, 1)
+        grid.attach(self._field("Channel (nearest transmitter)", channel), 0, 0, 1, 1)
+        grid.attach(self._field("State", state), 1, 0, 1, 1)
+        grid.attach(self._field("County", county), 2, 0, 1, 1)
         box.pack_start(grid, False, False, 0)
+        add_row = Gtk.Box(spacing=12)
+        other = Gtk.Entry(placeholder_text="or type a code, e.g. 150003 for part of a county", width_chars=30)
+        add_other = self._navbtn("Add code", lambda *_: None)
+        add_row.pack_start(add, False, False, 0)
+        add_row.pack_end(add_other, False, False, 0)
+        add_row.pack_end(other, False, False, 0)
+        box.pack_start(add_row, False, False, 0)
+        heading = Gtk.Label(xalign=0)
+        heading.get_style_context().add_class("section-title")
+        box.pack_start(heading, False, False, 0)
+        chosen_box = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=3,
+                                 column_spacing=8, row_spacing=8, homogeneous=False)
+        chosen_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, min_content_height=96,
+                                           max_content_height=96)
+        chosen_scroll.add(chosen_box)
+        box.pack_start(chosen_scroll, False, False, 0)
+        message = Gtk.Label(xalign=0)
+        message.get_style_context().add_class("error")
+
+        def show_chosen():
+            for child in chosen_box.get_children():
+                chosen_box.remove(child)
+            heading.set_text("YOUR COUNTIES" if chosen else "YOUR COUNTIES: NONE, SO EVERY ALERT HEARD IS KEPT")
+            for code in chosen:
+                chip = Gtk.Box(spacing=6)
+                chip.pack_start(Gtk.Label(label=f"{same_label(code, by_state)}  {code}"), False, False, 0)
+                remove = Gtk.Button(label="✕")
+                remove.get_style_context().add_class("chip-x")
+                remove.connect("clicked", lambda _b, c=code: (chosen.remove(c), show_chosen()))
+                chip.pack_start(remove, False, False, 0)
+                chosen_box.add(chip)
+            chosen_box.show_all()
+
+        def fill_counties(*_):
+            county.remove_all()
+            for name, code in by_state.get(state.get_active_id() or "", []):
+                county.append(code, name)
+            county.set_active(0 if by_state.get(state.get_active_id() or "") else -1)
+
+        def add_code(code):
+            message.set_text("")
+            if code and code not in chosen:
+                chosen.append(code)
+                show_chosen()
+
+        def add_typed(*_):
+            code = other.get_text().strip()
+            if not re.fullmatch(r"\d{6}", code):
+                message.set_text("A SAME code is 6 digits, such as 050003.")
+                return
+            other.set_text("")
+            add_code(code)
+
+        state.connect("changed", fill_counties)
+        add.connect("clicked", lambda *_: add_code(county.get_active_id()))
+        add_other.connect("clicked", add_typed)
+        other.connect("activate", add_typed)
+        state.set_active_id(here)
+        if not by_state:
+            message.set_text("The county list is missing: run Update station in Settings, or type codes below.")
         hint = Gtk.Label(xalign=0, wrap=True, label=(
-            "Plug an RTL-SDR dongle with a 162 MHz antenna into the station. The channel and county codes "
-            "for your area are listed at weather.gov/nwr (Station listing and County coverage); the code is "
-            "0 plus the county's 5-digit FIPS number. Alerts for your counties show here and in the top bar "
-            "with no internet, and warnings pop up on screen."))
+            "Needs an RTL-SDR dongle with a 162 MHz antenna. weather.gov/nwr lists the transmitters. Alerts "
+            "for your counties show here and in the top bar with no internet; warnings pop up on screen."))
         hint.set_max_width_chars(90)
         hint.get_style_context().add_class("muted")
         box.pack_start(hint, False, False, 0)
-        message = Gtk.Label(xalign=0)
-        message.get_style_context().add_class("error")
         box.pack_start(message, False, False, 0)
         dialog.get_content_area().add(box)
         dialog.show_all()
-        while True:
-            response = dialog.run()
-            wanted = codes.get_text().replace(",", " ").split()
-            if response != Gtk.ResponseType.OK or all(re.fullmatch(r"\d{6}", c) for c in wanted):
-                break
-            message.set_text("County codes are 6 digits each, such as 025017.")
+        show_chosen()
+        response = dialog.run()
+        wanted = list(chosen)
         freq = channel.get_active_id()
         dialog.destroy()
         if response != Gtk.ResponseType.OK:
