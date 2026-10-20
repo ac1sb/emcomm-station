@@ -50,7 +50,9 @@ environment.
   F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control, F9 ICS-213 messages. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
-  icon" puts it back. To put the tiles in your own order, pick **Arrange tiles** from
+  icon" puts it back. **Rename** in the same menu gives a tile (or a folder) your own
+  name, and "Use the standard name" undoes it; names are kept in
+  `~/.config/emcomm/tile-names.json`. To put the tiles in your own order, pick **Arrange tiles** from
   that same menu (or **Home tiles** in Settings), tap a tile, then tap where it
   should go; **Add a gap** leaves an empty space to group tiles into rows, and
   **Standard order** puts them back. Home holds 18 tiles a page (six across,

@@ -377,6 +377,8 @@ USER_ICONS = os.path.expanduser("~/.local/share/emcomm/icons")  # the operator's
 # The operator's own order of the Home tiles: tile codes, with "" for a gap, and
 # {"folder": name, "apps": [codes]} for a folder.
 TILE_ORDER = os.path.expanduser("~/.config/emcomm/tiles.json")
+# The operator's own names for tiles: {tile code: name}.
+TILE_NAMES = os.path.expanduser("~/.config/emcomm/tile-names.json")
 GAP = ""
 PAGE = "|"  # in the saved order: the next tile starts a new Home page
 TILE_COLUMNS, TILE_ROWS = 6, 3  # a Home page: the same tile size however many apps there are
@@ -1601,6 +1603,12 @@ class Launcher(Gtk.Window):
         # Home pages: a fixed grid of tiles each; swipe, tap the arrows or press Page Up/Down.
         self.home_pages = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT,
                                     transition_duration=200)
+        names = read_json(TILE_NAMES, {})
+        for app in self.config.get("apps", []):
+            app["standard_name"] = app.get("name", "")
+            custom = names.get(app.get("code")) if isinstance(names, dict) else None
+            if isinstance(custom, str) and custom.strip():
+                app["name"] = custom.strip()
         self.app_tiles = {app.get("code"): self._tile(app) for app in self.config.get("apps", [])}
         self.arranging, self.picked = False, None
         self.page_index, self.page_grids, self.last_swipe = 0, [], 0.0
@@ -2038,7 +2046,7 @@ class Launcher(Gtk.Window):
         self._lay_out_tiles()
         self._arrange_show()
 
-    def _ask_folder_name(self, title, name=""):
+    def _ask_name(self, title, name=""):
         dialog = Gtk.Dialog(title=title, transient_for=self, modal=True)
         dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "OK", Gtk.ResponseType.OK)
         dialog.set_default_response(Gtk.ResponseType.OK)
@@ -2056,10 +2064,32 @@ class Launcher(Gtk.Window):
         dialog.destroy()
         return text if response == Gtk.ResponseType.OK and text else None
 
+    def _rename_tile(self, btn):
+        name = self._ask_name(f"Name for the {btn.app['standard_name']} tile", btn.app["name"])
+        if name:
+            self._set_tile_name(btn, name)
+
+    def _set_tile_name(self, btn, name):
+        """Show the tile (and the app in folders and the Home bar) by name; None: the standard name."""
+        names = read_json(TILE_NAMES, {})
+        names = names if isinstance(names, dict) else {}
+        code = btn.app.get("code")
+        if name and name != btn.app["standard_name"]:
+            names[code] = name
+        else:
+            names.pop(code, None)
+            name = btn.app["standard_name"]
+        write_json(TILE_NAMES, names)
+        btn.app["name"] = name
+        btn.name_label.set_text(name)
+        for folder in self.folder_tiles:
+            if btn in folder.members:
+                self._update_folder_tile(folder)
+
     def _rename_folder(self, folder):
         if folder is None or folder.kind != "folder":
             return
-        name = self._ask_folder_name("Folder name", folder.name)
+        name = self._ask_name("Folder name", folder.name)
         if name:
             folder.name = name
             self._folder_changed(folder)
@@ -2068,7 +2098,7 @@ class Launcher(Gtk.Window):
 
     def _arrange_new_folder(self):
         """A new folder: in the picked tile's place, holding it, or at the end of this page."""
-        name = self._ask_folder_name("Name the new folder", "Folder")
+        name = self._ask_name("Name the new folder", "Folder")
         if not name:
             return
         picked, self.picked = self.picked, None
@@ -2114,6 +2144,7 @@ class Launcher(Gtk.Window):
         # Ellipsize, so five tiles across still fit a 1024-pixel screen.
         name = Gtk.Label(label=app.get("name", ""), xalign=0, ellipsize=Pango.EllipsizeMode.END)
         name.get_style_context().add_class("tile-name")
+        btn.name_label = name
         detail = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         detail.get_style_context().add_class("tile-detail")
         box.pack_start(top, True, True, 0)
@@ -2335,7 +2366,15 @@ class Launcher(Gtk.Window):
             rename = Gtk.MenuItem(label=f"Rename {btn.name} folder…")
             rename.connect("activate", lambda *_: self._rename_folder(btn))
             menu.append(rename)
-        elif btn.app.get("icon"):
+        else:
+            rename = Gtk.MenuItem(label=f"Rename {btn.app['name']}…")
+            rename.connect("activate", lambda *_: self._rename_tile(btn))
+            menu.append(rename)
+            if btn.app["name"] != btn.app.get("standard_name", btn.app["name"]):
+                standard = Gtk.MenuItem(label=f"Use the standard name ({btn.app['standard_name']})")
+                standard.connect("activate", lambda *_: self._set_tile_name(btn, None))
+                menu.append(standard)
+        if btn.kind == "app" and btn.app.get("icon"):
             change = Gtk.MenuItem(label=f"Change {btn.app['name']} icon…")
             change.connect("activate", lambda *_: self._choose_icon(btn))
             menu.append(change)
