@@ -24,6 +24,7 @@ station_mode: kiosk
 #   command: the program that must be installed; until it is, the tile offers
 #            to install it (app: its tag in roles/apps).
 #   run:     what the tile starts.
+#   page:    instead of run, a part of the launcher the tile opens (nwr: weather radio setup).
 #   ready:   a file that must exist too, else the tile offers to set it up (VARA).
 #   icon:    image name in /usr/share/emcomm/icons (.svg or .png). Long-press or
 #            right-click a tile to use your own picture instead.
@@ -54,6 +55,7 @@ launcher_apps:
   - { code: APR, icon: aprs, name: APRS, detail: Xastir · map and messages, command: xastir, app: aprs, run: [emcomm-start, aprs] }
   - { code: MSH, icon: meshtastic, name: Meshtastic, detail: Mesh text over LoRa, command: contact, app: meshtastic, run: [emcomm-start, meshtastic] }
   - { code: MCR, icon: meshcore, name: MeshCore, detail: Mesh text over LoRa, command: meshcore-cli, app: meshcore, run: [emcomm-start, meshcore] }
+  - { code: NWR, icon: weather-radio, name: NOAA alerts, detail: Weather radio · your counties, command: emcomm-nwr, page: nwr }
   - { code: MAP, icon: map, name: Map, detail: Gateways · stations heard, command: emcomm-map, app: map, run: [emcomm-map] }
   - { code: CHP, icon: chirp, name: CHIRP, detail: Program handhelds · mobiles, command: chirp, app: chirp, run: [chirp] }
   - { code: SCN, icon: scanner, name: Scanner, detail: SDR · police fire EMS, command: emcomm-scanner, app: scanner, run: [emcomm-scanner] }
@@ -69,3 +71,9 @@ launcher_apps:
     # In desktop mode, the person's own browser with a page of the same bookmarks.
     desktop: { detail: Your browser · ham bookmarks, command: xdg-open, run: [xdg-open, /usr/share/emcomm/bookmarks.html] }
   - { code: FT8, icon: wsjtx, name: WSJT-X, detail: FT8 · band check, command: wsjtx, app: wsjtx, run: [emcomm-start, wsjtx] }
+
+# Home folders in the standard order, each where its first app would be. Tiles can be
+# moved in and out, and folders added, renamed or removed, with Arrange tiles on the station.
+launcher_folders:
+  - { name: Email, apps: [WL, VHF, VFM] }
+  - { name: Mesh & APRS, apps: [MSH, MCR, APR] }

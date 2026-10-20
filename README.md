@@ -13,7 +13,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 
 - **Base system:** a `radio` user, SSH for remote troubleshooting, PipeWire audio.
 - **Settings screen:** a page of large tiles: User (callsign and grid), Radio,
-  Devices (GPS, and what's plugged in), Display, Wi-Fi, Accounts, Weather radio,
+  Devices (GPS, and what's plugged in), Display, Wi-Fi, Accounts,
   Backup, Update station, Audio (the radio's sound card, and in desktop mode when
   it's the computer's default), Power and Home tiles (Diagnostics is on Home's
   buttons and F2). User opens
@@ -53,7 +53,9 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control, F9 ICS-213 messages. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
-  icon" puts it back. To put the tiles in your own order, pick **Arrange tiles** from
+  icon" puts it back. **Rename** in the same menu gives a tile (or a folder) your own
+  name, and "Use the standard name" undoes it; names are kept in
+  `~/.config/emcomm/tile-names.json`. To put the tiles in your own order, pick **Arrange tiles** from
   that same menu (or **Home tiles** in Settings), tap a tile, then tap where it
   should go; **Add a gap** leaves an empty space to group tiles into rows, and
   **Standard order** puts them back. Home holds 18 tiles a page (six across,
@@ -61,9 +63,15 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   swipe sideways, tap ◀ ▶ under the tiles or press Page Up/Down to change page.
   While arranging, pick a tile, go to another page and tap a tile or an empty
   place to move it there; **Remove page** folds the page shown into the one
-  before it. The order and pages are kept in `~/.config/emcomm/tiles.json`
-  (and in USB backups), and the 1–9 keys open the first nine tiles of the page
-  shown. **Display** in Settings sets the colours (dark, or light for
+  before it. Folders hold related apps under one tile: **Email** (Winlink mail,
+  VARA HF, VARA FM) and **Mesh & APRS** (Meshtastic, MeshCore, APRS) come as
+  standard. Tap a folder to open it; Esc or ‹ Home closes it. While arranging,
+  tap an app then a folder to put it in, **New folder** makes one (holding the
+  app picked, if any), and a picked folder can be opened (to reorder or **Take
+  out of folder** what's inside), renamed or removed (its apps go back on Home
+  where it was). The order, pages and folders are kept in
+  `~/.config/emcomm/tiles.json` (and in USB backups), and the 1–9 keys open the
+  first nine tiles of the page or folder shown. **Display** in Settings sets the colours (dark, or light for
   daylight), the screen resolution (Automatic picks the screen's own), the text
   size (Normal, Large or Extra large, for bigger screens; other apps follow it
   too) and the rotation, for a screen mounted on its side or upside down. A
@@ -166,10 +174,13 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
     propagation and PSKReporter need no account. QRZ gives full records only to
     XML Logbook Data subscribers.
 - **NOAA Weather Radio alerts, no internet needed:** plug in an RTL-SDR dongle
-  (any RTL2832U stick, about $30) with an antenna for 162 MHz, then on the Online
-  page's Weather alerts tap **Set up** next to NOAA Weather Radio and pick your
-  nearest transmitter's channel and your counties' SAME codes (both listed at
-  weather.gov/nwr). The station decodes the SAME burst at the start of every
+  (any RTL2832U stick, about $30) with an antenna for 162 MHz, then tap the
+  **NOAA alerts** tile on Home (or **Set up** next to NOAA Weather Radio on the
+  Online page's Weather alerts), pick your
+  nearest transmitter's channel (weather.gov/nwr lists them), then pick a state
+  and county and tap **Add county** for each county you want alerts for. Every
+  US county, parish and territory district is listed; a code for part of a
+  county (first digit not 0) can be typed in instead. The station decodes the SAME burst at the start of every
   alert: alerts for your counties join the internet ones in the list and the top
   bar, and warnings pop up on screen. The weekly test is noted but not shown as an
   alert, so you can see the receiver is working.

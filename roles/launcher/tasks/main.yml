@@ -24,6 +24,12 @@
     mode: "0644"
     directory_mode: "0755"
 
+- name: Install the county SAME code list for the weather radio setup
+  ansible.builtin.copy:
+    src: same-codes.csv
+    dest: /usr/share/emcomm/same-codes.csv
+    mode: "0644"
+
 - name: Install the ICS forms (FEMA's fillable ICS 213)
   ansible.builtin.copy:
     src: forms/
@@ -46,3 +52,4 @@
   vars:
     launcher_config:
       apps: "{{ launcher_apps }}"
+      folders: "{{ launcher_folders }}"

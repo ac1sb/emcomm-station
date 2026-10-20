@@ -5,6 +5,7 @@ Run: python3 tests/test_nwr.py
 """
 
 import calendar
+import csv
 import json
 import importlib.machinery
 import importlib.util
@@ -94,6 +95,19 @@ class SharedDongle(unittest.TestCase):
         with open(nwr.SDR_LOCK, "w", encoding="utf-8") as f:
             f.write("not json")
         self.assertIsNone(nwr.sdr_claimed())
+
+
+class CountyList(unittest.TestCase):
+    def test_same_codes_list(self):
+        path = os.path.join(REPO, "roles/launcher/files/same-codes.csv")
+        with open(path, encoding="utf-8") as f:
+            rows = list(csv.DictReader(line for line in f if not line.startswith("#")))
+        codes = [r["SAME"] for r in rows]
+        self.assertEqual(len(codes), len(set(codes)))
+        self.assertTrue(all(len(c) == 6 and c.isdigit() and c[0] == "0" for c in codes))
+        self.assertEqual(len({r["State"] for r in rows}), 56)  # 50 states, DC and 5 territories
+        vermont = {r["County"]: r["SAME"] for r in rows if r["State"] == "Vermont"}
+        self.assertEqual((len(vermont), vermont["Bennington County"]), (14, "050003"))
 
 
 if __name__ == "__main__":
