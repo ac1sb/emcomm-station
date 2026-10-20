@@ -196,11 +196,37 @@ case "${1:-}" in
       rm -f "$marks.tmp"
     fi
     if [ "$rtl_index" = 0 ]; then
+      mkdir -p "$STATE"
       printf '{"pid": %s, "app": "Gqrx"}\n' "$$" > "$STATE/sdr.json"
-      trap 'rm -f "$STATE/sdr.json"' EXIT
       sleep 3  # the weather radio listener checks every 2 seconds
     fi
-    gqrx -c "$key.conf"
+    # However Gqrx ends (closed, crashed, this script stopped), it mustn't keep
+    # the receiver: Gqrx sometimes hangs on after its window has gone, still
+    # holding the dongle, so the Scanner can't open it. Once its window has been
+    # seen and is gone for 5 seconds, Gqrx is stopped, and the lock goes with it.
+    gqrx -c "$key.conf" &
+    gqrx_pid=$!
+    # shellcheck disable=SC2329  # the EXIT trap runs it
+    release_sdr() {
+      if kill -0 "$gqrx_pid" 2>/dev/null; then
+        kill -TERM "$gqrx_pid" 2>/dev/null
+        for _ in 1 2 3 4 5; do kill -0 "$gqrx_pid" 2>/dev/null || break; sleep 1; done
+        kill -KILL "$gqrx_pid" 2>/dev/null
+      fi
+      if grep -q "\"pid\": $$," "$STATE/sdr.json" 2>/dev/null; then rm -f "$STATE/sdr.json"; fi
+    }
+    trap release_sdr EXIT
+    trap 'exit 0' INT TERM HUP
+    seen=0 gone=0
+    while kill -0 "$gqrx_pid" 2>/dev/null; do
+      if wmctrl -lp 2>/dev/null | awk -v p="$gqrx_pid" '$3 == p {found=1} END {exit !found}'; then
+        seen=1 gone=0
+      elif [ "$seen" = 1 ]; then
+        gone=$((gone + 1))
+        [ "$gone" -ge 5 ] && break
+      fi
+      sleep 1
+    done
     exit 0
     ;;
   *)

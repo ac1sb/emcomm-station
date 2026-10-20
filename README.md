@@ -296,7 +296,11 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   made-up recording around 146.5 MHz (an FM signal on 146.520, Morse code and a
   carrier) to learn it with, and **Network receiver** uses an RTL-SDR on another
   computer shared with `rtl_tcp -a 0.0.0.0` (type its address; it's remembered).
-  Press Gqrx's ▶ button to start.
+  Press Gqrx's ▶ button to start. Closing Gqrx always frees the receiver: if
+  Gqrx hangs on after its window has gone, it's stopped after a few seconds, and
+  the Scanner stops a leftover Gqrx itself before giving up. **Settings >
+  Devices > Free the SDR receiver** closes Gqrx, the Scanner or anything else
+  holding a receiver (rtl_tcp and the like), forcefully if it doesn't close.
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 

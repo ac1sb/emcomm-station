@@ -407,6 +407,56 @@ def sdr_user():
     return lock.get("app") or "another app"
 
 
+# Programs that open an SDR receiver, by the name they run as; Free the receiver stops them.
+SDR_PROGRAMS = {"gqrx", "emcomm-scanner", "rtl_tcp", "rtl_sdr", "rtl_power", "rtl_test"}
+
+
+def sdr_processes():
+    """(pid, name) of this user's programs that may be holding an SDR receiver."""
+    found = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            if os.stat(f"/proc/{entry}").st_uid != os.getuid():
+                continue
+            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                argv = [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+        except OSError:
+            continue
+        names = [os.path.basename(a) for a in argv[:2]]  # the program, or the script an interpreter runs
+        name = next((n for n in names if n in SDR_PROGRAMS), None)
+        if name and "--pick-receiver" not in argv:
+            found.append((int(entry), name))
+    return found
+
+
+def free_sdr(wait=5.0):
+    """Stop whatever holds an SDR receiver (Gqrx, the Scanner, rtl_tcp...), forcefully if it
+    doesn't stop in a few seconds, and clear the lock. The weather radio listener takes its
+    dongle back by itself. Returns the names stopped."""
+    procs = sdr_processes()
+    for pid, _name in procs:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and any(os.path.exists(f"/proc/{pid}") for pid, _n in procs):
+        time.sleep(0.2)
+    for pid, _name in procs:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    if not sdr_user():
+        try:
+            os.remove(SDR_LOCK)
+        except OSError:
+            pass
+    return sorted({"Gqrx" if n == "gqrx" else "Scanner" if n == "emcomm-scanner" else n for _p, n in procs})
+
+
 def rigctld_query(host, port, command, timeout=1.0):
     """Send one rigctld command and return the first reply line, or None."""
     try:
@@ -3013,6 +3063,10 @@ class Launcher(Gtk.Window):
         rescan = self._navbtn("Rescan devices", lambda *_: self._rescan_devices())
         rescan.set_valign(Gtk.Align.END)
         top.pack_start(rescan, False, False, 0)
+        free = self._navbtn("Free the SDR receiver", lambda *_: self._free_sdr())
+        free.set_valign(Gtk.Align.END)
+        free.set_tooltip_text("Closes Gqrx, the Scanner or anything else holding the receiver, so another app can use it")
+        top.pack_start(free, False, False, 0)
         body.pack_start(top, False, False, 0)
         self.devices_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
                                          left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD_CHAR)
@@ -3021,6 +3075,15 @@ class Launcher(Gtk.Window):
         body.pack_start(scroller, True, True, 0)
         page.connect("map", lambda *_: self._show_devices())
         return page
+
+    def _free_sdr(self):
+        def work():
+            stopped = free_sdr()
+            GLib.idle_add(lambda: (self._show_devices(), self._message(
+                f"Closed {' and '.join(stopped)}. The receiver is free." if stopped else
+                "Nothing was holding the receiver.")) and False)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _show_devices(self):
         """What's plugged in now: USB serial ports, USB sound cards, RTL-SDR dongles, paired Bluetooth radios."""
