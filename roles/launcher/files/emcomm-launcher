@@ -2013,7 +2013,7 @@ class Launcher(Gtk.Window):
         nav = self.home_nav = Gtk.Box(spacing=10, halign=Gtk.Align.CENTER)
         nav.get_style_context().add_class("home-nav")
         for label, page_name in (("Diagnostics  F2", "diagnostics"), ("Settings  F3", "settings"),
-                                 ("Logs  F4", "logs"), ("Reference  F5", "reference"), ("Online  F7", "online")):
+                                 ("Logs  F4", "logs"), ("Reference  F5", "reference")):
             nav.pack_start(self._navbtn(label, lambda _b, n=page_name: self.stack.set_visible_child_name(n)),
                            False, False, 0)
         page.pack_end(nav, False, False, 0)
@@ -2968,7 +2968,8 @@ class Launcher(Gtk.Window):
             return
         app = btn.app
         if app.get("page"):  # a part of the launcher, not a separate app
-            {"nwr": self._edit_nwr}.get(app["page"], lambda: None)()
+            {"nwr": self._edit_nwr,
+             "online": lambda: self.stack.set_visible_child_name("online")}.get(app["page"], lambda: None)()
             return
         if btn.app_state != "missing":
             # Already open: bring it to the front rather than start a second copy.
