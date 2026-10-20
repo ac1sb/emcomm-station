@@ -16,8 +16,8 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   station except SSH and replies to connections it made itself, so no one on
   the same Wi-Fi can use the packet, ARDOP or VARA modems to key the radio.
   Outgoing traffic isn't limited. Debian's security updates install by
-  themselves once a day (security fixes only, no restarts; they take effect at
-  the next restart). To let more in, list ports in `security_allow_tcp` or
+  themselves once a day, along with Debian's stable bug fixes (never new
+  versions, and no restarts: a kernel update takes effect at the next restart). To let more in, list ports in `security_allow_tcp` or
   `security_allow_udp` in `host_vars`. A desktop install leaves the computer's
   own firewall and update settings alone.
 - **Settings screen:** a page of large tiles: User (callsign and grid), Radio,

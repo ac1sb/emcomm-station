@@ -1,8 +1,9 @@
 // Written by the Emcomm-CNC playbook (roles/security).
 // Fetch the package lists and install security updates once a day, in the
-// background. Only the Debian security archive is used (the default in
-// 50unattended-upgrades), and the station is never restarted by itself: a
-// kernel update takes effect at the next restart.
+// background. Debian's default 50unattended-upgrades picks what's installed:
+// security fixes and Debian's own stable point-release fixes, never new
+// versions. The station is never restarted by itself: a kernel update takes
+// effect at the next restart.
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";
