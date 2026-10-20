@@ -110,9 +110,15 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 - **ICS-213 messages** (F9, or the button on Logs): every ICS-213 in flmsg, the
   ones you wrote and the ones fldigi received, shown on FEMA's own General Message
   form (ICS 213), the same layout as the paper form. Pick one on the left to see
-  it; **Print** prints it (or saves a PDF), **Reply or edit in flmsg** opens it in
-  flmsg to fill in the reply, and **New message** opens flmsg to write one. The
-  filled-in form is also saved as a PDF in `~/ICS forms`.
+  it; **Print** prints it (or saves a PDF). **New message** opens the blank form
+  with a box on each field (To, From, Subject, Date, Time, Message, Approved by,
+  Reply...), so the message is typed where it goes on paper; the date and time
+  are filled in, and the incident too while a net is open. **Reply or edit** opens
+  the one picked: a received message gets the reply boxes at the bottom and is
+  saved as a copy, so what came in stays as it was. **Save** keeps it in flmsg's
+  messages, **Send with flmsg** saves it and opens it in flmsg (press AutoSend
+  there, with fldigi open), and **Open in flmsg** opens any message in flmsg as
+  before. The filled-in form is also saved as a PDF in `~/ICS forms`.
 - **Recorder** (the **Rec** button at the top of the screen, or on the Logs page):
   records the radio's receive audio to `~/Recordings`, each file named with the
   UTC time, frequency and mode. **Record when there's a signal** keeps only the
