@@ -46,6 +46,7 @@ apps_browser_bookmarks:
   - { name: WebSDR, url: "http://websdr.org" }
   - { name: LoTW, url: "https://lotw.arrl.org" }
 
-# CHIRP build to install, as its date (for example "20251018"); blank installs
-# the newest from archive.chirpmyradio.com each time the station is updated.
-apps_chirp_build: ""
+# CHIRP version to install from its source on GitHub (github.com/kk7ds/chirp):
+# a branch, a tag or a commit. "master" is what CHIRP's daily "next" builds are
+# made from, and is fetched again each time the station is updated.
+apps_chirp_version: master

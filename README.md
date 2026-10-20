@@ -211,8 +211,9 @@ environment.
   `~/My frequencies for CHIRP.csv` up to date with the FM channels from My
   frequencies, offset and tone included. In CHIRP, download from the radio first,
   then use File > Import to add that file's channels, and upload to the radio.
-  CHIRP comes from archive.chirpmyradio.com, newest build by default (set
-  `apps_chirp_build` in `roles/apps/defaults/main.yml` to stay on one).
+  CHIRP is built from its source on GitHub, the same code as its daily builds
+  (set `apps_chirp_version` in `roles/apps/defaults/main.yml` to a commit or tag
+  to stay on one). Its download site turns away scripts, so it isn't used.
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 

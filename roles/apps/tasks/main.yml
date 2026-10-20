@@ -79,70 +79,66 @@
         state: link
       loop: "{{ apps_mesh_clients | dict2items }}"
 
-# CHIRP isn't packaged by Debian; the project publishes a Python wheel per build.
+# CHIRP isn't packaged by Debian. Its download site (archive.chirpmyradio.com)
+# sits behind a Cloudflare check that refuses scripts, so CHIRP is installed
+# from its source on GitHub instead: pure Python, with its libraries from Debian.
 # A failure here is reported, but doesn't stop the rest of the station updating.
 - name: Install CHIRP
   tags: [chirp]
   vars:
-    apps_chirp_index: https://archive.chirpmyradio.com/chirp_next/
+    apps_chirp_repo: https://github.com/kk7ds/chirp
   block:
-    - name: Install CHIRP's GUI toolkit
+    - name: Install CHIRP's GUI toolkit and libraries
       ansible.builtin.apt:
-        name: [python3-venv, python3-wxgtk4.0, python3-yattag]
+        name: [git, python3-venv, python3-wxgtk4.0, python3-yattag, python3-serial, python3-requests,
+               python3-suds, python3-lark]
         install_recommends: false
 
-    - name: List CHIRP builds
-      ansible.builtin.uri:
-        url: "{{ apps_chirp_index }}"
-        return_content: true
-      register: apps_chirp_builds
+    - name: Find the CHIRP commit to install
+      ansible.builtin.command: git ls-remote {{ apps_chirp_repo }} {{ apps_chirp_version }}  # noqa: command-instead-of-module (only reads the remote)
+      register: apps_chirp_remote
+      changed_when: false
+      when: apps_chirp_version is not regex('^[0-9a-f]{40}$')
 
-    # The newest builds first. A build folder can be listed before its files
-    # are all uploaded, so look a few back for one with a wheel.
-    - name: Pick the newest CHIRP builds
+    - name: Pick the commit
       ansible.builtin.set_fact:
-        apps_chirp_folders: >-
-          {{ (apps_chirp_builds.content | regex_findall('href="((?:next-)?\d{8})/"')
-              | select('search', apps_chirp_build) | sort | reverse | list)[:3] }}
+        apps_chirp_commit: >-
+          {{ apps_chirp_version if apps_chirp_remote is skipped
+             else (apps_chirp_remote.stdout_lines | first | default('')).split() | first | default('') }}
 
-    - name: Check a CHIRP build was found
+    - name: Check the CHIRP version was found
       ansible.builtin.assert:
-        that: apps_chirp_folders | length > 0
-        fail_msg: "No CHIRP build listed at {{ apps_chirp_index }} (the page may have changed)."
+        that: apps_chirp_commit | length == 40
+        fail_msg: "No CHIRP branch, tag or commit named {{ apps_chirp_version }} at {{ apps_chirp_repo }}."
         quiet: true
 
-    - name: List the builds' files
-      ansible.builtin.uri:
-        url: "{{ apps_chirp_index }}{{ item }}/"
-        return_content: true
-      loop: "{{ apps_chirp_folders }}"
-      register: apps_chirp_files
+    - name: Read the installed CHIRP commit
+      ansible.builtin.slurp:
+        src: /opt/emcomm/chirp/emcomm-commit
+      register: apps_chirp_installed
       failed_when: false
 
-    - name: Pick the newest wheel
-      ansible.builtin.set_fact:
-        apps_chirp_wheel_url: >-
-          {%- set ns = namespace(url='') -%}
-          {%- for listing in apps_chirp_files.results -%}
-            {%- set wheel = listing.content | default('') | regex_search('chirp-\d{8}-py3-none-any\.whl') -%}
-            {%- if wheel and not ns.url -%}{%- set ns.url = apps_chirp_index ~ listing.item ~ '/' ~ wheel -%}{%- endif -%}
-          {%- endfor -%}
-          {{ ns.url }}
-
-    - name: Check a build has a wheel
-      ansible.builtin.assert:
-        that: apps_chirp_wheel_url | length > 0
-        fail_msg: "None of the newest CHIRP builds ({{ apps_chirp_folders | join(', ') }}) has a Python wheel."
-        quiet: true
-
     # Its own Python environment, like the mesh clients, but able to see
-    # Debian's wxPython and yattag.
+    # Debian's wxPython and the libraries above. CHIRP's source always says
+    # version 0, so reinstall whenever the commit changes.
     - name: Install CHIRP
       ansible.builtin.pip:
-        name: "{{ apps_chirp_wheel_url }}"
+        name: "git+{{ apps_chirp_repo }}@{{ apps_chirp_commit }}"
         virtualenv: /opt/emcomm/chirp
         virtualenv_command: python3 -m venv
         virtualenv_site_packages: true
+        extra_args: --force-reinstall --no-deps
+      when: (apps_chirp_installed.content | default('') | b64decode | trim) != apps_chirp_commit
+
+    - name: Check CHIRP starts
+      ansible.builtin.command: /opt/emcomm/chirp/bin/python -c "import chirp.wxui"
+      changed_when: false
+
+    - name: Remember the installed CHIRP commit
+      ansible.builtin.copy:
+        content: "{{ apps_chirp_commit }}\n"
+        dest: /opt/emcomm/chirp/emcomm-commit
+        mode: "0644"
 
     - name: Put CHIRP on the PATH
       ansible.builtin.file:
