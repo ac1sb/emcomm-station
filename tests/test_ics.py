@@ -1,11 +1,15 @@
-"""Check emcomm-ics fills in the ICS 309 and ICS 205 from a net log and My frequencies.
+"""Check emcomm-ics fills in the ICS 309 and ICS 205 from a net log and My frequencies,
+and the ICS 213 from an flmsg file.
 
 Run: python3 tests/test_ics.py
 """
 
+import contextlib
 import importlib.machinery
+import io
 import importlib.util
 import os
+import tempfile
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -56,6 +60,60 @@ class Forms(unittest.TestCase):
         page = ics.ics205(rows, "Flood", "AC1SB", now=NET["started"])
         self.assertIn("INCIDENT RADIO COMMUNICATIONS PLAN (ICS 205)", page)
         self.assertEqual(page.count("<tr><td></td><td></td>"), ics.ROWS_205 - 2)
+
+
+def flmsg_file(fields, wrap=False):
+    body = "<flmsg>4.0.23\n:hdr_fm:21 AC1SB 20261020140500\n<ics213>\n"
+    body += "".join(f":{k}:{len(v.encode())} {v}\n" for k, v in fields)
+    if wrap:
+        body = "[WRAP:beg][WRAP:lf][WRAP:fn x.213]" + body + "[WRAP:chksum 1A2B][WRAP:end]"
+    return body.encode()
+
+
+MESSAGE = [("inc", "Flood"), ("to", "J. Smith"), ("p1", "Logistics"), ("fm", "A. Brown"), ("p2", "Shelter"),
+           ("d1", "2026-10-20"), ("t1", "1405"), ("sb", "Cots — 50"),
+           ("mg", "Line one :to:3 abc\nLine two\n"), ("d2", "2026-10-20"), ("t2", "1520")]
+
+
+class Form213(unittest.TestCase):
+    def test_reads_fields_by_byte_length_even_when_text_looks_like_a_field(self):
+        for wrap in (False, True):
+            fields = ics.parse_flmsg(flmsg_file(MESSAGE, wrap))
+            self.assertEqual(fields["mg"], "Line one :to:3 abc\nLine two\n")
+            self.assertEqual(fields["to"], "J. Smith")
+            self.assertEqual(fields["sb"], "Cots — 50")
+            self.assertNotIn("hdr_fm", fields)
+
+    def test_rejects_other_files(self):
+        with self.assertRaises(ValueError):
+            ics.parse_flmsg(b"<flmsg>4.0\n<ics214>\n:inc:1 x\n")
+
+    def test_form_values(self):
+        values = ics.form_values(ics.parse_flmsg(flmsg_file(MESSAGE)))
+        self.assertEqual(values["2 To Name and Position"], "J. Smith, Logistics")
+        self.assertEqual(values["3 From Name and Position"], "A. Brown, Shelter")
+        self.assertEqual(values["DateTime_14"], "2026-10-20 1520")
+        self.assertEqual(values["7 Message"], "Line one :to:3 abc\nLine two")
+        self.assertNotIn("8 Approved by Name", values)
+
+    def test_long_messages_get_smaller_text(self):
+        self.assertEqual(ics.font_size("short", 530, 240), 10)
+        self.assertLess(ics.font_size("word " * 900, 530, 240), 10)
+
+    def test_fills_the_pdf(self):
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            self.skipTest("pypdf isn't installed")
+        template = os.path.join(REPO, "roles/launcher/files/forms/ics213.pdf")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out.pdf")
+            with contextlib.redirect_stdout(io.StringIO()):
+                ics.ics213_pdf(ics.parse_flmsg(flmsg_file(MESSAGE)), template, out)
+            filled = {k: v.get("/V") for k, v in PdfReader(out).get_fields().items()}
+        self.assertEqual(filled["4 Subject"], "Cots — 50")
+        self.assertEqual(filled["2 To Name and Position"], "J. Smith, Logistics")
+        self.assertFalse(filled.get("9 Reply"))
 
 
 if __name__ == "__main__":

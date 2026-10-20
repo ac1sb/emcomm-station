@@ -6,6 +6,8 @@
       - gir1.2-gtk-3.0
       - librsvg2-common  # draws the .svg tile icons
       - udisks2  # lets the kiosk user open USB sticks, e.g. to pick a tile icon
+      - gir1.2-poppler-0.18  # draws the ICS-213 form on screen and for printing
+      - python3-pypdf  # fills in the ICS-213 form
     install_recommends: false
 
 - name: Install the tile icons
@@ -19,6 +21,13 @@
   ansible.builtin.copy:
     src: reference/
     dest: /usr/share/emcomm/reference/
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Install the ICS forms (FEMA's fillable ICS 213)
+  ansible.builtin.copy:
+    src: forms/
+    dest: /usr/share/emcomm/forms/
     mode: "0644"
     directory_mode: "0755"
 
