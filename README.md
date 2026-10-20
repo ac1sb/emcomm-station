@@ -278,7 +278,13 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 - **Scanner** (tile, any SDR): plug in an SDR receiver with a VHF/UHF antenna
   and tap Scanner. It scans `~/Scanner channels.csv`, which starts as Vermont's
   emergency channels (law enforcement, fire/EMS, interop/EOC, 347 channels), and
-  stops on any channel with a signal. Tick or untick groups on the left, and pick
+  stops on any channel with a signal. An **Airband** group is added to any list:
+  Guard 121.5, search and rescue 123.1, MULTICOM, air to air (fixed wing and
+  helicopters), the Bennington/Rutland CTAF 122.8, Albany Approach, Boston Center
+  and Albany Tower/Ground (from the FAA Chart Supplement); untick it to leave it
+  out. Airband is AM, so it needs an antenna for about 120-135 MHz (a 2 m/70 cm
+  antenna hears nearby aircraft; a discone or an airband quarter-wave of about
+  58 cm does better). Tick or untick groups on the left, and pick
   how far away to listen (10, 25, 50, 100 miles or everywhere) from the grid
   square in Settings > User; statewide channels with no site are always kept.
   **Hold** stays on the channel, tapping a channel in the list holds there,
@@ -292,7 +298,8 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   **Load a list** takes any CSV with a Frequency column (MHz), for example a
   RadioReference export, from a USB stick; Alpha Tag, Group, Agency, County,
   Tone, Mode, Latitude and Longitude columns are used when present. Analog FM
-  only: P25, DMR and other digital channels are listed but not scanned.
+  and AM (Mode AM, or anything in 108-137 MHz with no Mode): P25, DMR and other
+  digital channels are listed but not scanned.
   **Receiver** picks which SDR to use (Automatic takes an RTL-SDR, or another
   receiver when the weather radio has the RTL-SDR) and sets the gain and
   frequency correction (ppm). Audio plays on the station's speaker.
