@@ -94,8 +94,9 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   out of folder** what's inside), renamed or removed (its apps go back on Home
   where it was). The order, pages and folders are kept in
   `~/.config/emcomm/tiles.json` (and in USB backups), and the 1–9 keys open the
-  first nine tiles of the page or folder shown. **Display** in Settings sets the colours (dark, or light for
-  daylight), the screen resolution (Automatic picks the screen's own), the text
+  first nine tiles of the page or folder shown. **Display** in Settings sets the colours (Amber dark, Light,
+  Slate blue, Night red, which keeps everything red to spare night vision, or
+  Sunlight, the highest contrast for a screen outdoors), the screen resolution (Automatic picks the screen's own), the text
   size (Normal, Large or Extra large, for bigger screens; other apps follow it
   too) and the rotation, for a screen mounted on its side or upside down. A
   touchscreen turns with the screen. A change to the screen goes back by itself
