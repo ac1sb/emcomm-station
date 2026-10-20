@@ -5,6 +5,9 @@
   emcomm-ics 205 [--incident NAME] [OUT.html] Radio Communications Plan from My frequencies
   emcomm-ics 213 MSG.213 [OUT.pdf]            General Message from an flmsg file, on FEMA's form
   emcomm-ics 213 --list                       flmsg's ICS-213 messages, newest first, as JSON
+  emcomm-ics 213 --fields MSG.213             an flmsg ICS-213 file's fields, as JSON
+  emcomm-ics 213 --save OUT.213 [CALL]        write the fields given as JSON on stdin as an
+                                              flmsg ICS-213 file (CALL: who edited it)
 
 The launcher's Net control page keeps each net as a JSON file:
   {"name", "incident", "operator", "callsign", "started", "closed",
@@ -190,6 +193,9 @@ FIELDS_213 = {
     "DateTime_14": ("d2", "t2"),
 }
 LONG_FIELDS = {"7 Message", "9 Reply"}  # text shrinks to fit these boxes
+# The order flmsg writes them in (src/ics/ics213.cxx).
+ORDER_213 = ("inc", "to", "p1", "fm", "p2", "d1", "t1", "sb", "s1", "p3", "s2", "p4", "d2", "t2", "mg", "rp")
+FLMSG_VERSION = "4.0.23"
 
 
 def parse_flmsg(data):
@@ -208,6 +214,22 @@ def parse_flmsg(data):
         fields[m.group(1).decode()] = data[m.end():end].decode("utf-8", "replace").replace("\r\n", "\n")
         pos = end
     return fields
+
+
+def write_flmsg(fields, call="", now=None):
+    """An flmsg ICS-213 file (bytes) as flmsg itself writes one: each non-empty field
+    as ":key:LENGTH value" with LENGTH in bytes, after a header naming who edited it."""
+    def line(key, value):
+        data = value.encode("utf-8")
+        return b":%s:%d " % (key.encode(), len(data)) + data + b"\n" if data else b""
+    stamp = time.strftime("%Y%m%d%H%M%S", time.gmtime(now))
+    out = b"<flmsg>" + FLMSG_VERSION.encode() + b"\n"
+    if call:
+        out += line("hdr_ed", f"\n{call} {stamp}")
+    out += b"<ics213>\n"
+    for key in ORDER_213:
+        out += line(key, str(fields.get(key, "")).replace("\r\n", "\n"))
+    return out
 
 
 def form_values(fields):
@@ -278,6 +300,23 @@ def list_213(dirs=FLMSG_DIRS):
 def main_213(args):
     if args == ["--list"]:
         print(json.dumps(list_213()))
+        return 0
+    if len(args) == 2 and args[0] == "--fields":
+        try:
+            with open(args[1], "rb") as f:
+                print(json.dumps(parse_flmsg(f.read())))
+        except (OSError, ValueError) as exc:
+            print(f"Couldn't read {os.path.basename(args[1])}: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    if args[:1] == ["--save"] and len(args) in (2, 3):
+        fields = json.load(sys.stdin)
+        out = args[1]
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        with open(out + ".tmp", "wb") as f:
+            f.write(write_flmsg(fields, args[2] if len(args) == 3 else ""))
+        os.replace(out + ".tmp", out)
+        print(out)
         return 0
     if not args:
         print("emcomm-ics 213 MSG.213 [OUT.pdf]", file=sys.stderr)

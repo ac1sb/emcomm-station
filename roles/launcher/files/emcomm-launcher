@@ -127,11 +127,19 @@ menuitem:hover { background: $hover; }
 .navbtn:hover { background: $hover; }
 .danger { border-color: $danger; color: $danger_text; background: $danger_bg; }
 .title { font-size: 20px; font-weight: 600; }
+entry.formfield, textview.formfield text { background: #FFFBE6; color: #10161C; font-size: 15px;
+                                           font-family: 'IBM Plex Sans', sans-serif; }
+entry.formfield { min-height: 0; padding: 0 4px; border-radius: 3px; border: 1px solid #3B82F6; }
+entry.formfield:focus, textview.formfield:focus { border: 2px solid #F2A33A; }
+textview.formfield { border: 1px solid #3B82F6; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; }
 .section { background: $surface; border: 1px solid $line; border-radius: 12px; padding: 12px 16px; }
 .section-title { font-size: 12px; font-weight: 600; color: $muted; letter-spacing: 1px; }
 .field-label { font-size: 14px; color: $label; }
-combobox button { padding: 0 10px; }
-entry, combobox button { background: $bg; color: $text; border: 1px solid $input_line; border-radius: 8px;
+combobox button, .picklist { padding: 0 10px; }
+.picklist-pop list, .picklist-pop row { background: $surface; color: $text; }
+.picklist-pop row { font-size: 16px; min-height: 40px; }
+.picklist-pop row:selected { background: $accent_fill; color: $on_accent; }
+entry, combobox button, .picklist { background: $bg; color: $text; border: 1px solid $input_line; border-radius: 8px;
                          min-height: 44px; font-size: 16px; background-image: none; box-shadow: none; }
 .primary { background: $accent_fill; color: $on_accent; border: none; font-weight: 600; }
 .primary:hover, .primary:active { background: $accent_fill; color: $on_accent; opacity: 0.85; }
@@ -409,6 +417,56 @@ def sdr_user():
     except OSError:
         pass
     return lock.get("app") or "another app"
+
+
+# Programs that open an SDR receiver, by the name they run as; Free the receiver stops them.
+SDR_PROGRAMS = {"gqrx", "emcomm-scanner", "rtl_tcp", "rtl_sdr", "rtl_power", "rtl_test"}
+
+
+def sdr_processes():
+    """(pid, name) of this user's programs that may be holding an SDR receiver."""
+    found = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            if os.stat(f"/proc/{entry}").st_uid != os.getuid():
+                continue
+            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                argv = [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+        except OSError:
+            continue
+        names = [os.path.basename(a) for a in argv[:2]]  # the program, or the script an interpreter runs
+        name = next((n for n in names if n in SDR_PROGRAMS), None)
+        if name and "--pick-receiver" not in argv:
+            found.append((int(entry), name))
+    return found
+
+
+def free_sdr(wait=5.0):
+    """Stop whatever holds an SDR receiver (Gqrx, the Scanner, rtl_tcp...), forcefully if it
+    doesn't stop in a few seconds, and clear the lock. The weather radio listener takes its
+    dongle back by itself. Returns the names stopped."""
+    procs = sdr_processes()
+    for pid, _name in procs:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and any(os.path.exists(f"/proc/{pid}") for pid, _n in procs):
+        time.sleep(0.2)
+    for pid, _name in procs:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    if not sdr_user():
+        try:
+            os.remove(SDR_LOCK)
+        except OSError:
+            pass
+    return sorted({"Gqrx" if n == "gqrx" else "Scanner" if n == "emcomm-scanner" else n for _p, n in procs})
 
 
 def rigctld_query(host, port, command, timeout=1.0):
@@ -1207,6 +1265,18 @@ def recordings(limit=200):
 NETS_DIR = os.path.expanduser("~/.local/share/emcomm/nets")
 ICS_CMD = os.environ.get("EMCOMM_ICS", "emcomm-ics")
 ICS213_BLANK = os.path.join(os.environ.get("EMCOMM_FORMS", "/usr/share/emcomm/forms"), "ics213.pdf")
+ICS213_SENT = os.path.expanduser("~/.nbems/ICS/messages")
+# Where each flmsg ICS-213 field is typed on FEMA's form: (key, left, bottom, right, top) in
+# PDF points from the bottom left, as the PDF's own fields are; two keys share a box side by side.
+ICS213_BOXES = [
+    ("inc", 171, 720, 575, 735), ("to", 162, 690, 400, 718), ("p1", 402, 690, 574, 718),
+    ("fm", 175, 660, 400, 687), ("p2", 402, 660, 574, 687), ("sb", 92, 628, 430, 656),
+    ("d1", 434, 628, 502, 646), ("t1", 506, 628, 574, 646), ("mg", 41, 367, 574, 613),
+    ("s1", 153, 351, 252, 364), ("p3", 474, 351, 570, 364), ("rp", 41, 90, 574, 329),
+    ("s2", 149, 75, 252, 88), ("p4", 317, 75, 419, 88), ("d2", 308, 57, 437, 70), ("t2", 441, 57, 570, 70),
+]
+ICS213_HINTS = {"inc": "Incident name (optional)", "to": "Name", "p1": "Position", "fm": "Name",
+                "p2": "Position", "sb": "Subject", "d1": "Date", "t1": "Time", "d2": "Date", "t2": "Time"}
 
 
 # ICS-213 messages: flmsg's files, shown on FEMA's form (emcomm-ics fills in the PDF).
@@ -1249,6 +1319,140 @@ def net_lines(net):
 def checked_in(net):
     return sorted({e["from"] for e in net.get("entries", []) if e.get("checkin") and e.get("from")})
 
+
+
+class PickList(Gtk.Button):
+    """A drop-down list that can be searched by typing, standing in for Gtk.ComboBoxText
+    (append, set_active_id, get_active_id, get_active_text, set_active, get_active,
+    remove_all and the "changed" signal). Tapping it opens the list under a search box;
+    typing, on the button or in the box, keeps only the choices with every word typed."""
+
+    __gsignals__ = {"changed": (GObject.SignalFlags.RUN_FIRST, None, ())}
+
+    def __init__(self):
+        super().__init__()
+        self.get_style_context().add_class("picklist")
+        self.items, self.active = [], -1
+        box = Gtk.Box(spacing=8)
+        self.label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, width_chars=8)
+        box.pack_start(self.label, True, True, 0)
+        box.pack_end(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON), False, False, 0)
+        self.add(box)
+        self.connect("clicked", lambda *_: self.popup())
+        self.connect("key-press-event", self._key)
+        self.popover = None
+
+    # ---- the Gtk.ComboBoxText calls the windows use ----
+    def append(self, item_id, text):
+        self.items.append((item_id, text))
+
+    def append_text(self, text):
+        self.append(None, text)
+
+    def remove_all(self):
+        self.items = []
+        self._select(-1)
+
+    def get_active(self):
+        return self.active
+
+    def set_active(self, index):
+        self._select(index if 0 <= index < len(self.items) else -1)
+
+    def get_active_id(self):
+        return self.items[self.active][0] if self.active >= 0 else None
+
+    def get_active_text(self):
+        return self.items[self.active][1] if self.active >= 0 else None
+
+    def set_active_id(self, item_id):
+        if item_id is None:
+            self._select(-1)
+            return True
+        for n, (value, _text) in enumerate(self.items):
+            if value == item_id:
+                self._select(n)
+                return True
+        return False
+
+    def _select(self, index):
+        changed = index != self.active
+        self.active = index
+        self.label.set_text(self.items[index][1] if index >= 0 else "")
+        if changed:
+            self.emit("changed")
+
+    # ---- the list ----
+    def _key(self, _widget, event):
+        char = chr(Gdk.keyval_to_unicode(event.keyval) or 0)
+        if char.isprintable() and char.strip() and not event.state & Gdk.ModifierType.CONTROL_MASK:
+            self.popup(char)
+            return True
+        return False
+
+    def popup(self, typed=""):
+        if not self.items:
+            return
+        self.popover = Gtk.Popover(relative_to=self, position=Gtk.PositionType.BOTTOM)
+        self.popover.get_style_context().add_class("picklist-pop")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
+        search = Gtk.SearchEntry(placeholder_text="Type to search", can_default=False)
+        box.pack_start(search, False, False, 0)
+        listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE, activate_on_single_click=True)
+        rows = []
+        for n, (_value, text) in enumerate(self.items):
+            row = Gtk.ListBoxRow()
+            row.index, row.words = n, text.lower()
+            label = Gtk.Label(label=text, xalign=0, margin=10, ellipsize=Pango.EllipsizeMode.END)
+            row.add(label)
+            listbox.add(row)
+            rows.append(row)
+        empty = Gtk.Label(label="No matches", margin=10)
+        empty.get_style_context().add_class("muted")
+        listbox.set_placeholder(empty)
+        empty.show()
+        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroller.set_propagate_natural_height(True)
+        scroller.set_max_content_height(300)
+        box.set_size_request(max(260, self.get_allocated_width()), -1)
+        scroller.add(listbox)
+        box.pack_start(scroller, True, True, 0)
+        self.popover.add(box)
+
+        def matches(row):
+            words = search.get_text().lower().split()
+            return all(w in row.words for w in words)
+
+        listbox.set_filter_func(matches)
+
+        def choose(row):
+            if row is not None:
+                self._select(row.index)
+            self.popover.popdown()
+
+        def first_shown():
+            return next((r for r in rows if r.get_child_visible() and matches(r)), None)
+
+        listbox.connect("row-activated", lambda _l, row: choose(row))
+        search.connect("search-changed", lambda *_: listbox.invalidate_filter())
+        search.connect("activate", lambda *_: choose(first_shown()))
+        search.connect("stop-search", lambda *_: self.popover.popdown())
+        self.popover.connect("closed", lambda p: p.destroy())
+        box.show_all()
+        self.popover.popup()
+        # Typing goes to the search box. It isn't focused at first unless something was
+        # typed, so a tap doesn't bring up the on-screen keyboard over the list.
+        self.popover.connect("key-press-event",
+                             lambda _p, event: not search.has_focus() and search.handle_event(event))
+        if typed:
+            search.grab_focus()
+            search.set_text(typed)
+            search.set_position(-1)
+        elif self.active >= 0:
+            listbox.select_row(rows[self.active])
+            GLib.idle_add(lambda: rows[self.active].grab_focus() and False)  # scrolls it into view
+        else:
+            listbox.grab_focus()
 
 class HomeBar(Gtk.Window):
     """A thin bar across the top of the screen, above every app, with Home, the
@@ -1418,6 +1622,7 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._online_page(), "online")
         self.stack.add_named(self._net_page(), "net")
         self.stack.add_named(self._ics213_page(), "ics213")
+        self.stack.add_named(self._ics213_editor(), "ics213-edit")
         self.stack.add_named(self._recorder_page(), "recorder")
         root.pack_start(self.stack, True, True, 0)
 
@@ -2106,16 +2311,50 @@ class Launcher(Gtk.Window):
                 self._arrange_show(f"The {btn.name} folder is full.")
                 return
             picked, self.picked = self.picked, None
-            if picked in self.slots:
-                self.slots.remove(picked)
-            else:
-                self._take_from_folder(picked)
-            btn.members.append(picked)
-            self._folder_changed(btn)
-            self._lay_out_tiles()
+            self._move_into_folder(picked, btn)
             self._arrange_show()
         else:
             self._arrange_tap(btn)
+
+    def _move_into_folder(self, tile, folder):
+        if tile in self.slots:
+            self.slots.remove(tile)
+        else:
+            self._take_from_folder(tile)
+        folder.members.append(tile)
+        self._folder_changed(folder)
+        self._lay_out_tiles()
+        self._save_tiles()
+
+    def _folder_of(self, tile):
+        return next((f for f in self.folder_tiles if tile in f.members), None)
+
+    def _menu_take_out(self, tile):
+        """From the long-press menu: put the app on Home just after its folder."""
+        folder = self._folder_of(tile)
+        if folder is None:
+            return
+        self._take_from_folder(tile)
+        self.slots.insert(self.slots.index(folder) + 1, tile)
+        self._lay_out_tiles()
+        self._save_tiles()
+
+    def _menu_new_folder(self, tile):
+        """From the long-press menu: a new folder holding this app, where the app was."""
+        name = self._ask_name("Name the new folder", "Folder")
+        if not name:
+            return
+        folder = self._folder_tile(name, [])
+        old = self._folder_of(tile)
+        if tile in self.slots:
+            self.slots[self.slots.index(tile)] = folder
+        else:
+            self._take_from_folder(tile)
+            self.slots.insert(self.slots.index(old) + 1 if old in self.slots else len(self.slots), folder)
+        folder.members.append(tile)
+        self._update_folder_tile(folder)
+        self._lay_out_tiles()
+        self._save_tiles()
 
     def _take_from_folder(self, tile):
         for folder in self.folder_tiles:
@@ -2388,7 +2627,7 @@ class Launcher(Gtk.Window):
         box.pack_start(grid, False, False, 0)
 
         def combo(row, label, choices, current):
-            widget = Gtk.ComboBoxText()
+            widget = PickList()
             for value, text in choices:
                 widget.append(value, text)
             widget.set_active_id(current if current in [v for v, _ in choices] else choices[0][0])
@@ -2621,6 +2860,26 @@ class Launcher(Gtk.Window):
                 standard = Gtk.MenuItem(label=f"Use the standard name ({btn.app['standard_name']})")
                 standard.connect("activate", lambda *_: self._set_tile_name(btn, None))
                 menu.append(standard)
+        if btn.kind == "app":
+            here = self._folder_of(btn)
+            move = Gtk.MenuItem(label=f"Move {btn.app['name']} to a folder")
+            folders = Gtk.Menu()
+            for folder in self.folder_tiles:
+                if folder is here or folder not in self.slots:
+                    continue
+                item = Gtk.MenuItem(label=folder.name + ("  (full)" if len(folder.members) >= FOLDER_MAX else ""))
+                item.set_sensitive(len(folder.members) < FOLDER_MAX)
+                item.connect("activate", lambda _i, f=folder: self._move_into_folder(btn, f))
+                folders.append(item)
+            new_folder = Gtk.MenuItem(label="New folder…")
+            new_folder.connect("activate", lambda *_: self._menu_new_folder(btn))
+            folders.append(new_folder)
+            move.set_submenu(folders)
+            menu.append(move)
+            if here is not None:
+                out = Gtk.MenuItem(label=f"Take {btn.app['name']} out of {here.name}")
+                out.connect("activate", lambda *_: self._menu_take_out(btn))
+                menu.append(out)
         if btn.kind == "app" and btn.app.get("icon"):
             change = Gtk.MenuItem(label=f"Change {btn.app['name']} icon…")
             change.connect("activate", lambda *_: self._choose_icon(btn))
@@ -3020,34 +3279,28 @@ class Launcher(Gtk.Window):
         self.grid_entry = Gtk.Entry(max_length=6)
         self.grid_gps_btn = self._navbtn("From GPS", self._grid_from_gps)
         self.grid_gps_btn.set_sensitive(False)
-        self.preset_combo = Gtk.ComboBoxText()
+        self.preset_combo = PickList()
         self.preset_combo.append("", "None")
         for preset_id, preset in self.presets:
             self.preset_combo.append(preset_id, preset.get("radio_name", preset_id))
         self.preset_combo.connect("changed", self._preset_changed)
-        self.mfg_combo = Gtk.ComboBoxText()
+        self.mfg_combo = PickList()
         for mfg in sorted(self.models, key=str.lower):
             self.mfg_combo.append(mfg, mfg)
         self.mfg_combo.connect("changed", self._mfg_changed)
-        self.model_combo = Gtk.ComboBoxText()
+        self.model_combo = PickList()
         self.model_combo.connect("changed", self._model_changed)
-        self.cat_combo = Gtk.ComboBoxText()
-        self.baud_combo = Gtk.ComboBoxText()
+        self.cat_combo = PickList()
+        self.baud_combo = PickList()
         for baud in BAUD_RATES:
             self.baud_combo.append(baud, baud)
-        self.ptt_combo = Gtk.ComboBoxText()
+        self.ptt_combo = PickList()
         for value, label in PTT_CHOICES:
             self.ptt_combo.append(value, label)
         self.ptt_combo.connect("changed", lambda *_: self._ptt_changed())
-        self.ptt_port_combo = Gtk.ComboBoxText()
-        self.audio_combo = Gtk.ComboBoxText()
-        self.gps_combo = Gtk.ComboBoxText()
-        for combo in (self.preset_combo, self.mfg_combo, self.model_combo, self.cat_combo, self.baud_combo,
-                      self.ptt_combo, self.ptt_port_combo, self.audio_combo, self.gps_combo):
-            # Long device names are cut off with "…" instead of widening the screen.
-            for cell in combo.get_cells():
-                cell.set_property("ellipsize", Pango.EllipsizeMode.END)
-                cell.set_property("width-chars", 8)
+        self.ptt_port_combo = PickList()
+        self.audio_combo = PickList()
+        self.gps_combo = PickList()  # long device names are cut off with "…" instead of widening the screen
 
     def _station_user_page(self):
         page, body = self._station_subpage("User", "Your callsign goes into JS8Call, WSJT-X, fldigi, Pat and "
@@ -3087,6 +3340,10 @@ class Launcher(Gtk.Window):
         rescan = self._navbtn("Rescan devices", lambda *_: self._rescan_devices())
         rescan.set_valign(Gtk.Align.END)
         top.pack_start(rescan, False, False, 0)
+        free = self._navbtn("Free the SDR receiver", lambda *_: self._free_sdr())
+        free.set_valign(Gtk.Align.END)
+        free.set_tooltip_text("Closes Gqrx, the Scanner or anything else holding the receiver, so another app can use it")
+        top.pack_start(free, False, False, 0)
         body.pack_start(top, False, False, 0)
         self.devices_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
                                          left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD_CHAR)
@@ -3095,6 +3352,15 @@ class Launcher(Gtk.Window):
         body.pack_start(scroller, True, True, 0)
         page.connect("map", lambda *_: self._show_devices())
         return page
+
+    def _free_sdr(self):
+        def work():
+            stopped = free_sdr()
+            GLib.idle_add(lambda: (self._show_devices(), self._message(
+                f"Closed {' and '.join(stopped)}. The receiver is free." if stopped else
+                "Nothing was holding the receiver.")) and False)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _show_devices(self):
         """What's plugged in now: USB serial ports, USB sound cards, RTL-SDR dongles, paired Bluetooth radios."""
@@ -3289,7 +3555,7 @@ class Launcher(Gtk.Window):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
         dialog.get_content_area().pack_start(box, True, True, 0)
         top = Gtk.Box(spacing=12)
-        sticks = Gtk.ComboBoxText()
+        sticks = PickList()
         top.pack_start(sticks, True, True, 0)
         look = self._navbtn("Look again", lambda *_: find())
         back_up = self._navbtn("Back up now", lambda *_: run(["create", sticks.get_active_id()]), "primary")
@@ -3420,7 +3686,7 @@ class Launcher(Gtk.Window):
         title = Gtk.Label(label="Logs", xalign=0)
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
-        self.log_combo = Gtk.ComboBoxText()
+        self.log_combo = PickList()
         for source_id, label, _path in LOG_SOURCES:
             self.log_combo.append(source_id, label)
         self.log_combo.set_active_id("notes")
@@ -3669,10 +3935,13 @@ class Launcher(Gtk.Window):
         self.f213_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         self.f213_status.get_style_context().add_class("muted")
         header.pack_start(self.f213_status, True, True, 0)
-        header.pack_end(self._navbtn("New message", self._ics213_new, "primary"), False, False, 0)
-        self.f213_open_btn = self._navbtn("Reply or edit in flmsg", self._ics213_edit)
+        header.pack_end(self._navbtn("New message", lambda *_: self._ics213_write(None), "primary"),
+                        False, False, 0)
+        self.f213_open_btn = self._navbtn("Reply or edit", lambda *_: self._ics213_write(self.f213_path))
+        self.f213_flmsg_btn = self._navbtn("Open in flmsg", self._ics213_edit)
         self.f213_print_btn = self._navbtn("Print", self._ics213_print)
         header.pack_end(self.f213_open_btn, False, False, 0)
+        header.pack_end(self.f213_flmsg_btn, False, False, 0)
         header.pack_end(self.f213_print_btn, False, False, 0)
         page.pack_start(header, False, False, 0)
 
@@ -3732,7 +4001,7 @@ class Launcher(Gtk.Window):
             self.f213_list.add(row)
         if not found:
             hint = Gtk.Label(xalign=0, wrap=True, margin=12, label=(
-                "No ICS-213 messages yet.\n\nTap New message to write one in flmsg, then save it there. "
+                "No ICS-213 messages yet.\n\nTap New message to type one on the form. "
                 "Messages fldigi receives show here too.\n\nThis is the blank form; Print gives you paper copies."))
             hint.get_style_context().add_class("muted")
             row = Gtk.ListBoxRow(selectable=False, activatable=False)
@@ -3778,7 +4047,8 @@ class Launcher(Gtk.Window):
             except GLib.Error as exc:
                 self.f213_status.set_text(f"Couldn't open the form: {exc.message}")
         self.f213_print_btn.set_sensitive(self.f213_doc is not None)
-        self.f213_open_btn.set_sensitive(self.f213_doc is not None and path is not None)
+        self.f213_open_btn.set_sensitive(path is not None)
+        self.f213_flmsg_btn.set_sensitive(path is not None)
         self._ics213_fit()
         self.f213_form.queue_draw()
 
@@ -3829,14 +4099,174 @@ class Launcher(Gtk.Window):
         if self.f213_path and shutil.which("flmsg"):
             run_detached(["flmsg", self.f213_path])
 
-    def _ics213_new(self, *_):
-        """Open flmsg, as its Home tile does (bringing it forward if it's already open)."""
-        for tile in self.tiles:
-            if tile.app.get("app") == "flmsg":
-                tile.clicked()
-                return
-        if shutil.which("flmsg"):
-            run_detached(["flmsg"])
+    # ---- typing an ICS-213 on the form ------------------------------------
+    # The blank FEMA form is drawn and a box sits on each of its fields, so the
+    # message is typed where it goes on paper. It's saved as an flmsg file, so
+    # flmsg sends it and the messages list shows it.
+
+    def _ics213_editor(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Messages", lambda *_: self.stack.set_visible_child_name("ics213")),
+                          False, False, 0)
+        self.f213e_title = Gtk.Label(xalign=0)
+        self.f213e_title.get_style_context().add_class("title")
+        header.pack_start(self.f213e_title, False, False, 0)
+        self.f213e_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.f213e_status.get_style_context().add_class("muted")
+        header.pack_start(self.f213e_status, True, True, 0)
+        header.pack_end(self._navbtn("Send with flmsg", lambda *_: self._ics213_editor_send(), "primary"),
+                        False, False, 0)
+        header.pack_end(self._navbtn("Save", lambda *_: self._ics213_editor_save()), False, False, 0)
+        header.pack_end(self._navbtn("Print", lambda *_: self._ics213_editor_print()), False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        self.f213e_doc = None
+        if Poppler is not None and os.path.exists(ICS213_BLANK):
+            try:
+                self.f213e_doc = Poppler.Document.new_from_file(GLib.filename_to_uri(ICS213_BLANK, None), None)
+            except GLib.Error:
+                pass
+        overlay = Gtk.Overlay()
+        self.f213e_paper = Gtk.DrawingArea()
+        self.f213e_paper.connect("draw", self._ics213_editor_draw)
+        overlay.add(self.f213e_paper)
+        self.f213e_fixed = Gtk.Fixed()
+        overlay.add_overlay(self.f213e_fixed)
+        self.f213e_fields = {}
+        for key, *_box in ICS213_BOXES:
+            if key in ("mg", "rp"):
+                view = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, left_margin=4, right_margin=4)
+                view.get_style_context().add_class("formfield")
+                widget = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+                widget.add(view)
+                self.f213e_fields[key] = view
+            else:
+                widget = Gtk.Entry(placeholder_text=ICS213_HINTS.get(key, ""), width_chars=1)
+                widget.get_style_context().add_class("formfield")
+                self.f213e_fields[key] = widget
+            widget.box = _box
+            self.f213e_fixed.put(widget, 0, 0)
+        self.f213e_scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.f213e_scroller.add(overlay)
+        self.f213e_scroller.connect("size-allocate", lambda *_: self._ics213_editor_fit())
+        page.pack_start(self.f213e_scroller, True, True, 0)
+        self.f213e_path, self.f213e_scale = None, 0
+        return page
+
+    def _ics213_editor_fit(self):
+        """Scale the form to the page's width and put each box on its field."""
+        width = self.f213e_scroller.get_allocated_width() - 16  # room for the scroll bar
+        if width <= 0 or not self.f213e_doc:
+            return
+        width_pt, height_pt = self.f213e_doc.get_page(0).get_size()
+        scale = width / width_pt
+        if abs(scale - self.f213e_scale) < 0.001:
+            return
+        self.f213e_scale = scale
+        self.f213e_paper.set_size_request(width, int(height_pt * scale))
+        for child in self.f213e_fixed.get_children():
+            left, bottom, right, top = child.box
+            self.f213e_fixed.move(child, int(left * scale), int((height_pt - top) * scale))
+            child.set_size_request(int((right - left) * scale), int((top - bottom) * scale))
+
+    def _ics213_editor_draw(self, widget, cr):
+        cr.set_source_rgb(1, 1, 1)
+        cr.paint()
+        if self.f213e_doc and self.f213e_scale:
+            cr.scale(self.f213e_scale, self.f213e_scale)
+            self.f213e_doc.get_page(0).render(cr)
+        return False
+
+    def _ics213_field(self, key):
+        widget = self.f213e_fields[key]
+        if isinstance(widget, Gtk.TextView):
+            buf = widget.get_buffer()
+            return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        return widget.get_text()
+
+    def _ics213_write(self, path):
+        """Open the form: blank for a new message, or filled from an flmsg file to edit or reply to."""
+        if not self.f213e_doc:
+            self._set_message("Can't show the form: run Update station (it needs gir1.2-poppler-0.18).", None)
+            return
+        fields = {}
+        if path:
+            try:
+                result = subprocess.run([ICS_CMD, "213", "--fields", path], capture_output=True, text=True,
+                                        timeout=20, check=False)
+                fields = json.loads(result.stdout) if result.returncode == 0 else {}
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                fields = {}
+        received = bool(path) and not os.path.dirname(os.path.abspath(path)) == os.path.abspath(ICS213_SENT)
+        if not path:
+            now = time.localtime()
+            fields = {"d1": time.strftime("%Y-%m-%d", now), "t1": time.strftime("%H%M", now)}
+            net_path, net = open_net()
+            if net and net.get("incident"):
+                fields["inc"] = net["incident"]
+        if received and not fields.get("rp"):
+            now = time.localtime()
+            fields.setdefault("d2", time.strftime("%Y-%m-%d", now))
+            fields.setdefault("t2", time.strftime("%H%M", now))
+        for key, widget in self.f213e_fields.items():
+            value = fields.get(key, "")
+            if isinstance(widget, Gtk.TextView):
+                widget.get_buffer().set_text(value)
+            else:
+                widget.set_text(value)
+        # A received message is answered in a copy, so what came in stays as it was.
+        self.f213e_path = None if received else path
+        self.f213e_title.set_text("Reply" if received else "Edit ICS-213" if path else "New ICS-213")
+        self.f213e_status.set_text("Type the reply at the bottom." if received else "")
+        self.stack.set_visible_child_name("ics213-edit")
+        focus = "rp" if received else "to" if not path else "mg"
+        GLib.idle_add(lambda: self.f213e_fields[focus].grab_focus() and False)
+
+    def _ics213_editor_save(self):
+        """Save the form as an flmsg file in flmsg's messages folder; the path, or None."""
+        fields = {key: self._ics213_field(key).strip("\n") if key in ("mg", "rp") else self._ics213_field(key).strip()
+                  for key in self.f213e_fields}
+        if not any(fields.values()):
+            self.f213e_status.set_text("The form is empty.")
+            return None
+        path = self.f213e_path
+        if not path:
+            stem = time.strftime("ICS213-%Y%m%d-%H%M%S")
+            subject = re.sub(r"[^A-Za-z0-9 _-]+", "", fields.get("sb", ""))[:30].strip()
+            path = os.path.join(ICS213_SENT, f"{stem} {subject}.213" if subject else f"{stem}.213")
+        try:
+            result = subprocess.run([ICS_CMD, "213", "--save", path, self.station.get("callsign", "")],
+                                    input=json.dumps(fields), capture_output=True, text=True, timeout=20,
+                                    check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.f213e_status.set_text(f"Couldn't save: {exc}")
+            return None
+        if result.returncode != 0:
+            self.f213e_status.set_text("Couldn't save: " + (result.stderr.strip().splitlines() or ["?"])[-1])
+            return None
+        self.f213e_path = path
+        self.f213e_title.set_text("Edit ICS-213")
+        self.f213e_status.set_text("Saved " + time.strftime("%H:%M") + ". It's in the messages list.")
+        self.f213_listed = None  # list it next time the messages page shows
+        return path
+
+    def _ics213_editor_send(self):
+        path = self._ics213_editor_save()
+        if not path:
+            return
+        if not shutil.which("flmsg"):
+            self.f213e_status.set_text("Saved. flmsg isn't installed: tap its tile on Home to install it.")
+            return
+        run_detached(["flmsg", path])
+        self.f213e_status.set_text("Opened in flmsg: with fldigi open, press AutoSend in flmsg's menu bar to send it.")
+
+    def _ics213_editor_print(self):
+        path = self._ics213_editor_save()
+        if path:
+            self.f213_path = None
+            self._ics213_show(path)
+            self._ics213_print()
 
     # ---- receive audio recorder ----------------------------------------
 
@@ -4265,7 +4695,7 @@ class Launcher(Gtk.Window):
         title = Gtk.Label(label="Online", xalign=0)
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
-        self.online_combo = Gtk.ComboBoxText()
+        self.online_combo = PickList()
         for key, label in ONLINE_SECTIONS.items():
             self.online_combo.append(key, label)
         self.online_combo.set_active_id("alerts")
@@ -4586,7 +5016,7 @@ class Launcher(Gtk.Window):
         dialog.set_default_size(760, -1)
         dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
-        channel = Gtk.ComboBoxText()
+        channel = PickList()
         channel.append("", "Off")
         for mhz in NWR_CHANNELS:
             channel.append(mhz, f"{mhz} MHz")
@@ -4594,11 +5024,11 @@ class Launcher(Gtk.Window):
         # Counties: pick a state, then a county, and add it to the list.
         by_state = same_codes()
         chosen = [c for c in config.get("codes") or [] if re.fullmatch(r"\d{6}", str(c))]
-        state = Gtk.ComboBoxText()
+        state = PickList()
         state.append("", "Pick a state")
         for name in by_state:
             state.append(name, name)
-        county = Gtk.ComboBoxText()
+        county = PickList()
         add = self._navbtn("Add county", lambda *_: None)
         here = next((s for s, counties in by_state.items() for _c, code in counties if chosen and code == chosen[0]),
                     "")
@@ -4763,7 +5193,7 @@ class Launcher(Gtk.Window):
         title = Gtk.Label(label="Reference", xalign=0)
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
-        self.ref_combo = Gtk.ComboBoxText()
+        self.ref_combo = PickList()
         self.ref_combo.connect("changed", lambda *_: self._show_reference())
         header.pack_start(self.ref_combo, False, False, 0)
         self.ref_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
@@ -4773,7 +5203,7 @@ class Launcher(Gtk.Window):
         header.pack_end(self.ref_add, False, False, 0)
         self.ref_gw_update = self._navbtn("Update list", self._update_gateway_list)
         header.pack_end(self.ref_gw_update, False, False, 0)
-        self.ref_gw_mode = Gtk.ComboBoxText()
+        self.ref_gw_mode = PickList()
         for key, label in GATEWAY_MODES.items():
             self.ref_gw_mode.append(key, label)
         self.ref_gw_mode.set_active_id("all")
@@ -4936,7 +5366,7 @@ class Launcher(Gtk.Window):
         dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Add", Gtk.ResponseType.OK)
         grid = Gtk.Grid(column_spacing=12, row_spacing=12, margin=16)
         mhz = Gtk.Entry(placeholder_text="14.300", input_purpose=Gtk.InputPurpose.NUMBER)
-        mode = Gtk.ComboBoxText()
+        mode = PickList()
         for m in MODES:
             mode.append(m, m.replace("PKT", "DATA-"))
         name = Gtk.Entry(placeholder_text="County ARES net")

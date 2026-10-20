@@ -55,7 +55,11 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   when you're done typing.
 - **Launcher:** the home screen above. Works by touch, mouse or keyboard: Tab moves
   between buttons, 1–9 open tiles, Esc/F1 goes Home, F2 Diagnostics, F3 Settings,
-  F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control, F9 ICS-213 messages. A tile for an app that isn't installed says "tap to install". To use
+  F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control, F9 ICS-213 messages.
+  Every drop-down list (radio make and model, ports, counties, logs...) can be
+  searched: tap it and type in the box at the top, or with a keyboard just start
+  typing on it; only the choices with every word typed stay, and Enter picks the
+  first. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
   icon" puts it back. **Rename** in the same menu gives a tile (or a folder) your own
@@ -70,7 +74,10 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   place to move it there; **Remove page** folds the page shown into the one
   before it. Folders hold related apps under one tile: **Email** (Winlink mail,
   VARA HF, VARA FM) and **Mesh & APRS** (Meshtastic, MeshCore, APRS) come as
-  standard. Tap a folder to open it; Esc or ‹ Home closes it. While arranging,
+  standard. Tap a folder to open it; Esc or ‹ Home closes it. The quickest way
+  to file an app is its long-press (or right-click) menu: **Move to a folder**
+  lists the folders and **New folder…**, and an app in a folder has **Take it
+  out**. While arranging,
   tap an app then a folder to put it in, **New folder** makes one (holding the
   app picked, if any), and a picked folder can be opened (to reorder or **Take
   out of folder** what's inside), renamed or removed (its apps go back on Home
@@ -112,9 +119,15 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 - **ICS-213 messages** (F9, or the button on Logs): every ICS-213 in flmsg, the
   ones you wrote and the ones fldigi received, shown on FEMA's own General Message
   form (ICS 213), the same layout as the paper form. Pick one on the left to see
-  it; **Print** prints it (or saves a PDF), **Reply or edit in flmsg** opens it in
-  flmsg to fill in the reply, and **New message** opens flmsg to write one. The
-  filled-in form is also saved as a PDF in `~/ICS forms`.
+  it; **Print** prints it (or saves a PDF). **New message** opens the blank form
+  with a box on each field (To, From, Subject, Date, Time, Message, Approved by,
+  Reply...), so the message is typed where it goes on paper; the date and time
+  are filled in, and the incident too while a net is open. **Reply or edit** opens
+  the one picked: a received message gets the reply boxes at the bottom and is
+  saved as a copy, so what came in stays as it was. **Save** keeps it in flmsg's
+  messages, **Send with flmsg** saves it and opens it in flmsg (press AutoSend
+  there, with fldigi open), and **Open in flmsg** opens any message in flmsg as
+  before. The filled-in form is also saved as a PDF in `~/ICS forms`.
 - **Recorder** (the **Rec** button at the top of the screen, or on the Logs page):
   records the radio's receive audio to `~/Recordings`, each file named with the
   UTC time, frequency and mode. **Record when there's a signal** keeps only the
@@ -152,13 +165,18 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   works offline from Pat's saved list; **Update list** downloads a fresh one when
   the station has internet. The nearest HF gateway isn't always the easiest to
   reach: within about 300 miles, NVIS on 80 m or 40 m (or 60 m) works best.
-- **Map** (tile): an offline map (countries, states, US counties, highways and towns
-  from Natural Earth) with Maidenhead grid squares, your station, every Winlink
+- **Map** (tile): an offline map (countries, states, US counties, highways and
+  cities from Natural Earth, and every US town, village and New England town from
+  the Census Bureau's gazetteer, shown as you zoom in) with Maidenhead grid
+  squares, your station, every Winlink
   gateway (blue HF, green VHF/UHF; tap one for its dial frequencies, modes and
   hours) and stations heard on JS8Call and WSJT-X with their grids. The gateway
   list is Pat's: it works offline from the copy built into Pat, and is refreshed
   when it's over a week old and the station is online. It also shows the stations
   that heard you (purple, with a line to each), as the Online page last saved them.
+  The buttons at the top right switch the background: **Map** is the built-in
+  one; **Streets**, **Satellite** (aerial photos with roads and place names) and
+  **Topo** are Esri's online maps, so they need the internet. The choice is kept.
 - **Online** (F7): data from internet services, saved so the last answer still
   shows offline. Each section says when it was last updated.
   - **Weather alerts** for your grid from the National Weather Service (US only),
@@ -296,7 +314,16 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   The weather radio alert listener uses the first RTL-SDR: while the Scanner or
   Gqrx has that dongle, alerts pause (the Online page says so) and resume when it
   closes; with a second receiver plugged in, the Scanner uses that instead.
-  Settings > Devices lists the SDR receivers plugged in.
+  Settings > Devices lists the SDR receivers plugged in. With no receiver
+  plugged in, the Gqrx tile still opens Gqrx: **Practice signal** plays a
+  made-up recording around 146.5 MHz (an FM signal on 146.520, Morse code and a
+  carrier) to learn it with, and **Network receiver** uses an RTL-SDR on another
+  computer shared with `rtl_tcp -a 0.0.0.0` (type its address; it's remembered).
+  Press Gqrx's ▶ button to start. Closing Gqrx always frees the receiver: if
+  Gqrx hangs on after its window has gone, it's stopped after a few seconds, and
+  the Scanner stops a leftover Gqrx itself before giving up. **Settings >
+  Devices > Free the SDR receiver** closes Gqrx, the Scanner or anything else
+  holding a receiver (rtl_tcp and the like), forcefully if it doesn't close.
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 

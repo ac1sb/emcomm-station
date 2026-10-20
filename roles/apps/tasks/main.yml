@@ -193,6 +193,15 @@
       loop: "{{ apps_natural_earth_files | dict2items }}"
       register: apps_natural_earth
 
+    # census.gov publishes no checksums; a year's files don't change once out.
+    - name: Download the Census town lists
+      ansible.builtin.get_url:
+        url: "{{ apps_census_gazetteer_url }}/{{ apps_census_gazetteer_year }}_Gaz_{{ item }}_national.zip"
+        dest: "/var/cache/emcomm/natural-earth/{{ apps_census_gazetteer_year }}_Gaz_{{ item }}_national.zip"
+        mode: "0644"
+      loop: "{{ apps_census_gazetteer_files }}"
+      register: apps_census_towns
+
     - name: Install the map scripts
       ansible.builtin.copy:
         src: "{{ item }}"
@@ -207,7 +216,7 @@
 
     - name: Build the offline base map
       ansible.builtin.command: emcomm-map-prepare /var/cache/emcomm/natural-earth /usr/share/emcomm/map/basemap.js
-      when: apps_natural_earth is changed or not apps_basemap.stat.exists
+      when: apps_natural_earth is changed or apps_census_towns is changed or not apps_basemap.stat.exists
       changed_when: true
 
 # SDR receivers. The Scanner is the station's own (numpy narrow-FM demod, audio

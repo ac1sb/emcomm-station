@@ -24,6 +24,12 @@ apps_natural_earth_files:
   ne_10m_roads: 66a0c7b438e92fd124822cc5921cfa11042f48c294ade5e0f03f2c6640fd0248
   ne_10m_populated_places_simple: fd3fa867a320cbd5c5b6bb5bc550afeec2939fb2cef688e508007282a55ac42f
 
+# US town names for the offline map, from the Census Bureau's gazetteer files
+# (public domain): cities, towns, villages and CDPs, and New England's towns.
+apps_census_gazetteer_year: "2024"
+apps_census_gazetteer_files: [place, cousubs]
+apps_census_gazetteer_url: "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/{{ apps_census_gazetteer_year }}_Gazetteer"
+
 # winetricks lives in Debian's contrib section, which a default install doesn't
 # enable, so the script comes straight from the upstream release tag.
 apps_winetricks_version: "20260125"
