@@ -34,6 +34,11 @@ try:
     from gi.repository import GdkX11  # noqa: E402,F401  (gives windows their X id, for the Home bar)
 except (ImportError, ValueError):
     GdkX11 = None
+try:
+    gi.require_version("Poppler", "0.18")
+    from gi.repository import Poppler  # noqa: E402  (draws the ICS-213 form)
+except (ImportError, ValueError):
+    Poppler = None
 
 CONFIG_PATH = os.environ.get("EMCOMM_LAUNCHER_CONFIG", "/etc/emcomm/launcher.json")
 STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
@@ -107,6 +112,7 @@ levelbar block.empty { background: transparent; border: none; }
 .freq { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: $accent; }
 .freq-row { padding: 6px 4px; border-bottom: 1px solid $line; }
 list, list row { background: $surface; color: $text; }
+list row:selected { background: $hover; box-shadow: inset 4px 0 $accent_fill; }
 dialog, dialog box, dialog label,
 messagedialog, messagedialog box, messagedialog label { background: $surface; color: $text; }
 dialog button, messagedialog button { background: $bar; color: $text; border: 1px solid $line; border-radius: 8px;
@@ -885,6 +891,15 @@ NETS_DIR = os.path.expanduser("~/.local/share/emcomm/nets")
 ICS_CMD = os.environ.get("EMCOMM_ICS", "emcomm-ics")
 
 
+# ICS-213 messages: flmsg's files, shown on FEMA's form (emcomm-ics fills in the PDF).
+def ics213_messages():
+    try:
+        result = subprocess.run([ICS_CMD, "213", "--list"], capture_output=True, text=True, timeout=20, check=False)
+        return json.loads(result.stdout) if result.returncode == 0 else []
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+
+
 def open_net():
     """(path, net) of the net that's open, or (None, None)."""
     for path in sorted(glob.glob(os.path.join(NETS_DIR, "*.json")), reverse=True):
@@ -1063,6 +1078,7 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._wifi_page(), "wifi")
         self.stack.add_named(self._online_page(), "online")
         self.stack.add_named(self._net_page(), "net")
+        self.stack.add_named(self._ics213_page(), "ics213")
         self.stack.add_named(self._recorder_page(), "recorder")
         root.pack_start(self.stack, True, True, 0)
 
@@ -1186,10 +1202,10 @@ class Launcher(Gtk.Window):
 
     def _on_key(self, _widget, event):
         """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online,
-        F8 Net control, 1-9 open a tile on Home."""
+        F8 Net control, F9 ICS-213 messages, 1-9 open a tile on Home."""
         pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home", Gdk.KEY_F2: "diagnostics",
                  Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs", Gdk.KEY_F5: "reference", Gdk.KEY_F6: "wifi",
-                 Gdk.KEY_F7: "online", Gdk.KEY_F8: "net"}
+                 Gdk.KEY_F7: "online", Gdk.KEY_F8: "net", Gdk.KEY_F9: "ics213"}
         if event.keyval in pages:
             self.stack.set_visible_child_name(pages[event.keyval])
             return True
@@ -2130,6 +2146,8 @@ class Launcher(Gtk.Window):
         header.pack_start(self.log_combo, False, False, 0)
         header.pack_end(self._navbtn("Net control  F8", lambda *_: self.stack.set_visible_child_name("net"),
                                      "primary"), False, False, 0)
+        header.pack_end(self._navbtn("ICS-213  F9", lambda *_: self.stack.set_visible_child_name("ics213")),
+                        False, False, 0)
         header.pack_end(self._navbtn("Recorder", lambda *_: self.stack.set_visible_child_name("recorder")),
                         False, False, 0)
         header.pack_end(self._navbtn("Refresh", lambda *_: self._show_log()), False, False, 0)
@@ -2355,6 +2373,181 @@ class Launcher(Gtk.Window):
         self.ncs_status.set_text(f"Saved to {path.replace(os.path.expanduser('~'), '~')}")
         if shutil.which("emcomm-webview"):
             run_detached(["emcomm-webview", "--print", GLib.filename_to_uri(path, None), title])
+
+    # ---- ICS-213 messages ------------------------------------------------
+
+    def _ics213_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Logs", lambda *_: self.stack.set_visible_child_name("logs")),
+                          False, False, 0)
+        title = Gtk.Label(label="ICS-213 messages", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        self.f213_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.f213_status.get_style_context().add_class("muted")
+        header.pack_start(self.f213_status, True, True, 0)
+        header.pack_end(self._navbtn("New message", self._ics213_new, "primary"), False, False, 0)
+        self.f213_open_btn = self._navbtn("Reply or edit in flmsg", self._ics213_edit)
+        self.f213_print_btn = self._navbtn("Print", self._ics213_print)
+        header.pack_end(self.f213_open_btn, False, False, 0)
+        header.pack_end(self.f213_print_btn, False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True)
+        self.f213_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.BROWSE)
+        self.f213_list.connect("row-selected", self._ics213_selected)
+        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroller.set_size_request(300, -1)
+        scroller.add(self.f213_list)
+        paned.pack1(scroller, False, False)
+        self.f213_form = Gtk.DrawingArea()
+        self.f213_form.connect("draw", self._ics213_draw)
+        self.f213_form.connect("size-allocate", lambda *_: self._ics213_fit())
+        self.f213_scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.f213_scroller.add(self.f213_form)
+        paned.pack2(self.f213_scroller, True, False)
+        page.pack_start(paned, True, True, 0)
+
+        self.f213_listed, self.f213_doc, self.f213_path = None, None, None
+        page.connect("map", lambda *_: self._ics213_tick(page))
+        return page
+
+    def _ics213_tick(self, page):
+        """While the page shows, look for new or changed messages every few seconds."""
+        if not page.get_mapped():
+            self.f213_ticking = False
+            return False
+        found = ics213_messages()
+        stamp = [(m["path"], m["modified"]) for m in found]
+        if stamp != self.f213_listed:
+            self.f213_listed = stamp
+            self._ics213_fill(found)
+        if not getattr(self, "f213_ticking", False):
+            self.f213_ticking = True
+            GLib.timeout_add_seconds(4, self._ics213_tick, page)
+        return True
+
+    def _ics213_fill(self, found):
+        keep = self.f213_path
+        for child in self.f213_list.get_children():
+            self.f213_list.remove(child)
+        for message in found:
+            row = Gtk.ListBoxRow()
+            row.message = message
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin=8)
+            subject = Gtk.Label(label=message["subject"] or "(no subject)", xalign=0,
+                                ellipsize=Pango.EllipsizeMode.END)
+            subject.get_style_context().add_class("tile-name")
+            other = message["from"] if message["folder"] == "Received" else message["to"]
+            detail = " · ".join(filter(None, [message["folder"], ("from " if message["folder"] == "Received" else "to ")
+                                              + other if other else "", message["date"], message["time"]]))
+            note = Gtk.Label(label=detail, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            note.get_style_context().add_class("tile-detail")
+            box.pack_start(subject, False, False, 0)
+            box.pack_start(note, False, False, 0)
+            row.add(box)
+            self.f213_list.add(row)
+        self.f213_list.show_all()
+        if not found:
+            self._ics213_show(None)
+            self.f213_status.set_text("No messages yet. Tap New message to write one in flmsg; "
+                                      "messages fldigi receives show here too.")
+            return
+        rows = self.f213_list.get_children()
+        pick = next((r for r in rows if r.message["path"] == keep), rows[0])
+        if pick.message["path"] == keep:
+            self.f213_path = None  # the file may have changed: fill in the form again
+        self.f213_list.select_row(pick)
+
+    def _ics213_selected(self, _listbox, row):
+        if row is not None and row.message["path"] != self.f213_path:
+            self._ics213_show(row.message["path"])
+
+    def _ics213_show(self, path):
+        """Fill FEMA's form from the flmsg file and draw it."""
+        self.f213_path, self.f213_doc = path, None
+        if path:
+            try:
+                result = subprocess.run([ICS_CMD, "213", path], capture_output=True, text=True,
+                                        timeout=30, check=False)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                result = None
+                self.f213_status.set_text(f"Couldn't fill in the form: {exc}")
+            if result is not None and result.returncode != 0:
+                self.f213_status.set_text(result.stderr.strip().splitlines()[-1] if result.stderr.strip()
+                                          else "Couldn't fill in the form.")
+            elif result is not None:
+                pdf = result.stdout.strip().splitlines()[-1]
+                self.f213_status.set_text(f"Saved as {pdf.replace(os.path.expanduser('~'), '~')}")
+                if Poppler is None:
+                    self.f213_status.set_text("Can't show the form: gir1.2-poppler-0.18 is missing. "
+                                              "Run Update station.")
+                else:
+                    try:
+                        self.f213_doc = Poppler.Document.new_from_file(GLib.filename_to_uri(pdf, None), None)
+                    except GLib.Error as exc:
+                        self.f213_status.set_text(f"Couldn't open the form: {exc.message}")
+        for btn in (self.f213_print_btn, self.f213_open_btn):
+            btn.set_sensitive(self.f213_doc is not None)
+        self._ics213_fit()
+        self.f213_form.queue_draw()
+
+    def _ics213_fit(self):
+        """Size the form to the width of its pane; it scrolls up and down."""
+        if not self.f213_doc:
+            self.f213_form.set_size_request(-1, -1)
+            return
+        width_pt, height_pt = self.f213_doc.get_page(0).get_size()
+        width = self.f213_scroller.get_allocated_width()
+        height = int(width * height_pt / width_pt)
+        if self.f213_form.get_size_request()[1] != height:
+            self.f213_form.set_size_request(-1, height)
+
+    def _ics213_draw(self, widget, cr):
+        if not self.f213_doc:
+            return False
+        page = self.f213_doc.get_page(0)
+        width_pt, _height_pt = page.get_size()
+        scale = widget.get_allocated_width() / width_pt
+        cr.set_source_rgb(1, 1, 1)
+        cr.paint()
+        cr.scale(scale, scale)
+        page.render(cr)
+        return False
+
+    def _ics213_print(self, *_):
+        if not self.f213_doc:
+            return
+        doc = self.f213_doc
+
+        def draw_page(_op, context, _number):
+            page = doc.get_page(0)
+            width_pt, _height_pt = page.get_size()
+            cr = context.get_cairo_context()
+            scale = context.get_width() / width_pt
+            cr.scale(scale, scale)
+            page.render_for_printing(cr)
+
+        op = Gtk.PrintOperation(n_pages=1, use_full_page=False, job_name="ICS-213")
+        op.connect("draw-page", draw_page)
+        try:
+            op.run(Gtk.PrintOperationAction.PRINT_DIALOG, self)
+        except GLib.Error as exc:
+            self.f213_status.set_text(f"Couldn't print: {exc.message}")
+
+    def _ics213_edit(self, *_):
+        if self.f213_path and shutil.which("flmsg"):
+            run_detached(["flmsg", self.f213_path])
+
+    def _ics213_new(self, *_):
+        """Open flmsg, as its Home tile does (bringing it forward if it's already open)."""
+        for tile in self.tiles:
+            if tile.app.get("app") == "flmsg":
+                tile.clicked()
+                return
+        if shutil.which("flmsg"):
+            run_detached(["flmsg"])
 
     # ---- receive audio recorder ----------------------------------------
 

@@ -45,7 +45,7 @@ environment.
   when you're done typing.
 - **Launcher:** the home screen above. Works by touch, mouse or keyboard: Tab moves
   between buttons, 1–9 open tiles, Esc/F1 goes Home, F2 Diagnostics, F3 Settings,
-  F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control. A tile for an app that isn't installed says "tap to install". To use
+  F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control, F9 ICS-213 messages. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
   icon" puts it back. **Display** in Settings sets the colours (dark, or light for
@@ -81,6 +81,12 @@ environment.
   assignment). Both are saved in `~/ICS forms` and open with a **Print** button;
   the print dialog can also save a PDF to a USB stick. Nets are kept in
   `~/.local/share/emcomm/nets`.
+- **ICS-213 messages** (F9, or the button on Logs): every ICS-213 in flmsg, the
+  ones you wrote and the ones fldigi received, shown on FEMA's own General Message
+  form (ICS 213), the same layout as the paper form. Pick one on the left to see
+  it; **Print** prints it (or saves a PDF), **Reply or edit in flmsg** opens it in
+  flmsg to fill in the reply, and **New message** opens flmsg to write one. The
+  filled-in form is also saved as a PDF in `~/ICS forms`.
 - **Recorder** (on the Logs page): records the radio's receive audio to
   `~/Recordings`, each file named with the UTC time, frequency and mode. **Record
   when there's a signal** keeps only the parts with audio, so a frequency can be

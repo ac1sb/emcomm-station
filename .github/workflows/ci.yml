@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install checkers
-        run: pip install ansible-core ansible-lint shellcheck-py pyyaml
+        run: pip install ansible-core ansible-lint shellcheck-py pyyaml pypdf
       - name: Playbook syntax
         run: ansible-playbook site.yml --syntax-check
       - name: Ansible lint

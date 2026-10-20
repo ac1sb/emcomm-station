@@ -3,18 +3,27 @@
 
   emcomm-ics 309 NET.json [OUT.html]          Communications Log for a net
   emcomm-ics 205 [--incident NAME] [OUT.html] Radio Communications Plan from My frequencies
+  emcomm-ics 213 MSG.213 [OUT.pdf]            General Message from an flmsg file, on FEMA's form
+  emcomm-ics 213 --list                       flmsg's ICS-213 messages, newest first, as JSON
 
 The launcher's Net control page keeps each net as a JSON file:
   {"name", "incident", "operator", "callsign", "started", "closed",
    "entries": [{"time", "from", "to", "message"}]}
 with times in seconds since 1970 (UTC). Without OUT.html the page is written to
 ~/ICS forms/ and its path printed.
+
+The ICS 213 is filled into FEMA's own fillable PDF (/usr/share/emcomm/forms/ics213.pdf),
+so it looks like the paper form on screen and in print. flmsg keeps the messages
+you write in ~/.nbems/ICS/messages and the ones fldigi receives in ~/.nbems/WRAP/recv.
 """
 
 import csv
+import glob
 import html
 import json
+import math
 import os
+import re
 import sys
 import time
 
@@ -22,6 +31,9 @@ FORMS_DIR = os.path.expanduser("~/ICS forms")
 STATION = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 REFERENCE_DIR = os.environ.get("EMCOMM_REFERENCE", "/usr/share/emcomm/reference")
 MY_FREQS = os.path.join(os.path.expanduser("~/.local/share/emcomm/reference"), "My frequencies.csv")
+FORMS_PDF_DIR = os.environ.get("EMCOMM_FORMS", "/usr/share/emcomm/forms")
+FLMSG_DIRS = (("Sent", os.path.expanduser("~/.nbems/ICS/messages")),
+              ("Received", os.path.expanduser("~/.nbems/WRAP/recv")))
 ROWS_309 = 30   # rows per printed page, as on the paper form
 ROWS_205 = 16
 
@@ -160,6 +172,132 @@ def ics205(rows, incident="", prepared_by="", now=None):
     return document(f"ICS 205 {incident}", out)
 
 
+# flmsg's ICS-213 fields (src/ics/ics213.cxx) and the FEMA form fields they fill.
+FIELD_RE = re.compile(rb"\s*:(\w+):(\d+) ")
+FIELDS_213 = {
+    "1 Incident Name Optional": ("inc",),
+    "2 To Name and Position": ("to", "p1"),
+    "3 From Name and Position": ("fm", "p2"),
+    "4 Subject": ("sb",),
+    "5 Date": ("d1",),
+    "6 Time": ("t1",),
+    "7 Message": ("mg",),
+    "8 Approved by Name": ("s1",),
+    "PositionTitle_13": ("p3",),
+    "9 Reply": ("rp",),
+    "10 Replied by Name": ("s2",),
+    "PositionTitle_14": ("p4",),
+    "DateTime_14": ("d2", "t2"),
+}
+LONG_FIELDS = {"7 Message", "9 Reply"}  # text shrinks to fit these boxes
+
+
+def parse_flmsg(data):
+    """The fields of an flmsg ICS-213 file (bytes), e.g. {"to": ..., "mg": ...}.
+    Each field is written ":key:LENGTH value" with LENGTH in bytes; a file fldigi
+    received may still be in its [WRAP:...] envelope."""
+    start = data.find(b"<ics213>")
+    if data.find(b"<flmsg>") < 0 or start < 0:
+        raise ValueError("not an flmsg ICS-213 message")
+    fields, pos = {}, start + len(b"<ics213>")
+    while True:
+        m = FIELD_RE.match(data, pos)
+        if not m:
+            break
+        end = m.end() + int(m.group(2))
+        fields[m.group(1).decode()] = data[m.end():end].decode("utf-8", "replace").replace("\r\n", "\n")
+        pos = end
+    return fields
+
+
+def form_values(fields):
+    """FEMA form field name -> text, from flmsg fields."""
+    joiners = {"DateTime_14": " "}
+    values = {}
+    for name, keys in FIELDS_213.items():
+        text = joiners.get(name, ", ").join(fields[k].strip() for k in keys if fields.get(k, "").strip())
+        if text:
+            values[name] = text
+    return values
+
+
+def font_size(text, width, height, sizes=(10, 9, 8, 7, 6)):
+    """The largest font size (points) at which text roughly fits a box of width x height points."""
+    for size in sizes:
+        per_line = max(1, int(width / (0.5 * size)))  # Helvetica averages about half an em a character
+        lines = sum(max(1, math.ceil(len(line) / per_line)) for line in text.split("\n"))
+        if lines * size * 1.17 <= height:
+            return size
+    return sizes[-1]
+
+
+def ics213_pdf(fields, template, out):
+    """Fill FEMA's ICS 213 PDF with flmsg fields and write it to out."""
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import BooleanObject, NameObject, TextStringObject
+
+    values = form_values(fields)
+    writer = PdfWriter(clone_from=PdfReader(template))
+    annots = writer.pages[0].get("/Annots")
+    for annot in annots.get_object() if annots else []:
+        widget = annot.get_object()
+        name = widget.get("/T")
+        if name not in values:
+            continue
+        widget[NameObject("/V")] = TextStringObject(values[name])
+        widget.pop("/AP", None)  # the viewer draws the text, wrapping long lines
+        if name in LONG_FIELDS:
+            x1, y1, x2, y2 = (float(v) for v in widget["/Rect"])
+            size = font_size(values[name], x2 - x1 - 4, y2 - y1 - 4)
+            widget[NameObject("/DA")] = TextStringObject(f"/Helv {size} Tf 0 g")
+    writer._root_object["/AcroForm"][NameObject("/NeedAppearances")] = BooleanObject(True)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    with open(out + ".tmp", "wb") as f:
+        writer.write(f)
+    os.replace(out + ".tmp", out)
+    print(out)
+
+
+def list_213(dirs=FLMSG_DIRS):
+    """flmsg's ICS-213 messages, newest first."""
+    found = []
+    for folder, path in dirs:
+        for name in glob.glob(os.path.join(path, "*.213")):
+            try:
+                with open(name, "rb") as f:
+                    fields = parse_flmsg(f.read())
+                mtime = os.path.getmtime(name)
+            except (OSError, ValueError):
+                continue
+            found.append({"path": name, "folder": folder, "modified": int(mtime),
+                          "subject": fields.get("sb", ""), "from": fields.get("fm", ""),
+                          "to": fields.get("to", ""), "date": fields.get("d1", ""), "time": fields.get("t1", "")})
+    return sorted(found, key=lambda m: m["modified"], reverse=True)
+
+
+def main_213(args):
+    if args == ["--list"]:
+        print(json.dumps(list_213()))
+        return 0
+    if not args:
+        print("emcomm-ics 213 MSG.213 [OUT.pdf]", file=sys.stderr)
+        return 2
+    try:
+        with open(args[0], "rb") as f:
+            fields = parse_flmsg(f.read())
+    except (OSError, ValueError) as exc:
+        print(f"Couldn't read {os.path.basename(args[0])}: {exc}", file=sys.stderr)
+        return 1
+    stem = os.path.splitext(os.path.basename(args[0]))[0]
+    out = args[1] if len(args) > 1 else os.path.join(FORMS_DIR, f"ICS-213 {safe_name(stem)}.pdf")
+    try:
+        ics213_pdf(fields, os.path.join(FORMS_PDF_DIR, "ics213.pdf"), out)
+    except ImportError:
+        print("The ICS-213 form needs python3-pypdf: run Update station.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def safe_name(text):
     return "".join(c if c.isalnum() or c in " -_" else "-" for c in text).strip() or "form"
 
@@ -172,9 +310,11 @@ def write_out(text, path):
 
 
 def main(argv):
-    if not argv or argv[0] not in ("309", "205"):
+    if not argv or argv[0] not in ("309", "205", "213"):
         print(__doc__.strip(), file=sys.stderr)
         return 2
+    if argv[0] == "213":
+        return main_213(argv[1:])
     try:
         with open(STATION, encoding="utf-8") as f:
             station = json.load(f)
