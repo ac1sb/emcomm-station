@@ -2102,16 +2102,50 @@ class Launcher(Gtk.Window):
                 self._arrange_show(f"The {btn.name} folder is full.")
                 return
             picked, self.picked = self.picked, None
-            if picked in self.slots:
-                self.slots.remove(picked)
-            else:
-                self._take_from_folder(picked)
-            btn.members.append(picked)
-            self._folder_changed(btn)
-            self._lay_out_tiles()
+            self._move_into_folder(picked, btn)
             self._arrange_show()
         else:
             self._arrange_tap(btn)
+
+    def _move_into_folder(self, tile, folder):
+        if tile in self.slots:
+            self.slots.remove(tile)
+        else:
+            self._take_from_folder(tile)
+        folder.members.append(tile)
+        self._folder_changed(folder)
+        self._lay_out_tiles()
+        self._save_tiles()
+
+    def _folder_of(self, tile):
+        return next((f for f in self.folder_tiles if tile in f.members), None)
+
+    def _menu_take_out(self, tile):
+        """From the long-press menu: put the app on Home just after its folder."""
+        folder = self._folder_of(tile)
+        if folder is None:
+            return
+        self._take_from_folder(tile)
+        self.slots.insert(self.slots.index(folder) + 1, tile)
+        self._lay_out_tiles()
+        self._save_tiles()
+
+    def _menu_new_folder(self, tile):
+        """From the long-press menu: a new folder holding this app, where the app was."""
+        name = self._ask_name("Name the new folder", "Folder")
+        if not name:
+            return
+        folder = self._folder_tile(name, [])
+        old = self._folder_of(tile)
+        if tile in self.slots:
+            self.slots[self.slots.index(tile)] = folder
+        else:
+            self._take_from_folder(tile)
+            self.slots.insert(self.slots.index(old) + 1 if old in self.slots else len(self.slots), folder)
+        folder.members.append(tile)
+        self._update_folder_tile(folder)
+        self._lay_out_tiles()
+        self._save_tiles()
 
     def _take_from_folder(self, tile):
         for folder in self.folder_tiles:
@@ -2547,6 +2581,26 @@ class Launcher(Gtk.Window):
                 standard = Gtk.MenuItem(label=f"Use the standard name ({btn.app['standard_name']})")
                 standard.connect("activate", lambda *_: self._set_tile_name(btn, None))
                 menu.append(standard)
+        if btn.kind == "app":
+            here = self._folder_of(btn)
+            move = Gtk.MenuItem(label=f"Move {btn.app['name']} to a folder")
+            folders = Gtk.Menu()
+            for folder in self.folder_tiles:
+                if folder is here or folder not in self.slots:
+                    continue
+                item = Gtk.MenuItem(label=folder.name + ("  (full)" if len(folder.members) >= FOLDER_MAX else ""))
+                item.set_sensitive(len(folder.members) < FOLDER_MAX)
+                item.connect("activate", lambda _i, f=folder: self._move_into_folder(btn, f))
+                folders.append(item)
+            new_folder = Gtk.MenuItem(label="New folder…")
+            new_folder.connect("activate", lambda *_: self._menu_new_folder(btn))
+            folders.append(new_folder)
+            move.set_submenu(folders)
+            menu.append(move)
+            if here is not None:
+                out = Gtk.MenuItem(label=f"Take {btn.app['name']} out of {here.name}")
+                out.connect("activate", lambda *_: self._menu_take_out(btn))
+                menu.append(out)
         if btn.kind == "app" and btn.app.get("icon"):
             change = Gtk.MenuItem(label=f"Change {btn.app['name']} icon…")
             change.connect("activate", lambda *_: self._choose_icon(btn))
