@@ -2105,6 +2105,9 @@ class Launcher(Gtk.Window):
             self._arrange_tap(btn)
             return
         app = btn.app
+        if app.get("page"):  # a part of the launcher, not a separate app
+            {"nwr": self._edit_nwr}.get(app["page"], lambda: None)()
+            return
         if btn.app_state != "missing":
             # Already open: bring it to the front rather than start a second copy.
             for win in open_windows():
@@ -2201,7 +2204,6 @@ class Launcher(Gtk.Window):
             ("DSP", "Display", "Theme, resolution, text size", self._display_dialog),
             ("NET", "Wi-Fi", "Networks and the internet", show("wifi")),
             ("KEY", "Accounts", "QRZ, HamQTH, aprs.fi, email", self._edit_accounts),
-            ("NWR", "Weather radio", "NOAA alerts receiver", self._edit_nwr),
             ("BAK", "Backup", "Save to or restore from USB", self._backup_dialog),
             ("UPD", "Update station", "Latest Emcomm-CNC and apps", self._update_station),
             ("DIA", "Diagnostics", "Check the radio's connections", show("diagnostics")),

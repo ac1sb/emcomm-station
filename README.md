@@ -12,7 +12,7 @@ environment.
 
 - **Base system:** a `radio` user, SSH for remote troubleshooting, PipeWire audio.
 - **Settings screen:** a page of large tiles: User (callsign and grid), Radio,
-  Devices (GPS, and what's plugged in), Display, Wi-Fi, Accounts, Weather radio,
+  Devices (GPS, and what's plugged in), Display, Wi-Fi, Accounts,
   Backup, Update station, Diagnostics, Power and Home tiles. User opens
   automatically on first boot. Any radio Hamlib supports can be picked by
   manufacturer and model; the CAT port, PTT port and sound card are picked from the
@@ -163,8 +163,9 @@ environment.
     propagation and PSKReporter need no account. QRZ gives full records only to
     XML Logbook Data subscribers.
 - **NOAA Weather Radio alerts, no internet needed:** plug in an RTL-SDR dongle
-  (any RTL2832U stick, about $30) with an antenna for 162 MHz, then on the Online
-  page's Weather alerts tap **Set up** next to NOAA Weather Radio, pick your
+  (any RTL2832U stick, about $30) with an antenna for 162 MHz, then tap the
+  **NOAA alerts** tile on Home (or **Set up** next to NOAA Weather Radio on the
+  Online page's Weather alerts), pick your
   nearest transmitter's channel (weather.gov/nwr lists them), then pick a state
   and county and tap **Add county** for each county you want alerts for. Every
   US county, parish and territory district is listed; a code for part of a
