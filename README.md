@@ -291,7 +291,12 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   The weather radio alert listener uses the first RTL-SDR: while the Scanner or
   Gqrx has that dongle, alerts pause (the Online page says so) and resume when it
   closes; with a second receiver plugged in, the Scanner uses that instead.
-  Settings > Devices lists the SDR receivers plugged in.
+  Settings > Devices lists the SDR receivers plugged in. With no receiver
+  plugged in, the Gqrx tile still opens Gqrx: **Practice signal** plays a
+  made-up recording around 146.5 MHz (an FM signal on 146.520, Morse code and a
+  carrier) to learn it with, and **Network receiver** uses an RTL-SDR on another
+  computer shared with `rtl_tcp -a 0.0.0.0` (type its address; it's remembered).
+  Press Gqrx's ▶ button to start.
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 

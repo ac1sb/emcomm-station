@@ -172,12 +172,18 @@ case "${1:-}" in
     # RTL-SDR that can also do HF by direct sampling, it asks which. Each choice
     # keeps its own Gqrx settings (~/.config/gqrx/KEY.conf). The weather radio
     # listener uses the first RTL-SDR and lets go of it while sdr.json names a
-    # running app.
+    # running app. With no receiver it offers a practice recording or an RTL-SDR
+    # shared over the network (rtl_tcp).
     choice=$(emcomm-scanner --pick-receiver 2>/dev/null) || exit 0
     IFS=$'\t' read -r key device rate start rtl_index <<< "$choice"
     mkdir -p "$HOME/.config/gqrx"
     conf="$HOME/.config/gqrx/$key.conf"
-    if [ ! -f "$conf" ]; then
+    if [ "$key" = practice ]; then
+      # The recording knows nothing of tuning, so Gqrx starts on its centre each
+      # time (or the frequencies shown would be off), on the FM signal there.
+      printf '[General]\nconfigversion=4\ncrashed=false\n\n[input]\ndevice="%s"\nsample_rate=%s\nfrequency=%s\n\n[receiver]\ndemod=Narrow FM\noffset=20000\n' \
+        "$device" "$rate" "$start" > "$conf"
+    elif [ ! -f "$conf" ]; then
       printf '[General]\nconfigversion=4\ncrashed=false\n\n[input]\ndevice="%s"\nsample_rate=%s\nfrequency=%s\n' \
         "$device" "$rate" "$start" > "$conf"
     else
