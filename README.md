@@ -99,6 +99,14 @@ environment.
     `~/.config/emcomm/accounts.json`, readable only by the station user. Alerts,
     propagation and PSKReporter need no account. QRZ gives full records only to
     XML Logbook Data subscribers.
+- **NOAA Weather Radio alerts, no internet needed:** plug in an RTL-SDR dongle
+  (any RTL2832U stick, about $30) with an antenna for 162 MHz, then on the Online
+  page's Weather alerts tap **Set up** next to NOAA Weather Radio and pick your
+  nearest transmitter's channel and your counties' SAME codes (both listed at
+  weather.gov/nwr). The station decodes the SAME burst at the start of every
+  alert: alerts for your counties join the internet ones in the list and the top
+  bar, and warnings pop up on screen. The weekly test is noted but not shown as an
+  alert, so you can see the receiver is working.
 - **Browser** (tile): Chromium, with a Ham radio bookmarks bar (World Radio League,
   QRZ, PSKReporter, aprs.fi, RepeaterBook, NWS, space weather, Winlink, WebSDR,
   LoTW). The list is `apps_browser_bookmarks` in `roles/apps/defaults/main.yml`.

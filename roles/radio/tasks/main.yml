@@ -92,6 +92,41 @@
     mode: "0644"
   notify: Restart chrony
 
+# NOAA Weather Radio alerts with no internet: an RTL-SDR dongle on 162 MHz, decoded
+# by multimon-ng. The service waits quietly until a channel is picked on the
+# Online page and a dongle is plugged in.
+- name: Install the RTL-SDR tools and the SAME decoder
+  ansible.builtin.apt:
+    name: [rtl-sdr, multimon-ng]
+    install_recommends: false
+
+- name: Keep the TV-tuner driver off the RTL-SDR dongle
+  ansible.builtin.copy:
+    content: "# Managed by the emcomm-station playbook.\nblacklist dvb_usb_rtl28xxu\n"
+    dest: /etc/modprobe.d/emcomm-rtl-sdr.conf
+    mode: "0644"
+
+- name: Install the weather radio listener
+  ansible.builtin.copy:
+    src: emcomm-nwr
+    dest: /usr/local/bin/emcomm-nwr
+    mode: "0755"
+  notify: Restart emcomm-nwr
+
+- name: Install the weather radio service
+  ansible.builtin.template:
+    src: emcomm-nwr.service.j2
+    dest: /etc/systemd/system/emcomm-nwr.service
+    mode: "0644"
+  notify: Restart emcomm-nwr
+
+- name: Run the weather radio listener
+  ansible.builtin.systemd:
+    name: emcomm-nwr
+    enabled: true
+    state: started
+    daemon_reload: true
+
 - name: Apply the current settings (udev rules, rigctld arguments)
   ansible.builtin.command: /usr/local/sbin/emcomm-apply-settings
   changed_when: false

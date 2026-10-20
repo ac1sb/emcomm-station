@@ -626,6 +626,17 @@ def iso_epoch(text):
         return None
 
 
+NWR_CONFIG = os.path.expanduser("~/.config/emcomm/nwr.json")
+NWR_CHANNELS = ["162.400", "162.425", "162.450", "162.475", "162.500", "162.525", "162.550"]
+
+
+def all_alerts(now=None):
+    """Weather alerts in force, from the internet (NWS) and from the weather radio, worst first."""
+    alerts = active_alerts(online_record("alerts"), now) + active_alerts(online_record("nwr"), now)
+    rank = {"Extreme": 0, "Severe": 1, "Moderate": 2, "Minor": 3}
+    return sorted(alerts, key=lambda a: (rank.get(a.get("severity"), 4), a.get("ends", "")))
+
+
 def active_alerts(record, now=None):
     """Saved weather alerts that haven't ended yet."""
     now = now or time.time()
@@ -773,6 +784,7 @@ class Launcher(Gtk.Window):
         self._filling = False
         self.default_audio_card = None
         self.net_connected = False
+        self.nwr_shown = set()
         self.css_provider = None
         self._apply_theme(load_theme())
         self.set_default_size(1024, 600)
@@ -950,6 +962,7 @@ class Launcher(Gtk.Window):
             self.net_status.set_markup(f"{dot}  {GLib.markup_escape_text(net[0])}")
         self.net_connected = bool(net and net[1])
         self._show_gps(gps)
+        self._check_radio_alerts()
         self.net_status.set_visible(bool(net))
         self._refresh_tiles()
         return False
@@ -1953,7 +1966,7 @@ class Launcher(Gtk.Window):
         return True
 
     def _update_alert_badge(self):
-        alerts = active_alerts(online_record("alerts"))
+        alerts = all_alerts()
         if alerts:
             plural = "s" if len(alerts) > 1 else ""
             self.alert_status.set_markup(f"<span foreground='{self.colours['danger']}'>▲</span>  "
@@ -2012,13 +2025,13 @@ class Launcher(Gtk.Window):
 
     def _online_alerts(self):
         record = online_record("alerts")
-        alerts = active_alerts(record)
+        alerts = all_alerts()
         grid = self.station.get("grid", "?")
         status = record_status(record, f"Weather alerts for grid {grid} from the National Weather Service (US only)")
-        if record.get("updated") and not alerts:
+        if (record.get("updated") or online_record("nwr").get("listening")) and not alerts:
             status = "No weather alerts in force. " + status
         self.online_status.set_text(status)
-        rows = []
+        rows = [self._nwr_row()]
         for alert in alerts:
             ends = iso_epoch(alert.get("ends", ""))
             until = f"until {time.strftime('%a %H:%M', time.localtime(ends))}" if ends else ""
@@ -2157,6 +2170,91 @@ class Launcher(Gtk.Window):
         if self.online_combo.get_active_id() == "lookup":
             self._online_lookup()
         return False
+
+    def _nwr_row(self):
+        """The weather radio's state, first in the alerts list, with its Set up button."""
+        record, config = online_record("nwr"), read_json(NWR_CONFIG, {})
+        if record.get("listening") and not record.get("error"):
+            colour, lead = self.colours["ok"], "Listening"
+            detail = [f"{record['listening']:.3f} MHz",
+                      "your counties " + " ".join(config.get("codes") or []) if config.get("codes")
+                      else "every county it hears"]
+            test = record.get("last_test")
+            detail.append(f"{test['event']} heard {ago(test['time'])}" if test else "no weekly test heard yet")
+        else:
+            colour, lead = self.colours["muted"], "Off"
+            detail = [record.get("error") or "Receives alerts with no internet, using an RTL-SDR dongle."]
+        return self._info_row(lead, "NOAA Weather Radio", " · ".join(detail), [("Set up", self._edit_nwr)], colour)
+
+    def _edit_nwr(self, *_):
+        config = read_json(NWR_CONFIG, {})
+        dialog = Gtk.Dialog(title="NOAA Weather Radio", transient_for=self, modal=True)
+        dialog.set_default_size(760, -1)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        channel = Gtk.ComboBoxText()
+        channel.append("", "Off")
+        for mhz in NWR_CHANNELS:
+            channel.append(mhz, f"{mhz} MHz")
+        channel.set_active_id(f"{config['freq']:.3f}" if isinstance(config.get("freq"), (int, float)) else "")
+        codes = Gtk.Entry(placeholder_text="e.g. 025017 025021 (blank keeps every alert heard)")
+        codes.set_text(" ".join(config.get("codes") or []))
+        grid = Gtk.Grid(column_spacing=16, row_spacing=10, column_homogeneous=True)
+        grid.attach(self._field("Channel (your nearest transmitter)", channel), 0, 0, 1, 1)
+        grid.attach(self._field("County SAME codes", codes), 1, 0, 1, 1)
+        box.pack_start(grid, False, False, 0)
+        hint = Gtk.Label(xalign=0, wrap=True, label=(
+            "Plug an RTL-SDR dongle with a 162 MHz antenna into the station. The channel and county codes "
+            "for your area are listed at weather.gov/nwr (Station listing and County coverage); the code is "
+            "0 plus the county's 5-digit FIPS number. Alerts for your counties show here and in the top bar "
+            "with no internet, and warnings pop up on screen."))
+        hint.set_max_width_chars(90)
+        hint.get_style_context().add_class("muted")
+        box.pack_start(hint, False, False, 0)
+        message = Gtk.Label(xalign=0)
+        message.get_style_context().add_class("error")
+        box.pack_start(message, False, False, 0)
+        dialog.get_content_area().add(box)
+        dialog.show_all()
+        while True:
+            response = dialog.run()
+            wanted = codes.get_text().replace(",", " ").split()
+            if response != Gtk.ResponseType.OK or all(re.fullmatch(r"\d{6}", c) for c in wanted):
+                break
+            message.set_text("County codes are 6 digits each, such as 025017.")
+        freq = channel.get_active_id()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        config.update(freq=float(freq) if freq else None, codes=wanted)
+        os.makedirs(os.path.dirname(NWR_CONFIG), exist_ok=True)
+        with open(NWR_CONFIG + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=1)
+        os.replace(NWR_CONFIG + ".tmp", NWR_CONFIG)
+        self._show_online()
+
+    def _check_radio_alerts(self):
+        """Pop up a warning the weather radio has just heard, since nobody may be looking at the top bar."""
+        record = online_record("nwr")
+        if record.get("updated") == getattr(self, "nwr_seen", None):
+            return
+        self.nwr_seen = record.get("updated")
+        self._update_alert_badge()
+        for alert in active_alerts(record):
+            key = (alert.get("code"), alert.get("starts"))
+            if alert.get("severity") in ("Extreme", "Severe") and key not in self.nwr_shown:
+                self.nwr_shown.add(key)
+                ends = iso_epoch(alert.get("ends", ""))
+                until = f" until {time.strftime('%H:%M', time.localtime(ends))}" if ends else ""
+                dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                                           text=f"{alert['event']}{until}",
+                                           secondary_text=f"{alert['headline']}\n{alert['area']}\n"
+                                                          f"Heard on {alert['sender']}.")
+                dialog.add_buttons("Show alerts", 1, "OK", Gtk.ResponseType.OK)
+                self.present()
+                if dialog.run() == 1:
+                    self._open_online("alerts")
+                dialog.destroy()
 
     def _edit_accounts(self, *_):
         acc = read_json(ACCOUNTS_PATH, {})
