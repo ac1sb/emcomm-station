@@ -72,9 +72,9 @@ case "${1:-}" in
     exec xterm "${TERM_OPTS[@]}" -T "Packet (Direwolf)" -e direwolf -c "$conf"
     ;;
   ardop)
-    # Pat keys the radio through rigctld, so ardopcf only needs the sound card.
-    exec xterm "${TERM_OPTS[@]}" -T "ARDOP modem" -e ardopcf --logdir "$STATE" \
-      8515 plughw:CARD=rigaudio,DEV=0 plughw:CARD=rigaudio,DEV=0
+    # Pat keys the radio through rigctld, so ardopcf only needs the sound card,
+    # reached through PipeWire so other apps can share it.
+    exec xterm "${TERM_OPTS[@]}" -T "ARDOP modem" -e ardopcf --logdir "$STATE" 8515 pipewire pipewire
     ;;
   aprs)
     # Xastir sends and hears APRS through Direwolf. Start Direwolf for it unless

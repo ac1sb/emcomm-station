@@ -22,7 +22,10 @@ import sys
 STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 HOME = os.path.expanduser("~")
 RIGCTLD = "127.0.0.1:4532"
-RIG_AUDIO = "plughw:CARD=rigaudio,DEV=0"
+# The radio's sound card through PipeWire, which emcomm-audio-default makes the
+# default, so Direwolf can share it with JS8Call, fldigi and the recorder.
+# Opening the card directly (plughw:CARD=rigaudio) would lock the others out.
+RIG_AUDIO = "pipewire"
 
 
 def load_station():

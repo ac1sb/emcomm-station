@@ -66,7 +66,7 @@ class AppSetupTest(unittest.TestCase):
     def test_direwolf(self):
         conf = self.read(self.run_helper("direwolf"))
         self.assertIn("MYCALL AC1SB\n", conf)
-        self.assertIn("ADEVICE plughw:CARD=rigaudio,DEV=0\n", conf)
+        self.assertIn("ADEVICE pipewire\n", conf)
         self.assertIn("PTT RIG 2 localhost:4532\n", conf)
         self.assertIn("AGWPORT 8000\n", conf)
 
