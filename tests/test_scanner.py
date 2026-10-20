@@ -251,5 +251,23 @@ class Squelch(unittest.TestCase):
         self.assertLess(tone, spec.max() / 30)
 
 
+class GqrxWithoutReceiver(unittest.TestCase):
+    def test_network_receiver(self):
+        self.assertEqual(sc.network_choice("shack-pi.local")["gqrx"], "rtl_tcp=shack-pi.local:1234")
+        choice = sc.network_choice(" 192.168.1.20:5555 ")
+        self.assertEqual(choice["gqrx"], "rtl_tcp=192.168.1.20:5555")
+        self.assertEqual(choice["key"], "net-192.168.1.20-5555")
+        self.assertEqual(choice["rtl_index"], -1)
+
+    def test_practice_recording_has_the_fm_signal_where_it_says(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = sc.practice_recording(os.path.join(tmp, "p.cf32"), rate=48000, seconds=2)
+            iq = np.fromfile(path, dtype=np.complex64)
+        self.assertEqual(len(iq), 96000)
+        spec = np.abs(np.fft.fftshift(np.fft.fft(iq[:48000])))
+        freqs = np.fft.fftshift(np.fft.fftfreq(48000, 1 / 48000))
+        self.assertAlmostEqual(abs(freqs[np.argmax(spec)]), 20000, delta=4000)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -39,6 +39,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -58,6 +59,9 @@ SDR_LOCK = os.path.join(HOME, ".local/state/emcomm/sdr.json")
 STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 NWR_CONFIG = os.path.join(HOME, ".config/emcomm/nwr.json")
 THEME_PATH = os.path.join(HOME, ".config/emcomm/theme")
+GQRX_NETWORK = os.path.join(HOME, ".config/emcomm/gqrx-network.json")
+PRACTICE = os.path.join(HOME, ".cache/emcomm/gqrx-practice.cf32")
+PRACTICE_RATE, PRACTICE_HZ = 240000, 146500000
 FAKE = os.environ.get("EMCOMM_SCANNER_FAKE")  # "MHz,MHz" with a test signal: run without a dongle
 
 RATE = 240000        # dongle sample rate
@@ -283,6 +287,42 @@ def nwr_in_use():
         return False
 
 
+def gqrx_pids():
+    """This user's running Gqrx programs."""
+    pids = []
+    for entry in os.listdir("/proc"):
+        try:
+            if entry.isdigit() and os.stat(f"/proc/{entry}").st_uid == os.getuid():
+                with open(f"/proc/{entry}/comm", encoding="utf-8") as f:
+                    if f.read().strip() == "gqrx":
+                        pids.append(int(entry))
+        except OSError:
+            continue
+    return pids
+
+
+def stop_stuck_gqrx():
+    """Gqrx can hang on after its window is closed, still holding the receiver. Stop any
+    Gqrx with no window on screen; True if one was stopped."""
+    pids = gqrx_pids()
+    if not pids:
+        return False
+    try:
+        windows = subprocess.run(["wmctrl", "-lp"], capture_output=True, text=True, timeout=5, check=False).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False  # can't tell whether it's still in use
+    shown = {int(f[2]) for f in (line.split(None, 3) for line in windows.splitlines()) if len(f) > 2 and f[2].isdigit()}
+    stuck = [pid for pid in pids if pid not in shown]
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in stuck:
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+        time.sleep(2)
+    return bool(stuck)
+
+
 def claim_sdr(app):
     os.makedirs(os.path.dirname(SDR_LOCK), exist_ok=True)
     with open(SDR_LOCK, "w", encoding="utf-8") as f:
@@ -420,6 +460,60 @@ def gqrx_choices(rxs):
                                        "Works on RTL-SDR Blog V3 and similar; deafer than a real HF receiver.",
                                 start_hz=7200000))
     return choices
+
+
+def morse_keying(text, rate, wpm=18):
+    """1/0 per sample for text sent in Morse code."""
+    codes = {"C": "-.-.", "Q": "--.-", "D": "-..", "E": ".", "M": "--", "O": "---", " ": " "}
+    dot = int(rate * 1.2 / wpm)
+    out = []
+    for ch in text:
+        if ch == " ":
+            out.append(np.zeros(dot * 4))
+            continue
+        for sym in codes[ch]:
+            out += [np.ones(dot * (3 if sym == "-" else 1)), np.zeros(dot)]
+        out.append(np.zeros(dot * 2))
+    return np.concatenate(out)
+
+
+def practice_recording(path=PRACTICE, rate=PRACTICE_RATE, seconds=6):
+    """A made-up recording around 146.5 MHz for Gqrx to play with no receiver: an FM
+    signal on 146.520 (a tone, on and off), Morse code on 146.455 and a steady
+    carrier on 146.580, over noise. Written once, as complex float32."""
+    if os.path.exists(path):
+        return path
+    rng = np.random.default_rng(1)
+    n = rate * seconds
+    t = np.arange(n) / rate
+    iq = (rng.standard_normal(n) + 1j * rng.standard_normal(n)) * 0.02
+    talking = (t % 3) < 2  # two seconds on, one off
+    audio = np.sin(2 * np.pi * 800 * t) * 0.6 + np.sin(2 * np.pi * 1300 * t) * 0.4
+    phase = 2 * np.pi * np.cumsum(20000 + 2500 * audio * talking) / rate
+    iq += talking * 0.25 * np.exp(1j * phase)
+    keying = np.resize(morse_keying("CQ CQ DE EMCOMM ", rate), n)
+    iq += keying * 0.08 * np.exp(2j * np.pi * -45000 * t)
+    iq += 0.03 * np.exp(2j * np.pi * 80000 * t)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    iq.astype(np.complex64).tofile(path + ".tmp")
+    os.replace(path + ".tmp", path)
+    return path
+
+
+def practice_choice():
+    return {"key": "practice", "label": "Practice signal (no receiver)",
+            "detail": "A made-up recording around 146.5 MHz, played over and over, to learn Gqrx with.",
+            "gqrx": f"file={PRACTICE},rate={PRACTICE_RATE},freq={PRACTICE_HZ},repeat=true,throttle=true",
+            "gqrx_rate": PRACTICE_RATE, "start_hz": PRACTICE_HZ + 20000, "rtl_index": -1}
+
+
+def network_choice(address):
+    """Gqrx on an RTL-SDR shared over the network by rtl_tcp (host:port)."""
+    host, _, port = address.strip().partition(":")
+    port = port if port.isdigit() else "1234"
+    return {"key": "net-" + re.sub(r"[^A-Za-z0-9.-]", "-", host) + "-" + port,
+            "label": f"Network receiver {host}:{port}", "gqrx": f"rtl_tcp={host}:{port}",
+            "gqrx_rate": 1024000, "start_hz": 162550000, "rtl_index": -1}
 
 
 def fmt_mhz(mhz):
@@ -758,13 +852,17 @@ class Scanner(threading.Thread):
             make = lambda: Dongle(rx["rtl_index"], self.settings.get("gain"), self.settings.get("ppm"))  # noqa: E731
         else:
             make = lambda: SoapySource(rx["args"], rx["scan_rate"], self.settings.get("gain"))  # noqa: E731
-        for _ in range(12):
+        for attempt in range(24):
             try:
                 self.dongle = make()
                 return
             except OSError:
+                if attempt == 11 and not stop_stuck_gqrx():
+                    break
                 time.sleep(0.5)
-        raise OSError(f"The {rx['label']} is busy in another app (Gqrx?). Close it and tap Scan.")
+        holder = "Gqrx" if gqrx_pids() else "another app"
+        raise OSError(f"The {rx['label']} is busy in {holder}. Close it and tap Scan, or use "
+                      "Settings > Devices > Free the SDR receiver.")
 
     def _play(self, samples):
         if self.audio is None or self.audio.poll() is not None:
@@ -947,10 +1045,16 @@ def pick_for_gqrx():
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=16)
         head = Gtk.Label(xalign=0, wrap=True, label=(
             "Pick the receiver for Gqrx." if choices else
-            "No SDR receiver found. Plug one in (RTL-SDR, Airspy, HackRF, SDRplay...) and tap Gqrx again."))
+            "No SDR receiver is plugged in. Plug one in (RTL-SDR, Airspy, HackRF, SDRplay...) and tap Gqrx "
+            "again, or open Gqrx without one:"))
         box.pack_start(head, False, False, 0)
         picked = []
-        for choice in choices:
+        extras = []
+        if np is not None:
+            extras.append(practice_choice())
+        extras.append({"key": "network", "label": "Network receiver (rtl_tcp)…",
+                       "detail": "An RTL-SDR on another computer, shared with rtl_tcp. You type its address next."})
+        for choice in choices + extras:
             btn = Gtk.Button()
             inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin=6)
             name = Gtk.Label(label=choice["label"], xalign=0)
@@ -962,17 +1066,51 @@ def pick_for_gqrx():
             btn.add(inner)
             btn.connect("clicked", lambda _b, c=choice: (picked.append(c), dialog.response(Gtk.ResponseType.OK)))
             box.pack_start(btn, False, False, 0)
-        dialog.add_buttons("Cancel" if choices else "OK", Gtk.ResponseType.CANCEL)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL)
         dialog.get_content_area().add(box)
         dialog.show_all()
         dialog.run()
         dialog.destroy()
         chosen = picked[0] if picked else None
+        if chosen and chosen["key"] == "network":
+            chosen = ask_network_address(Gtk)
+        if chosen and chosen["key"] == "practice":
+            practice_recording()
     if not chosen:
         return 1
     print("\t".join(str(x) for x in (chosen["key"], chosen["gqrx"], chosen["gqrx_rate"], chosen["start_hz"],
                                      chosen["rtl_index"])))
     return 0
+
+
+def ask_network_address(Gtk):
+    """Ask for the rtl_tcp receiver's address (remembered for next time)."""
+    try:
+        with open(GQRX_NETWORK, encoding="utf-8") as f:
+            last = json.load(f).get("address", "")
+    except (OSError, ValueError, AttributeError):
+        last = ""
+    dialog = Gtk.Dialog(title="Network receiver", modal=True)
+    dialog.set_position(Gtk.WindowPosition.CENTER)
+    dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Open Gqrx", Gtk.ResponseType.OK)
+    dialog.set_default_response(Gtk.ResponseType.OK)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=16)
+    box.pack_start(Gtk.Label(xalign=0, wrap=True, max_width_chars=60, label=(
+        "The address of the computer running rtl_tcp, and its port if it isn't 1234, "
+        "e.g. 192.168.1.20 or shack-pi.local:1234. On that computer run: rtl_tcp -a 0.0.0.0")), False, False, 0)
+    entry = Gtk.Entry(text=last, activates_default=True, width_chars=30)
+    box.pack_start(entry, False, False, 0)
+    dialog.get_content_area().add(box)
+    dialog.show_all()
+    response = dialog.run()
+    address = entry.get_text().strip()
+    dialog.destroy()
+    if response != Gtk.ResponseType.OK or not address:
+        return None
+    os.makedirs(os.path.dirname(GQRX_NETWORK), exist_ok=True)
+    with open(GQRX_NETWORK, "w", encoding="utf-8") as f:
+        json.dump({"address": address}, f)
+    return network_choice(address)
 
 
 def window_main():
