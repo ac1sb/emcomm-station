@@ -33,6 +33,8 @@ Audio plays through PipeWire (pacat).
 The weather radio alert listener (emcomm-nwr) uses the first RTL-SDR. While the
 scanner holds that dongle it writes ~/.local/state/emcomm/sdr.json and the
 listener pauses; given another receiver, the scanner leaves the dongle alone.
+The ADS-B receiver's dongle (emcomm-adsb) isn't offered at all, and the weather
+radio listener's "first" is then the first of the others.
 """
 
 import csv
@@ -66,6 +68,8 @@ STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 NWR_CONFIG = os.path.join(HOME, ".config/emcomm/nwr.json")
 THEME_PATH = os.path.join(HOME, ".config/emcomm/theme")
 GQRX_NETWORK = os.path.join(HOME, ".config/emcomm/gqrx-network.json")
+ADSB_CONFIG = os.path.join(HOME, ".config/emcomm/adsb.json")  # the ADS-B dongle's serial (emcomm-adsb)
+ADSB_MARK = "00001090"
 PRACTICE = os.path.join(HOME, ".cache/emcomm/gqrx-practice.cf32")
 PRACTICE_RATE, PRACTICE_HZ = 240000, 146500000
 FAKE = os.environ.get("EMCOMM_SCANNER_FAKE")  # "MHz,MHz" with a test signal: run without a dongle
@@ -434,10 +438,24 @@ def _probe(sd, args):
         del dev
 
 
+def adsb_serial():
+    """The serial number of the RTL-SDR kept for ADS-B, or None with ADS-B off."""
+    try:
+        with open(ADSB_CONFIG, encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError):
+        config = {}
+    if not isinstance(config, dict) or config.get("off"):
+        return None
+    return str(config.get("serial") or ADSB_MARK)
+
+
 def receivers(probe=True):
     """Every SDR receiver plugged in, as dicts: key, label, driver, args, scan_rate, gqrx_rate,
-    low_mhz, high_mhz, gqrx (Gqrx's device string), rtl_index (-1 if not an RTL-SDR)."""
+    low_mhz, high_mhz, gqrx (Gqrx's device string), rtl_index (-1 if not an RTL-SDR), and
+    nwr (the dongle the weather radio listener uses). The ADS-B dongle is left out."""
     sd = soapy()
+    adsb = adsb_serial()
     found, rtl_count = [], 0
     if sd:
         listed = []
@@ -459,6 +477,8 @@ def receivers(probe=True):
         rtl_index = -1
         if driver == "rtlsdr":
             rtl_index, rtl_count = rtl_count, rtl_count + 1
+            if adsb and args.get("serial") == adsb:
+                continue  # kept for ADS-B; still counted, as librtlsdr numbers it
         label = args.get("label") or " ".join(x for x in (args.get("manufacturer"), args.get("product")) if x) \
             or driver
         serial = args.get("serial", "")
@@ -472,7 +492,10 @@ def receivers(probe=True):
             device = "soapy=0," + ",".join(f"{k}={args[k]}" for k in ("driver", "serial") if args.get(k))
         found.append({"key": key, "label": label, "driver": driver, "args": args, "scan_rate": scan,
                       "gqrx_rate": gqrx, "low_mhz": low, "high_mhz": high, "gqrx": device,
-                      "rtl_index": rtl_index})
+                      "rtl_index": rtl_index, "nwr": False})
+    rtls = [rx for rx in found if rx["driver"] == "rtlsdr"]
+    if rtls:
+        rtls[0]["nwr"] = True
     keys = set()
     for rx in found:  # two receivers with no serial number: keep keys apart
         while rx["key"] in keys:
@@ -932,7 +955,7 @@ class Scanner(threading.Thread):
         if rx["driver"] == "rtlsdr":
             if Dongle.count() < 0:
                 raise OSError("The RTL-SDR library isn't installed. Run Update station in Settings.")
-            if rx["rtl_index"] == 0:
+            if rx["nwr"]:
                 claim_sdr("Scanner")  # the weather radio listener lets go of the dongle
             make = lambda: Dongle(rx["rtl_index"], self.settings.get("gain"), self.settings.get("ppm"))  # noqa: E731
         else:
@@ -1273,7 +1296,7 @@ def gtk_with_theme():
 
 def pick_for_gqrx():
     """Ask which receiver Gqrx should use (only if there's a choice) and print it for emcomm-start:
-    key, Gqrx device string, sample rate, start frequency (Hz), RTL index (-1 if none), tab-separated."""
+    key, Gqrx device string, sample rate, start frequency (Hz), 1 if it's the weather radio's dongle, tab-separated."""
     choices = gqrx_choices(receivers())
     chosen = choices[0] if len(choices) == 1 else None
     if len(choices) != 1:
@@ -1318,7 +1341,7 @@ def pick_for_gqrx():
     if not chosen:
         return 1
     print("\t".join(str(x) for x in (chosen["key"], chosen["gqrx"], chosen["gqrx_rate"], chosen["start_hz"],
-                                     chosen["rtl_index"])))
+                                     1 if chosen.get("nwr") else 0)))
     return 0
 
 

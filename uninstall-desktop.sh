@@ -24,7 +24,7 @@ packages=false
 [ "${1:-}" = --packages ] && packages=true
 
 echo "== Stopping Emcomm-CNC's services =="
-for unit in emcomm-nwr rigctld; do
+for unit in emcomm-nwr emcomm-adsb rigctld; do
   systemctl disable --now "$unit" 2>/dev/null
   rm -f "/etc/systemd/system/$unit.service"
 done

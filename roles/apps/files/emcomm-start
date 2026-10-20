@@ -171,11 +171,11 @@ case "${1:-}" in
     # scanner's channel list as bookmarks. With more than one receiver, or an
     # RTL-SDR that can also do HF by direct sampling, it asks which. Each choice
     # keeps its own Gqrx settings (~/.config/gqrx/KEY.conf). The weather radio
-    # listener uses the first RTL-SDR and lets go of it while sdr.json names a
-    # running app. With no receiver it offers a practice recording or an RTL-SDR
+    # listener uses the first RTL-SDR (not counting the ADS-B one) and lets go of
+    # it while sdr.json names a running app. With no receiver it offers a practice recording or an RTL-SDR
     # shared over the network (rtl_tcp).
     choice=$(emcomm-scanner --pick-receiver 2>/dev/null) || exit 0
-    IFS=$'\t' read -r key device rate start rtl_index <<< "$choice"
+    IFS=$'\t' read -r key device rate start nwr_dongle <<< "$choice"
     mkdir -p "$HOME/.config/gqrx"
     conf="$HOME/.config/gqrx/$key.conf"
     if [ "$key" = practice ]; then
@@ -195,7 +195,7 @@ case "${1:-}" in
       emcomm-scanner --gqrx-bookmarks > "$marks.tmp" 2>/dev/null && mv "$marks.tmp" "$marks"
       rm -f "$marks.tmp"
     fi
-    if [ "$rtl_index" = 0 ]; then
+    if [ "$nwr_dongle" = 1 ]; then
       mkdir -p "$STATE"
       printf '{"pid": %s, "app": "Gqrx"}\n' "$$" > "$STATE/sdr.json"
       sleep 3  # the weather radio listener checks every 2 seconds

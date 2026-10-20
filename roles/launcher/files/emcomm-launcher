@@ -493,6 +493,16 @@ def sdr_processes():
     return found
 
 
+def adsb_dongle():
+    """The RTL-SDR dongle kept for ADS-B ({index, serial, name}), or None."""
+    try:
+        out = subprocess.run(["emcomm-adsb", "--dongles"], capture_output=True, text=True, timeout=10,
+                             check=False).stdout
+        return next((d for d in map(json.loads, out.splitlines()) if d.get("adsb")), None)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
 def free_sdr(wait=5.0):
     """Stop whatever holds an SDR receiver (Gqrx, the Scanner, rtl_tcp...), forcefully if it
     doesn't stop in a few seconds, and clear the lock. The weather radio listener takes its
@@ -3406,6 +3416,10 @@ class Launcher(Gtk.Window):
         free.set_valign(Gtk.Align.END)
         free.set_tooltip_text("Closes Gqrx, the Scanner or anything else holding the receiver, so another app can use it")
         top.pack_start(free, False, False, 0)
+        adsb = self._navbtn("ADS-B receiver", lambda *_: self._edit_adsb())
+        adsb.set_valign(Gtk.Align.END)
+        adsb.set_tooltip_text("Keep one RTL-SDR dongle for aircraft (1090 MHz), shown on the map")
+        top.pack_start(adsb, False, False, 0)
         body.pack_start(top, False, False, 0)
         self.devices_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
                                          left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD_CHAR)
@@ -3424,6 +3438,52 @@ class Launcher(Gtk.Window):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _edit_adsb(self):
+        """Pick the RTL-SDR dongle kept for ADS-B (or none)."""
+        try:
+            out = subprocess.run(["emcomm-adsb", "--dongles"], capture_output=True, text=True, timeout=10,
+                                 check=False).stdout
+            found = [json.loads(line) for line in out.splitlines() if line.strip()]
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            self._message("The ADS-B receiver isn't installed yet. Run Update station.")
+            return
+        dialog = Gtk.Dialog(title="ADS-B receiver", transient_for=self, modal=True)
+        dialog.set_default_size(620, -1)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        pick = PickList()
+        pick.append("off", "None: no ADS-B")
+        for d in found:
+            pick.append(str(d["index"]), f"Dongle {d['index'] + 1}: {d['name']} · serial {d['serial'] or 'none'}")
+        current = next((d for d in found if d.get("adsb")), None)
+        pick.set_active_id(str(current["index"]) if current else "off")
+        box.pack_start(self._field("Dongle for aircraft (1090 MHz)", pick), False, False, 0)
+        hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=70, label=(
+            "That dongle needs an antenna for 1090 MHz and is kept for ADS-B: the Scanner, Gqrx and weather "
+            "alerts use the others. Aircraft show on the map (Aircraft). If two dongles share a serial number, "
+            "the one picked gets serial 00001090 written into it, and then needs unplugging and plugging back in."
+            if found else "No RTL-SDR dongle is plugged in."))
+        hint.get_style_context().add_class("muted")
+        box.pack_start(hint, False, False, 0)
+        dialog.get_content_area().add(box)
+        dialog.show_all()
+        response = dialog.run()
+        choice = pick.get_active_id()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK or choice is None:
+            return
+        args = ["--off"] if choice == "off" else ["--use", choice]
+
+        def work():
+            try:
+                text = subprocess.run(["emcomm-adsb", *args], capture_output=True, text=True, timeout=60,
+                                      check=False).stdout.strip()
+            except (OSError, subprocess.TimeoutExpired):
+                text = "Couldn't change the ADS-B receiver."
+            GLib.idle_add(lambda: (self._show_devices(), self._message(text)) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _show_devices(self):
         """What's plugged in now: USB serial ports, USB sound cards, RTL-SDR dongles, paired Bluetooth radios."""
         lines = ["USB serial ports (radio CAT/PTT, GPS, mesh radios):"]
@@ -3437,8 +3497,14 @@ class Launcher(Gtk.Window):
         if dongles:
             user = sdr_user()
             nwr = read_json(NWR_CONFIG, {}).get("freq")
+            adsb = adsb_dongle()
+            if adsb:
+                lines.append(f"  Dongle {adsb['index'] + 1} (serial {adsb['serial']}) is kept for ADS-B "
+                             "(aircraft on the map).")
+                dongles = dongles[1:]
             if len(dongles) > 1 and nwr:
-                lines.append("  Weather radio alerts use the first; the Scanner and Gqrx use the second.")
+                lines.append("  Weather radio alerts use the first of the others; the Scanner and Gqrx use the next."
+                             if adsb else "  Weather radio alerts use the first; the Scanner and Gqrx use the second.")
             elif user:
                 lines.append(f"  In use by the {user}" + ("; weather radio alerts are paused." if nwr else "."))
             elif nwr:

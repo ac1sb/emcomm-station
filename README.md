@@ -186,6 +186,17 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   list is Pat's: it works offline from the copy built into Pat, and is refreshed
   when it's over a week old and the station is online. It also shows the stations
   that heard you (purple, with a line to each), as the Online page last saved them.
+  **Aircraft** shows planes heard on ADS-B (1090 MHz), live and with no internet:
+  callsign, altitude, speed and heading, moving every 2 seconds, red for an
+  emergency squawk (7500, 7600, 7700). It needs an RTL-SDR dongle kept for it
+  with a 1090 MHz antenna (a quarter-wave is about 6.9 cm; a FlightAware
+  antenna and filter does better): pick it in **Settings > Devices > ADS-B
+  receiver**. A dongle with its own serial number is remembered by it; cheap
+  dongles often share 00000001, so the one picked gets serial 00001090 written
+  into it and needs unplugging and plugging back in once (a FlightAware Pro
+  Stick ships with 00001090 and is used without asking). The Scanner, Gqrx
+  and weather alerts then use the other dongles. The decoder is
+  dump1090-mutability with no network ports open.
   The buttons at the top right switch the background: **Map** is the built-in
   one; **Streets**, **Satellite** (aerial photos with roads and place names) and
   **Topo** are Esri's online maps, so they need the internet. The choice is kept.
@@ -334,7 +345,8 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   other SoapySDR receiver. SDRplay receivers need SDRplay's own API and the
   SoapySDRPlay3 driver installed by hand (SDRplay doesn't allow Debian to ship
   them). Airspy HF+ support depends on Debian packaging its SoapySDR driver.
-  The weather radio alert listener uses the first RTL-SDR: while the Scanner or
+  The weather radio alert listener uses the first RTL-SDR (not counting the
+  ADS-B one): while the Scanner or
   Gqrx has that dongle, alerts pause (the Online page says so) and resume when it
   closes; with a second receiver plugged in, the Scanner uses that instead.
   Settings > Devices lists the SDR receivers plugged in. With no receiver
