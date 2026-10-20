@@ -291,6 +291,10 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   square in Settings > User; statewide channels with no site are always kept.
   **Hold** stays on the channel, tapping a channel in the list holds there,
   **Skip** moves on, **Lock out** (or untick a channel) leaves it out of the scan.
+  **Stay on a signal** sets how long it listens once it stops: until the
+  channel goes quiet (with 2, 5 or 10 seconds left for a reply), or a set time
+  (5, 10, 15, 30 seconds or 1 minute) from when the signal was found, then it
+  moves on even if the talking goes on. A held channel stays until you move on.
   **Tune** opens a keypad to listen on any frequency the receiver reaches, and
   **Save to list** adds it to your list in the group My channels; the − and +
   beside the frequency step 12.5 kHz (5 kHz below 50 MHz).
