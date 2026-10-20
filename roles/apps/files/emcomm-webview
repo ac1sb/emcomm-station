@@ -3,10 +3,11 @@
 window with a Close button, so the station doesn't need a full web browser.
 Files that can't be shown are saved to ~/Downloads.
 
-  emcomm-webview [--close-after-download] URL [TITLE]
+  emcomm-webview [--close-after-download] [--print] URL [TITLE]
 
 With --close-after-download the window closes by itself once a file is saved,
-so a setup script waiting on the download carries straight on.
+so a setup script waiting on the download carries straight on. --print adds a
+Print button (the print dialog can also save a PDF, for a USB stick).
 """
 
 import os
@@ -29,7 +30,8 @@ CSS = b"""
 
 def main(argv):
     close_after_download = "--close-after-download" in argv
-    argv = [a for a in argv if a != "--close-after-download"]
+    printable = "--print" in argv
+    argv = [a for a in argv if a not in ("--close-after-download", "--print")]
     if not argv:
         print(__doc__.strip(), file=sys.stderr)
         return 2
@@ -54,6 +56,10 @@ def main(argv):
     close.connect("clicked", lambda *_: win.destroy())
     for btn in (back, reload_btn):
         bar.pack_start(btn, False, False, 0)
+    if printable:
+        print_btn = Gtk.Button(label="Print")
+        print_btn.connect("clicked", lambda *_: WebKit2.PrintOperation.new(view).run_dialog(win))
+        bar.pack_start(print_btn, False, False, 0)
     status = Gtk.Label(label=title)
     bar.pack_start(status, True, True, 0)
     bar.pack_end(close, False, False, 0)

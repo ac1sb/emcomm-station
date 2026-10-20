@@ -30,7 +30,7 @@ environment.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
 - **Launcher:** the home screen above. Works by touch, mouse or keyboard: Tab moves
   between buttons, 1–9 open tiles, Esc/F1 goes Home, F2 Diagnostics, F3 Settings,
-  F4 Logs, F5 Reference, F6 Wi-Fi. A tile for an app that isn't installed says "tap to install". To use
+  F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
   icon" puts it back. **Light mode** / **Dark mode** in Settings switches the colours
@@ -44,6 +44,15 @@ environment.
 - **Logs:** JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
   place, plus a box to note a voice or other contact. Notes get the UTC time,
   frequency and mode from the radio.
+- **Net control** (F8, or the button on Logs): name the net and tap **Start net**.
+  Type each callsign and press Enter to check it in, or fill in From, To and Message
+  and tap **Log** for traffic; every entry gets the UTC time, and **Undo** removes
+  the last one. **ICS-309 log** fills in the Communications Log for the open (or
+  last) net, and **ICS-205 plan** fills in the Radio Communications Plan from My
+  frequencies (receive and transmit frequency, tone, and the note as the
+  assignment). Both are saved in `~/ICS forms` and open with a **Print** button;
+  the print dialog can also save a PDF to a USB stick. Nets are kept in
+  `~/.local/share/emcomm/nets`.
 - **Reference** (F5): the US band plan with a which-band-when guide, emergency and
   calling frequencies (IARU emergency centres of activity, Hurricane Watch Net,
   SATERN, 60 m channels, simplex calling, APRS), and JS8Call and FT8 dial

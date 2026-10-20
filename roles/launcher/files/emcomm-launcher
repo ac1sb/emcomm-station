@@ -724,6 +724,44 @@ def note_line(call, note, freq=None, mode=None, when=None):
             f"{call.upper() or '-':<10}  {' '.join(note.split())}\n")
 
 
+# Net control: each net is one JSON file, the newest without "closed" is the open one.
+# emcomm-ics turns a net into an ICS 309 and My frequencies into an ICS 205.
+NETS_DIR = os.path.expanduser("~/.local/share/emcomm/nets")
+ICS_CMD = os.environ.get("EMCOMM_ICS", "emcomm-ics")
+
+
+def open_net():
+    """(path, net) of the net that's open, or (None, None)."""
+    for path in sorted(glob.glob(os.path.join(NETS_DIR, "*.json")), reverse=True):
+        try:
+            with open(path, encoding="utf-8") as f:
+                net = json.load(f)
+        except (OSError, ValueError):
+            continue
+        return (path, net) if not net.get("closed") else (None, None)
+    return None, None
+
+
+def save_net(path, net):
+    os.makedirs(NETS_DIR, exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(net, f, indent=1)
+    os.replace(tmp, path)
+
+
+def net_lines(net):
+    lines = [f"{'Time':<6}  {'From':<10}  {'To':<10}  Message"]
+    for e in net.get("entries", []):
+        lines.append(f"{time.strftime('%H%MZ', time.gmtime(e['time'])):<6}  {e.get('from', ''):<10}  "
+                     f"{e.get('to', ''):<10}  {e.get('message', '')}")
+    return "\n".join(lines) + "\n"
+
+
+def checked_in(net):
+    return sorted({e["from"] for e in net.get("entries", []) if e.get("checkin") and e.get("from")})
+
+
 class Launcher(Gtk.Window):
     def __init__(self, config):
         super().__init__(title="Emcomm-CNC")
@@ -752,6 +790,7 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._reference_page(), "reference")
         self.stack.add_named(self._wifi_page(), "wifi")
         self.stack.add_named(self._online_page(), "online")
+        self.stack.add_named(self._net_page(), "net")
         root.pack_start(self.stack, True, True, 0)
 
         self._tick_clock()
@@ -768,10 +807,10 @@ class Launcher(Gtk.Window):
 
     def _on_key(self, _widget, event):
         """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online,
-        1-9 open a tile on Home."""
+        F8 Net control, 1-9 open a tile on Home."""
         pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home", Gdk.KEY_F2: "diagnostics",
                  Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs", Gdk.KEY_F5: "reference", Gdk.KEY_F6: "wifi",
-                 Gdk.KEY_F7: "online"}
+                 Gdk.KEY_F7: "online", Gdk.KEY_F8: "net"}
         if event.keyval in pages:
             self.stack.set_visible_child_name(pages[event.keyval])
             return True
@@ -1453,6 +1492,8 @@ class Launcher(Gtk.Window):
         self.log_combo.set_active_id("notes")
         self.log_combo.connect("changed", lambda *_: self._show_log())
         header.pack_start(self.log_combo, False, False, 0)
+        header.pack_end(self._navbtn("Net control  F8", lambda *_: self.stack.set_visible_child_name("net"),
+                                     "primary"), False, False, 0)
         header.pack_end(self._navbtn("Refresh", lambda *_: self._show_log()), False, False, 0)
         page.pack_start(header, False, False, 0)
 
@@ -1500,6 +1541,182 @@ class Launcher(Gtk.Window):
         self.note_text.set_text("")
         self.log_combo.set_active_id("notes")
         self._show_log()
+
+    # ---- net control ---------------------------------------------------
+
+    def _net_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Logs", lambda *_: self.stack.set_visible_child_name("logs")),
+                          False, False, 0)
+        title = Gtk.Label(label="Net control", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        self.ncs_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.ncs_status.get_style_context().add_class("muted")
+        header.pack_start(self.ncs_status, True, True, 0)
+        self.ncs_start_btn = self._navbtn("Start net", self._net_start_or_close, "primary")
+        header.pack_end(self.ncs_start_btn, False, False, 0)
+        header.pack_end(self._navbtn("ICS-309 log", self._net_ics309), False, False, 0)
+        header.pack_end(self._navbtn("ICS-205 plan", self._net_ics205), False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        details = Gtk.Box(spacing=12)
+        self.ncs_name = Gtk.Entry(max_length=60, placeholder_text="Net name, e.g. County ARES 2 m net")
+        self.ncs_incident = Gtk.Entry(max_length=60, placeholder_text="Incident (for the ICS forms)")
+        self.ncs_operator = Gtk.Entry(max_length=40, placeholder_text="Your name")
+        for entry, expand in ((self.ncs_name, True), (self.ncs_incident, True), (self.ncs_operator, False)):
+            entry.connect("changed", self._net_details_changed)
+            details.pack_start(entry, expand, expand, 0)
+        page.pack_start(details, False, False, 0)
+
+        self.ncs_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                     left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        scroller = Gtk.ScrolledWindow()
+        scroller.add(self.ncs_view)
+        page.pack_start(scroller, True, True, 0)
+
+        row = Gtk.Box(spacing=12)
+        self.ncs_from = Gtk.Entry(max_length=12, placeholder_text="From", width_chars=9)
+        self.ncs_to = Gtk.Entry(max_length=12, placeholder_text="To", width_chars=9)
+        self.ncs_message = Gtk.Entry(max_length=300, placeholder_text="Message, or a note on the check-in")
+        self.ncs_from.connect("activate", lambda *_: self._net_add(checkin=True))
+        self.ncs_message.connect("activate", lambda *_: self._net_add(checkin=False))
+        for widget, expand in ((self.ncs_from, False), (self.ncs_to, False), (self.ncs_message, True)):
+            row.pack_start(widget, expand, expand, 0)
+        self.ncs_entry_btns = [self._navbtn("Check in", lambda *_: self._net_add(checkin=True), "primary"),
+                               self._navbtn("Log", lambda *_: self._net_add(checkin=False)),
+                               self._navbtn("Undo", self._net_undo)]
+        for btn in self.ncs_entry_btns:
+            row.pack_start(btn, False, False, 0)
+        page.pack_end(row, False, False, 0)
+
+        self.ncs_path, self.ncs, self._ncs_filling = None, None, False
+        page.connect("map", lambda *_: self._net_show(reload=True))
+        return page
+
+    def _net_show(self, reload=False):
+        if reload:
+            self.ncs_path, self.ncs = open_net()
+        net = self.ncs
+        is_open = net is not None
+        self.ncs_start_btn.set_label("Close net" if is_open else "Start net")
+        for btn in self.ncs_entry_btns:
+            btn.set_sensitive(is_open)
+        self._ncs_filling = True
+        if is_open:
+            self.ncs_name.set_text(net.get("name", ""))
+            self.ncs_incident.set_text(net.get("incident", ""))
+            self.ncs_operator.set_text(net.get("operator", ""))
+            calls = checked_in(net)
+            self.ncs_status.set_text(f"Open since {time.strftime('%H%MZ', time.gmtime(net['started']))} · "
+                                     f"{len(calls)} checked in" + (f": {' '.join(calls)}" if calls else ""))
+            text = net_lines(net)
+        else:
+            self.ncs_status.set_text("No net open. Name it and tap Start net.")
+            text = ("Start a net to log check-ins and traffic. Each entry gets the UTC time.\n\n"
+                    "Check in: type the callsign in From and press Enter (a message is kept as a note).\n"
+                    "Log: From, To and Message for traffic; To left blank means you, net control.\n"
+                    "ICS-309 log prints the open or last net; ICS-205 plan prints My frequencies.\n")
+        self._ncs_filling = False
+        buf = self.ncs_view.get_buffer()
+        buf.set_text(text)
+        GLib.idle_add(lambda: self.ncs_view.scroll_to_iter(buf.get_end_iter(), 0, False, 0, 1) and False)
+
+    def _net_details_changed(self, *_):
+        if self._ncs_filling or not self.ncs:
+            return
+        self.ncs.update(name=self.ncs_name.get_text().strip(), incident=self.ncs_incident.get_text().strip(),
+                        operator=self.ncs_operator.get_text().strip())
+        save_net(self.ncs_path, self.ncs)
+
+    def _net_start_or_close(self, *_):
+        if self.ncs:
+            dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                       text=f"Close {self.ncs.get('name') or 'the net'}?",
+                                       secondary_text="Its log is kept for the ICS-309.")
+            dialog.add_buttons("Keep it open", Gtk.ResponseType.CANCEL, "Close net", Gtk.ResponseType.OK)
+            response = dialog.run()
+            dialog.destroy()
+            if response != Gtk.ResponseType.OK:
+                return
+            self.ncs["closed"] = int(time.time())
+            save_net(self.ncs_path, self.ncs)
+            self.ncs_path, self.ncs = None, None
+        else:
+            now = int(time.time())
+            freq = format_freq(rigctld_query(*RIGCTLD, "f"))
+            self.ncs = {"name": self.ncs_name.get_text().strip() or "Net",
+                        "incident": self.ncs_incident.get_text().strip(),
+                        "operator": self.ncs_operator.get_text().strip(),
+                        "callsign": self.station.get("callsign", ""), "started": now, "closed": None,
+                        "frequency": freq or "", "entries": []}
+            self.ncs_path = os.path.join(NETS_DIR, time.strftime("%Y%m%d-%H%M%S.json", time.gmtime(now)))
+            self.ncs["entries"].append({"time": now, "from": self.ncs["callsign"], "to": "",
+                                        "message": f"Net opened{' on ' + freq if freq else ''}"})
+            save_net(self.ncs_path, self.ncs)
+        self._net_show()
+
+    def _net_add(self, checkin):
+        if not self.ncs:
+            return
+        sender = self.ncs_from.get_text().strip().upper()
+        to = self.ncs_to.get_text().strip().upper()
+        message = " ".join(self.ncs_message.get_text().split())
+        if checkin and not sender:
+            self.ncs_from.grab_focus()
+            return
+        if not checkin and not (sender or message):
+            return
+        if checkin:
+            to = to or self.ncs.get("callsign", "")
+            message = "Checked in" + (f": {message}" if message else "")
+        entry = {"time": int(time.time()), "from": sender or self.ncs.get("callsign", ""),
+                 "to": to or (self.ncs.get("callsign", "") if sender else ""), "message": message}
+        if checkin:
+            entry["checkin"] = True
+        self.ncs["entries"].append(entry)
+        save_net(self.ncs_path, self.ncs)
+        for widget in (self.ncs_from, self.ncs_to, self.ncs_message):
+            widget.set_text("")
+        self.ncs_from.grab_focus()
+        self._net_show()
+
+    def _net_undo(self, *_):
+        if self.ncs and len(self.ncs["entries"]) > 1:
+            self.ncs["entries"].pop()
+            save_net(self.ncs_path, self.ncs)
+            self._net_show()
+
+    def _net_ics309(self, *_):
+        path = self.ncs_path
+        if not path:
+            nets = sorted(glob.glob(os.path.join(NETS_DIR, "*.json")))
+            path = nets[-1] if nets else None
+        if not path:
+            self.ncs_status.set_text("No nets logged yet.")
+            return
+        self._run_ics(["309", path], "ICS-309 Communications Log")
+
+    def _net_ics205(self, *_):
+        self._run_ics(["205", "--incident", self.ncs_incident.get_text().strip()],
+                      "ICS-205 Radio Communications Plan")
+
+    def _run_ics(self, args, title):
+        """Fill in the form with emcomm-ics and show it, with a Print button."""
+        try:
+            result = subprocess.run([ICS_CMD] + args, capture_output=True, text=True, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.ncs_status.set_text(f"Couldn't fill in the form: {exc}")
+            return
+        if result.returncode != 0:
+            self.ncs_status.set_text(result.stderr.strip().splitlines()[-1] if result.stderr.strip()
+                                     else "Couldn't fill in the form.")
+            return
+        path = result.stdout.strip().splitlines()[-1]
+        self.ncs_status.set_text(f"Saved to {path.replace(os.path.expanduser('~'), '~')}")
+        if shutil.which("emcomm-webview"):
+            run_detached(["emcomm-webview", "--print", GLib.filename_to_uri(path, None), title])
 
     # ---- wi-fi ---------------------------------------------------------
 
