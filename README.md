@@ -172,8 +172,8 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   The buttons at the top right switch the background: **Map** is the built-in
   one; **Streets**, **Satellite** (aerial photos with roads and place names) and
   **Topo** are Esri's online maps, so they need the internet. The choice is kept.
-- **Online** (F7): data from internet services, saved so the last answer still
-  shows offline. Each section says when it was last updated.
+- **Online** (the Online tile on Home, or F7): data from internet services, saved
+  so the last answer still shows offline. Each section says when it was last updated.
   - **Weather alerts** for your grid from the National Weather Service (US only),
     most severe first; **Details** shows the full text. Alerts in force also show in
     the top bar; tap there to read them. Checked every ten minutes when online.
