@@ -71,12 +71,17 @@ AUDIO_RATE = RATE // DECIM
 SETTLE = 8192        # samples thrown away after retuning while the tuner settles
 LOOK = 12288         # samples looked at on each channel while scanning (51 ms)
 LISTEN = 24576       # samples per block while stopped on a channel (102 ms)
-HANG = 2.0           # seconds to stay on a channel after it goes quiet
+HANG = 2.0           # seconds to stay on a channel after it goes quiet (the standard choice below)
 TONE_WAIT = 0.6      # seconds of audio searched for the channel's PL tone
 DEVIATION = 2500.0   # narrow FM peak deviation, Hz
 # Squelch 1 (open) .. 9 (tight): the hiss left above 6 kHz, as a share of no-signal hiss.
 # Level 4 opens about 1 dB above the noise in the channel; 9 needs a near full-quieting signal.
 SQUELCH_LEVELS = {1: 0.85, 2: 0.70, 3: 0.55, 4: 0.40, 5: 0.28, 6: 0.18, 7: 0.10, 8: 0.05, 9: 0.02}
+# How long to stay on a channel that's active: until it goes quiet (then a few seconds for the
+# reply), or a set time from when the signal was found, whether it goes quiet or not.
+HANG_CHOICES = [("quiet2", "Until it goes quiet"), ("quiet5", "Until quiet, then 5 s"),
+                ("quiet10", "Until quiet, then 10 s"), ("5", "5 seconds"), ("10", "10 seconds"),
+                ("15", "15 seconds"), ("30", "30 seconds"), ("60", "1 minute")]
 DISTANCES = [(10, "10 miles"), (25, "25 miles"), (50, "50 miles"), (100, "100 miles"), (0, "Everywhere")]
 CTCSS = [67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5, 94.8, 97.4, 100.0, 103.5, 107.2,
          110.9, 114.8, 118.8, 123.0, 127.3, 131.8, 136.5, 141.3, 146.2, 150.0, 151.4, 156.7, 159.8,
@@ -84,7 +89,17 @@ CTCSS = [67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5, 94.8, 97.4,
          203.5, 206.5, 210.7, 218.1, 225.7, 229.1, 233.6, 241.8, 250.3, 254.1]
 RTL_USB_IDS = {("0bda", "2838"), ("0bda", "2832")}
 DEFAULTS = {"groups_off": [], "miles": 25, "lockouts": [], "squelch": 4, "volume": 70,
-            "tone_squelch": True, "gain": 40, "ppm": 0, "receiver": ""}
+            "tone_squelch": True, "gain": 40, "ppm": 0, "receiver": "", "hang": "quiet2"}
+
+
+def hang_rule(choice):
+    """(seconds to stay from when a signal is found, or None; seconds to wait once it goes quiet)."""
+    choice = str(choice or "")
+    if choice.startswith("quiet") and choice[5:].isdigit():
+        return None, float(choice[5:])
+    if choice.isdigit() and int(choice) > 0:
+        return float(choice), None
+    return None, HANG
 
 
 # ---- channel list -------------------------------------------------------
@@ -934,6 +949,9 @@ class Scanner(threading.Thread):
         want_tone = settings.get("tone_squelch") and ch.get("tone_kind") == "pl"
         heard = [fm]
         quiet_since, started, toned = None, time.time(), not want_tone
+        stay, wait = hang_rule(settings.get("hang"))
+        if held:
+            stay, wait = None, HANG  # a held channel is listened to until the operator moves on
         while not self.stopping and not self.wake.is_set():
             if self.skip_now:
                 self.skip_now = False
@@ -961,10 +979,14 @@ class Scanner(threading.Thread):
                 quiet_since = time.time()
             self.on_state({"state": "holding" if held else "listening", "channel": ch, "level": noise,
                            "open": is_open, "since": started})
-            if quiet_since and time.time() - quiet_since > HANG:
+            if stay is not None and time.time() - started >= stay:
                 return True
-            settings = self.settings  # squelch and volume changes apply straight away
+            if stay is None and quiet_since and time.time() - quiet_since > wait:
+                return True
+            settings = self.settings  # squelch, volume and hang changes apply straight away
             threshold = SQUELCH_LEVELS.get(int(settings.get("squelch", 4)), 0.38)
+            if not held:
+                stay, wait = hang_rule(settings.get("hang"))
         return True
 
 
@@ -1347,9 +1369,12 @@ def window_main():
             groups_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
             groups_scroll.add(self.group_box)
             side.pack_start(groups_scroll, True, True, 0)
-            title = Gtk.Label(label="WITHIN", xalign=0)
-            title.get_style_context().add_class("section-title")
-            side.pack_start(title, False, False, 0)
+            # Distance and how long to stay on a signal, side by side to leave the groups room.
+            choices = Gtk.Grid(column_spacing=8, row_spacing=4, column_homogeneous=True)
+            for col, text in enumerate(("WITHIN", "STAY ON A SIGNAL")):
+                title = Gtk.Label(label=text, xalign=0)
+                title.get_style_context().add_class("section-title")
+                choices.attach(title, col, 0, 1, 1)
             self.distance = PickList()
             for miles, label in DISTANCES:
                 self.distance.append(str(miles), label)
@@ -1357,7 +1382,18 @@ def window_main():
             if self.distance.get_active_id() is None:
                 self.distance.set_active_id("25")
             self.distance.connect("changed", self._changed)
-            side.pack_start(self.distance, False, False, 0)
+            choices.attach(self.distance, 0, 1, 1, 1)
+            self.hang = PickList()
+            for value, label in HANG_CHOICES:
+                self.hang.append(value, label)
+            self.hang.set_active_id(str(self.settings.get("hang") or "quiet2"))
+            if self.hang.get_active_id() is None:
+                self.hang.set_active_id("quiet2")
+            self.hang.set_tooltip_text("Until it goes quiet: moves on once the talking stops (and the wait after). "
+                                       "A set time: stays that long from when the signal was found, then moves on.")
+            self.hang.connect("changed", self._changed)
+            choices.attach(self.hang, 1, 1, 1, 1)
+            side.pack_start(choices, False, False, 0)
             self.where_label = Gtk.Label(xalign=0, wrap=True)
             self.where_label.get_style_context().add_class("muted")
             side.pack_start(self.where_label, False, False, 0)
@@ -1475,6 +1511,7 @@ def window_main():
             self.settings.update(
                 squelch=int(self.squelch.get_value()), volume=int(self.volume.get_value()),
                 tone_squelch=self.tone.get_active(), miles=int(self.distance.get_active_id() or 0),
+                hang=self.hang.get_active_id() or "quiet2",
                 groups_off=[g for g, c in self.group_checks.items() if not c.get_active()])
             save_settings(self.settings)
             self._fill()

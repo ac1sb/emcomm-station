@@ -251,6 +251,67 @@ class Squelch(unittest.TestCase):
         self.assertLess(tone, spec.max() / 30)
 
 
+class HangTime(unittest.TestCase):
+    """How long the scanner stays on an active channel, on a simulated clock."""
+
+    class Clock:
+        now = 1000.0
+
+        def time(self):
+            return self.now
+
+    class Dongle:
+        rate = sc.RATE
+
+        def __init__(self, clock, talk_for):
+            self.clock, self.until, self.n = clock, clock.now + talk_for, 0
+            self.rng = np.random.default_rng(5)
+
+        def tune(self, mhz):
+            pass
+
+        def read(self, samples):
+            self.clock.now += samples / sc.RATE
+            on = self.clock.now < self.until
+            return sc.fm_test_signal(samples, self.n, on, None, self.rng, advance=self)
+
+    def stay(self, hang, talk_for, held=None):
+        clock = self.Clock()
+        real_time = sc.time
+        sc.time = clock
+        try:
+            scanner = sc.Scanner(lambda _state: None)
+            scanner._play = lambda _audio: None
+            scanner.dongle = self.Dongle(clock, talk_for)
+            settings = dict(sc.DEFAULTS, hang=hang)
+            scanner.settings = settings
+            start = clock.now
+            self.assertTrue(scanner._visit({"mhz": 155.0, "tone_kind": None}, sc.Demod(), settings, held))
+            return clock.now - start
+        finally:
+            sc.time = real_time
+
+    def test_rules(self):
+        self.assertEqual(sc.hang_rule("quiet2"), (None, 2.0))
+        self.assertEqual(sc.hang_rule("quiet10"), (None, 10.0))
+        self.assertEqual(sc.hang_rule("15"), (15.0, None))
+        for odd in (None, "", "0", "abc", "quietx"):
+            self.assertEqual(sc.hang_rule(odd), (None, sc.HANG))
+
+    def test_until_quiet_then_a_wait(self):
+        self.assertAlmostEqual(self.stay("quiet2", 3), 5, delta=0.5)
+        self.assertAlmostEqual(self.stay("quiet10", 3), 13, delta=0.5)
+
+    def test_set_time_moves_on_while_still_talking(self):
+        self.assertAlmostEqual(self.stay("10", 40), 10, delta=0.5)
+
+    def test_set_time_stays_after_it_goes_quiet(self):
+        self.assertAlmostEqual(self.stay("15", 3), 15, delta=0.5)
+
+    def test_held_channel_ignores_the_set_time(self):
+        self.assertAlmostEqual(self.stay("5", 12, held={"mhz": 155.0}), 14, delta=0.5)
+
+
 class GqrxWithoutReceiver(unittest.TestCase):
     def test_network_receiver(self):
         self.assertEqual(sc.network_choice("shack-pi.local")["gqrx"], "rtl_tcp=shack-pi.local:1234")
