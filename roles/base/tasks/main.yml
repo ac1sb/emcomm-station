@@ -3,7 +3,6 @@
   ansible.builtin.apt:
     name:
       - sudo
-      - openssh-server
       - usbutils
       - alsa-utils
       - pipewire
@@ -28,7 +27,7 @@
 - name: Create the station user
   ansible.builtin.user:
     name: "{{ station_user }}"
-    shell: /bin/bash
+    shell: "{{ '/bin/bash' if station_mode == 'kiosk' else omit }}"  # a desktop user keeps their own
     # systemd-journal: Diagnostics shows rigctld's log and recent USB events.
     # bluetooth: lets the mesh apps pair with and reach a radio over Bluetooth.
     groups: [dialout, audio, plugdev, video, systemd-journal, bluetooth]
@@ -41,6 +40,7 @@
   register: base_sudo_group
   changed_when: base_sudo_group.rc == 0
   failed_when: false
+  when: station_mode == 'kiosk'
 
 # NetworkManager lets the user at the station's screen join Wi-Fi from the
 # launcher's Wi-Fi page (polkit's standard rules for the active local session).
@@ -50,18 +50,40 @@
   ansible.builtin.apt:
     name: [network-manager, polkitd]
     install_recommends: false
+  when: station_mode == 'kiosk'  # a desktop already has its own networking
 
 - name: Enable SSH for remote troubleshooting
-  ansible.builtin.systemd:
-    name: ssh
-    enabled: true
-    state: started
+  when: station_mode == 'kiosk'
+  block:
+    - name: Install the SSH server
+      ansible.builtin.apt:
+        name: openssh-server
+        install_recommends: false
+
+    - name: Start SSH at boot
+      ansible.builtin.systemd:
+        name: ssh
+        enabled: true
+        state: started
 
 - name: Create the station config directory
   ansible.builtin.file:
     path: /etc/emcomm
     state: directory
     mode: "0755"
+
+- name: Create the folder for settings to put back on uninstall
+  ansible.builtin.file:
+    path: /etc/emcomm/before
+    state: directory
+    mode: "0755"
+  when: station_mode == 'desktop'
+
+- name: Remember how this station was built (the launcher reads it)
+  ansible.builtin.copy:
+    content: "{{ station_mode }}\n"
+    dest: /etc/emcomm/mode
+    mode: "0644"
 
 - name: Remember where this playbook lives, for Update station
   ansible.builtin.copy:

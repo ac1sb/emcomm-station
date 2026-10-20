@@ -28,12 +28,16 @@ apps_natural_earth_files:
 # enable, so the script comes straight from the upstream release tag.
 apps_winetricks_version: "20260125"
 
+# Install every app when the station is built (kiosk), or on a desktop only the
+# one asked for from its tile (emcomm-update --app NAME runs with --tags NAME).
+apps_install: "{{ station_mode == 'kiosk' or 'all' not in ansible_run_tags }}"
+
 # Wine and the VARA installer helper. VARA itself is downloaded on the station
 # the first time its tile is tapped.
 apps_vara: true
 
-# Bookmarks bar in Chromium (the Browser tile). Edit and run Update station
-# to change them.
+# Bookmarks bar in Chromium (the Browser tile; on a desktop, a page of them
+# opened in the person's own browser). Edit and run Update station to change them.
 apps_browser_bookmarks:
   - { name: World Radio League, url: "https://worldradioleague.com" }
   - { name: QRZ, url: "https://www.qrz.com" }

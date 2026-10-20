@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- Written by the emcomm-station playbook from apps_browser_bookmarks. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emcomm-CNC bookmarks</title>
+<style>
+  body { background: #14171c; color: #e8eaed; font: 18px system-ui, sans-serif; margin: 0; padding: 32px; }
+  h1 { color: #F2A33A; font-size: 24px; margin: 0 0 20px; }
+  ul { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  a { display: block; padding: 16px 18px; border: 1px solid #2c313a; border-radius: 12px; background: #1b1f26;
+      color: #e8eaed; text-decoration: none; }
+  a:hover { border-color: #F2A33A; }
+  small { display: block; color: #9aa0a6; font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<h1>Ham radio</h1>
+<ul>
+{% for b in apps_browser_bookmarks %}
+  <li><a href="{{ b.url | e }}">{{ b.name | e }}<small>{{ b.url | regex_replace('^https?://', '') | e }}</small></a></li>
+{% endfor %}
+</ul>
+</body>
+</html>

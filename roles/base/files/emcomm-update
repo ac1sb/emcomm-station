@@ -10,7 +10,7 @@
 # before is kept as .1), which the launcher's Logs page shows.
 set -euo pipefail
 
-APPS="js8call wsjtx fldigi flmsg pat ardop packet vara aprs meshtastic meshcore map browser chirp library"
+APPS="js8call wsjtx fldigi flmsg pat ardop packet vara aprs meshtastic meshcore map browser chirp library scanner sdr"
 SOURCE_FILE=/etc/emcomm/playbook-dir
 
 usage() { echo "usage: $0 [--app ${APPS// /|}]" >&2; exit 2; }
@@ -27,7 +27,7 @@ esac
 
 refuse() {
   echo "Can't update: $1" >&2
-  echo "Log in as root (su -) and run: cd $dir && git pull && ansible-playbook site.yml" >&2
+  echo "As root (sudo -i, or su -), run: cd $dir && git pull && ansible-playbook site.yml" >&2
   exit 1
 }
 
