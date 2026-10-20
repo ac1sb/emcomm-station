@@ -11,11 +11,3 @@
     DISPLAY: ":0"
   changed_when: true
   failed_when: false  # not running yet: it reads the settings when it starts
-
-- name: Update initramfs
-  ansible.builtin.command: update-initramfs -u
-  changed_when: true
-
-- name: Update GRUB
-  ansible.builtin.command: update-grub
-  changed_when: true
