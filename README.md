@@ -17,15 +17,18 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   the same Wi-Fi can use the packet, ARDOP or VARA modems to key the radio.
   Outgoing traffic isn't limited. Debian's security updates install by
   themselves once a day, along with Debian's stable bug fixes (never new
-  versions, and no restarts: a kernel update takes effect at the next restart). To let more in, list ports in `security_allow_tcp` or
+  versions, and no restarts: a kernel update takes effect at the next restart).
+  To let more in, list ports in `security_allow_tcp` or
   `security_allow_udp` in `host_vars`. A desktop install leaves the computer's
   own firewall and update settings alone.
-- **Settings screen:** a page of large tiles: User (callsign and grid), Radio,
+- **Settings screen:** a page of large tiles: User (callsign, grid and time zone), Radio,
   Devices (GPS, and what's plugged in), Display, Wi-Fi, Accounts,
   Backup, Update station, Audio (the radio's sound card, and in desktop mode when
   it's the computer's default), Power and Home tiles (Diagnostics is on Home's
   buttons and F2). User opens
-  automatically on first boot. Any radio Hamlib supports can be picked by
+  automatically on first boot. The time zone (Settings > User) sets the local time
+  shown next to UTC in the top bar; while the computer is on UTC, only UTC shows
+  (in desktop mode the computer's own time zone is used). Any radio Hamlib supports can be picked by
   manufacturer and model; the CAT port, PTT port and sound card are picked from the
   USB devices that are plugged in, with a Rescan button. Saving gives those devices
   stable names (`/dev/rig-cat`, `/dev/rig-ptt`, ALSA card `rigaudio`) and restarts
@@ -41,11 +44,16 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 - **Presets** (`radios/`): Yaesu FT-891 with a Digirig, and Yaesu FT-710. Optional
   shortcuts that fill in every radio field at once, even before the radio is plugged in.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
-  The station starts with a spinner instead of scrolling text and goes straight
-  to the launcher (the GRUB menu still shows briefly, for recovery mode). Apps
+  The station starts with a start-up screen instead of scrolling text and goes
+  straight to the launcher (the GRUB menu still shows briefly, for recovery
+  mode). **Settings > Display > Start-up screen** picks it: the Emcomm-CNC logo
+  with your callsign (the standard one), a picture of your own (PNG or JPG, from
+  a USB stick or Downloads, filling the screen), a plain spinner, or the
+  start-up messages as text. A change takes about a minute to save and shows at
+  the next start; a new callsign shows after the next Update station. Apps
   open maximized under a thin **Home bar** across the top of the screen: **⌂ Home**
   brings the launcher back, each open app has a button to bring it to the front
-  (and ✕ to close it), and the bar shows the callsign and UTC time. Tapping the
+  (and ✕ to close it), and the bar shows the callsign, local time and UTC. Tapping the
   tile of an app that's already open brings it to the front instead of starting a
   second copy. With a keyboard, Alt+Tab also switches apps.
 - **Several apps at once:** every app reaches the radio's sound card through
@@ -140,7 +148,8 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   station starts** to have it come back on by itself after a restart or power
   cut. **Rec** turns red while it records, in the launcher's top bar and in the
   Home bar above every app. Recordings play on headphones or a speaker, never
-  through the radio, so they can't key it by VOX.
+  through the radio, so they can't key it by VOX. To delete several at once, tap
+  **Select**, tap the recordings (or **Select all**), then **Delete**.
 - **Broadcastify** (on the Recorder page): streams the same receive audio to a
   Broadcastify feed. Apply for a feed at broadcastify.com; once it's approved,
   type its server, port, mount and password into **Feed settings** and tap **Go
@@ -180,8 +189,8 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   The buttons at the top right switch the background: **Map** is the built-in
   one; **Streets**, **Satellite** (aerial photos with roads and place names) and
   **Topo** are Esri's online maps, so they need the internet. The choice is kept.
-- **Online** (F7): data from internet services, saved so the last answer still
-  shows offline. Each section says when it was last updated.
+- **Online** (the Online tile on Home, or F7): data from internet services, saved
+  so the last answer still shows offline. Each section says when it was last updated.
   - **Weather alerts** for your grid from the National Weather Service (US only),
     most severe first; **Details** shows the full text. Alerts in force also show in
     the top bar; tap there to read them. Checked every ten minutes when online.
@@ -291,6 +300,10 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   square in Settings > User; statewide channels with no site are always kept.
   **Hold** stays on the channel, tapping a channel in the list holds there,
   **Skip** moves on, **Lock out** (or untick a channel) leaves it out of the scan.
+  **Stay on a signal** sets how long it listens once it stops: until the
+  channel goes quiet (with 2, 5 or 10 seconds left for a reply), or a set time
+  (5, 10, 15, 30 seconds or 1 minute) from when the signal was found, then it
+  moves on even if the talking goes on. A held channel stays until you move on.
   **Tune** opens a keypad to listen on any frequency the receiver reaches, and
   **Save to list** adds it to your list in the group My channels; the − and +
   beside the frequency step 12.5 kHz (5 kHz below 50 MHz).

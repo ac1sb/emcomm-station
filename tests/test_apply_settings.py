@@ -131,6 +131,24 @@ class ApplySettingsTest(unittest.TestCase):
                 self.assertIn("Settings not saved", r.stderr)
                 self.assertFalse(os.path.exists(os.path.join(self.root, "etc/emcomm/station.json")))
 
+    def test_time_zone_is_checked_and_kept(self):
+        zones = os.path.join(self.root, "usr/share/zoneinfo/America")
+        os.makedirs(zones)
+        open(os.path.join(zones, "New_York"), "w").close()
+        open(os.path.join(self.root, "passwd"), "w").close()
+        r = self.run_helper(preset("ft-710", timezone="America/New_York"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(self.read("etc/emcomm/station.json"))["timezone"], "America/New_York")
+        for zone in ("America/Nowhere", "../../../passwd", "America/New_York; reboot", "/etc/passwd"):
+            with self.subTest(zone=zone):
+                r = self.run_helper(preset("ft-710", timezone=zone))
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("time zone", r.stderr)
+        # Without one, the computer's time zone is left as it is.
+        r = self.run_helper(preset("ft-710"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIsNone(json.loads(self.read("etc/emcomm/station.json"))["timezone"])
+
     def test_check_only_writes_nothing(self):
         r = self.run_helper(preset("ft-710"), "--check")
         self.assertEqual(r.returncode, 0, r.stderr)

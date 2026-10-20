@@ -47,3 +47,4 @@ jobs:
           python tests/test_stream.py
           python tests/test_scanner.py
           python tests/test_map_prepare.py
+          python tests/test_splash.py

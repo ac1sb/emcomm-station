@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Emcomm-CNC
+Description=Emcomm-CNC start-up screen: the logo and callsign, or your own picture
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/emcomm
+ScriptFile=/usr/share/plymouth/themes/emcomm/emcomm.script
