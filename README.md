@@ -33,8 +33,13 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 - **Presets** (`radios/`): Yaesu FT-891 with a Digirig, and Yaesu FT-710. Optional
   shortcuts that fill in every radio field at once, even before the radio is plugged in.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
-  The station starts with a spinner instead of scrolling text and goes straight
-  to the launcher (the GRUB menu still shows briefly, for recovery mode). Apps
+  The station starts with a start-up screen instead of scrolling text and goes
+  straight to the launcher (the GRUB menu still shows briefly, for recovery
+  mode). **Settings > Display > Start-up screen** picks it: the Emcomm-CNC logo
+  with your callsign (the standard one), a picture of your own (PNG or JPG, from
+  a USB stick or Downloads, filling the screen), a plain spinner, or the
+  start-up messages as text. A change takes about a minute to save and shows at
+  the next start; a new callsign shows after the next Update station. Apps
   open maximized under a thin **Home bar** across the top of the screen: **⌂ Home**
   brings the launcher back, each open app has a button to bring it to the front
   (and ✕ to close it), and the bar shows the callsign and UTC time. Tapping the

@@ -48,6 +48,10 @@ FAKE_DEVICES = os.environ.get("EMCOMM_FAKE_DEVICES")  # JSON file of devices, fo
 BACKUP_CMD = os.environ.get("EMCOMM_BACKUP", "emcomm-backup")
 APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply-settings").split()
 UPDATE_CMD = os.environ.get("EMCOMM_UPDATE", "sudo -n /usr/local/sbin/emcomm-update").split()
+SPLASH_CMD = os.environ.get("EMCOMM_SPLASH", "sudo -n /usr/local/sbin/emcomm-splash").split()
+SPLASH_PATH = os.environ.get("EMCOMM_SPLASH_SETTINGS", "/etc/emcomm/splash.json")
+SPLASH_STYLES = [("logo", "Emcomm-CNC logo and callsign"), ("picture", "A picture of your own…"),
+                 ("spinner", "Plain spinner"), ("text", "Start-up messages (text)")]
 RIGCTLD = ("127.0.0.1", 4532)
 BAUD_RATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
 GPS_FIXED = [("", "Automatic (u-blox USB GPS)")]
@@ -2400,6 +2404,14 @@ class Launcher(Gtk.Window):
         mode = combo(1, "Resolution", modes, old["mode"])
         size = combo(2, "Text size", [(str(v), t) for v, t in TEXT_SIZES], str(old["text_scale"]))
         rotate = combo(3, "Rotation", ROTATIONS, old["rotate"])
+        old_splash = (read_json(SPLASH_PATH, {}) or {}).get("style", "logo")
+        splash = None
+        if not self.desktop:  # a computer used for other things keeps its own start-up screen
+            styles = SPLASH_STYLES
+            if old_splash == "picture":
+                styles = [("logo", SPLASH_STYLES[0][1]), ("picture", "Your picture"),
+                          ("new-picture", "A different picture…")] + SPLASH_STYLES[2:]
+            splash = combo(4, "Start-up screen", styles, old_splash)
         if output:
             where = f"{output['name']} screen, now {(output['current'] or 'off').replace('x', ' × ')}."
             if len(outputs) > 1:
@@ -2421,11 +2433,14 @@ class Launcher(Gtk.Window):
         new = {"mode": mode.get_active_id(), "rotate": rotate.get_active_id(),
                "text_scale": float(size.get_active_id())}
         new_theme = theme.get_active_id()
+        new_splash = splash.get_active_id() if splash else old_splash
         dialog.destroy()
         if response != Gtk.ResponseType.OK:
             return
         if new_theme != self.theme:
             self._set_theme(new_theme)
+        if new_splash != old_splash:
+            self._set_splash("picture" if new_splash == "new-picture" else new_splash)
         if new == old:
             return
         if self.desktop and not self.session:
@@ -2439,6 +2454,65 @@ class Launcher(Gtk.Window):
         # Anything that might leave the screen unreadable goes back by itself unless kept.
         if not self._keep_display():
             self._apply_display(old)
+
+    def _set_splash(self, style):
+        """Change the start-up screen (for a picture, ask which first). The helper
+        rebuilds the boot files, which takes about a minute, so it runs in the background."""
+        args = ["set", style]
+        if style == "picture":
+            png = self._pick_splash_picture()
+            if not png:
+                return
+            args.append(png)
+        self._message("Changing the start-up screen. This takes about a minute; "
+                      "you'll see it the next time the station starts.")
+
+        def work():
+            try:
+                result = subprocess.run(SPLASH_CMD + args, capture_output=True, text=True, timeout=600, check=False)
+                error = None if result.returncode == 0 else (result.stderr.strip() or "it didn't work")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                error = str(exc)
+            if len(args) == 3:
+                try:
+                    os.remove(args[2])
+                except OSError:
+                    pass
+            GLib.idle_add(lambda: self._message(
+                f"The start-up screen didn't change: {error}" if error else "The new start-up screen is ready.")
+                and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pick_splash_picture(self):
+        """Ask for a picture (from a USB stick or Downloads) and make it a PNG no bigger than
+        1920 × 1080 for the start-up screen. Returns the PNG's path, or None."""
+        mount_usb_sticks()
+        dialog = Gtk.FileChooserDialog(title="Pick a picture for the start-up screen", transient_for=self,
+                                       action=Gtk.FileChooserAction.OPEN)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Use this picture", Gtk.ResponseType.OK)
+        images = Gtk.FileFilter()
+        images.set_name("Pictures (PNG, JPG)")
+        for pattern in ("*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG", "*.JPEG"):
+            images.add_pattern(pattern)
+        dialog.add_filter(images)
+        for folder in [os.path.expanduser("~/Downloads")] + glob.glob(f"/media/{os.environ.get('USER', '')}/*"):
+            if os.path.isdir(folder):
+                dialog.add_shortcut_folder(folder)
+        dialog.set_size_request(800, 500)
+        response = dialog.run()
+        path = dialog.get_filename()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK or not path:
+            return None
+        try:
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 1920, 1080, True)
+            out = os.path.join(GLib.get_tmp_dir(), f"emcomm-splash-{os.getpid()}.png")
+            pixbuf.savev(out, "png", [], [])
+        except GLib.Error as exc:
+            self._message(f"Couldn't use that picture: {exc.message}")
+            return None
+        return out
 
     def _apply_display(self, config):
         """Save the display settings and set the screen. Returns an error message, or None."""

@@ -82,23 +82,41 @@
     group: "{{ station_user }}"
     mode: "0755"
 
-# ---- quiet boot: a spinner instead of scrolling text, then the launcher ----
+# ---- quiet boot: a start-up screen instead of scrolling text, then the launcher ----
+# Settings > Display picks the screen (emcomm-splash): the Emcomm-CNC logo and
+# callsign (the default), a picture of your own, Debian's spinner, or the
+# start-up messages as text.
 
 - name: Install the boot splash
   ansible.builtin.apt:
     name: [plymouth, plymouth-themes]
     install_recommends: false
 
-- name: Read the boot splash theme
-  ansible.builtin.command: plymouth-set-default-theme
-  register: kiosk_splash_theme
-  changed_when: false
+- name: Create the start-up screen theme folder
+  ansible.builtin.file:
+    path: /usr/share/plymouth/themes/emcomm
+    state: directory
+    mode: "0755"
 
-- name: Use the spinner boot splash
-  ansible.builtin.command: plymouth-set-default-theme spinner
-  when: kiosk_splash_theme.stdout | trim != "spinner"
-  changed_when: true
-  notify: Update initramfs
+- name: Install the start-up screen theme
+  ansible.builtin.copy:
+    src: "splash/{{ item }}"
+    dest: "/usr/share/plymouth/themes/emcomm/{{ item }}"
+    mode: "0644"
+  loop: [emcomm.plymouth, logo.png]
+
+- name: Install the start-up screen helper
+  ansible.builtin.copy:
+    src: emcomm-splash
+    dest: /usr/local/sbin/emcomm-splash
+    mode: "0755"
+
+- name: Let the station user pick the start-up screen in Settings
+  ansible.builtin.copy:
+    content: "{{ station_user }} ALL=(root) NOPASSWD: /usr/local/sbin/emcomm-splash\n"
+    dest: /etc/sudoers.d/emcomm-splash
+    mode: "0440"
+    validate: visudo -cf %s
 
 - name: Check for GRUB
   ansible.builtin.stat:
@@ -112,17 +130,14 @@
     mode: "0755"
   when: kiosk_grub.stat.exists
 
-# Added to the kernel options already there. The GRUB menu still shows, so
-# "Advanced options" > recovery mode stays reachable.
-- name: Quiet kernel messages and show the splash
-  ansible.builtin.copy:
-    dest: /etc/default/grub.d/emcomm-quiet-boot.cfg
-    content: |
-      # Managed by the emcomm-station playbook: a quiet boot with a splash.
-      GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT quiet splash loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0"
-    mode: "0644"
-  when: kiosk_grub.stat.exists
-  notify: Update GRUB
+# Sets the Plymouth theme and the kernel options (quiet splash, added to those
+# already there) for the choice saved in /etc/emcomm/splash.json, rebuilding the
+# initramfs and GRUB's menu only when something changed. The GRUB menu still
+# shows, so "Advanced options" > recovery mode stays reachable.
+- name: Apply the start-up screen
+  ansible.builtin.command: /usr/local/sbin/emcomm-splash apply
+  register: kiosk_splash
+  changed_when: kiosk_splash.stdout == "changed"
 
 - name: No "Last login" or message of the day on the station's screen
   ansible.builtin.copy:
