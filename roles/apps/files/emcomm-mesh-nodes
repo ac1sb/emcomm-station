@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""Where the Meshtastic and MeshCore radios on the mesh are, for the station map.
+
+  emcomm-mesh-nodes             ask each radio the station has used for the nodes
+                                it knows, and save them (run by the map in the background)
+  emcomm-mesh-nodes --show      print what's saved
+
+The radio is the one the Meshtastic or MeshCore tile last connected to (USB or
+Bluetooth, remembered in ~/.config/emcomm/mesh-meshtastic.json and
+mesh-meshcore.json). A radio takes one connection at a time, so a radio whose tile
+is open is left alone and its last list kept. Positions are what each node last
+sent over the mesh; none of this needs the internet.
+
+Saved to ~/.cache/emcomm/mesh/nodes.js as window.MESHNODES = {meshtastic: {...},
+meshcore: {...}}, each {"time", "error", "nodes": [{name, short, lat, lon, heard, ...}]},
+which the map reloads.
+"""
+
+import asyncio
+import fcntl
+import json
+import os
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+CONFIG = os.path.join(HOME, ".config/emcomm/mesh-{}.json")
+OUT = os.environ.get("EMCOMM_MESH_DIR", os.path.join(HOME, ".cache/emcomm/mesh"))
+VENV = os.environ.get("EMCOMM_MESH_VENVS", "/opt/emcomm") + "/{}"
+CLIENTS = {"meshtastic": "contact", "meshcore": "meshcore-cli"}  # the tile's program for each
+TIMEOUT = 45  # seconds for one radio to answer
+
+
+def connection(kind):
+    """("usb", port) or ("ble", address) the tile last used, or None."""
+    try:
+        with open(CONFIG.format(kind), encoding="utf-8") as f:
+            saved = json.load(f)
+        how, where = saved["via"], saved["address"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return (how, where) if how in ("usb", "ble") and where else None
+
+
+def in_use(kind):
+    """Whether the tile's program (or another copy of this) has the radio now."""
+    program = CLIENTS[kind]
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                argv = [os.path.basename(a.decode(errors="replace")) for a in f.read().split(b"\0")[:2] if a]
+        except OSError:
+            continue
+        if program in argv:
+            return True
+    return False
+
+
+def _num(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def meshtastic_nodes(nodes, my_num=None):
+    """The nodes with a position, from meshtastic's interface.nodes."""
+    out = []
+    for n in (nodes or {}).values():
+        pos = n.get("position") or {}
+        lat, lon = _num(pos.get("latitude")), _num(pos.get("longitude"))
+        if lat is None or lon is None or (lat == 0 and lon == 0):
+            continue
+        user = n.get("user") or {}
+        metrics = n.get("deviceMetrics") or {}
+        out.append({"id": user.get("id") or str(n.get("num", "")), "name": user.get("longName") or "",
+                    "short": user.get("shortName") or "", "lat": lat, "lon": lon,
+                    "alt": _num(pos.get("altitude")), "heard": _num(n.get("lastHeard")),
+                    "snr": _num(n.get("snr")), "hops": _num(n.get("hopsAway")),
+                    "battery": _num(metrics.get("batteryLevel")), "me": n.get("num") == my_num and my_num is not None})
+    return out
+
+
+MESHCORE_TYPES = {1: "Companion", 2: "Repeater", 3: "Room server", 4: "Sensor"}
+
+
+def meshcore_nodes(contacts, me=None):
+    """The contacts with a position, from MeshCore's contact list (and this radio itself)."""
+    out = []
+    for key, c in (contacts or {}).items():
+        lat, lon = _num(c.get("adv_lat")), _num(c.get("adv_lon"))
+        if lat is None or lon is None or (lat == 0 and lon == 0):
+            continue
+        out.append({"id": str(c.get("public_key") or key)[:12], "name": c.get("adv_name") or "", "short": "",
+                    "lat": lat, "lon": lon, "heard": _num(c.get("last_advert")),
+                    "kind": MESHCORE_TYPES.get(c.get("type"), ""), "hops": _num(c.get("out_path_len")),
+                    "me": False})
+    if me and _num(me.get("adv_lat")) and _num(me.get("adv_lon")):
+        out.append({"id": "me", "name": me.get("name") or "This radio", "short": "", "lat": me["adv_lat"],
+                    "lon": me["adv_lon"], "heard": int(time.time()), "kind": "This radio", "me": True})
+    return out
+
+
+# ---- asking the radios (in each client's own Python environment) -------------------
+
+def ask_meshtastic(how, where):
+    from meshtastic.serial_interface import SerialInterface  # pylint: disable=import-outside-toplevel
+    if how == "ble":
+        from meshtastic.ble_interface import BLEInterface  # pylint: disable=import-outside-toplevel
+        iface = BLEInterface(where, timeout=TIMEOUT)
+    else:
+        iface = SerialInterface(where, timeout=TIMEOUT)
+    try:
+        my_num = getattr(iface.myInfo, "my_node_num", None)
+        return meshtastic_nodes(iface.nodes, my_num)
+    finally:
+        iface.close()
+
+
+def ask_meshcore(how, where):
+    from meshcore import MeshCore  # pylint: disable=import-outside-toplevel
+
+    async def run():
+        if how == "ble":
+            mc = await MeshCore.create_ble(address=where)
+        else:
+            mc = await MeshCore.create_serial(where)
+        if mc is None:
+            raise OSError("The MeshCore radio didn't answer.")
+        try:
+            event = await mc.commands.get_contacts(timeout=10)
+            contacts = event.payload if isinstance(event.payload, dict) and "reason" not in event.payload \
+                else mc.contacts
+            return meshcore_nodes(contacts, mc.self_info)
+        finally:
+            await mc.disconnect()
+
+    return asyncio.run(asyncio.wait_for(run(), TIMEOUT))
+
+
+def inner(kind, how, where):
+    """Runs inside the client's environment: print the nodes as JSON."""
+    try:
+        nodes = ask_meshtastic(how, where) if kind == "meshtastic" else ask_meshcore(how, where)
+        print(json.dumps({"nodes": nodes}))
+    except Exception as err:  # serial, Bluetooth and protocol errors all end up here
+        print(json.dumps({"error": str(err) or type(err).__name__}))
+    return 0
+
+
+# ---- saving ---------------------------------------------------------------------------
+
+def load():
+    try:
+        with open(os.path.join(OUT, "nodes.json"), encoding="utf-8") as f:
+            saved = json.load(f)
+        return saved if isinstance(saved, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save(saved):
+    os.makedirs(OUT, exist_ok=True)
+    for name, text in (("nodes.json", json.dumps(saved)),
+                       ("nodes.js", "window.MESHNODES = " + json.dumps(saved, separators=(",", ":")) + ";\n")):
+        path = os.path.join(OUT, name)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(path + ".tmp", path)
+
+
+def refresh(kind, saved, run=None):
+    """Ask one radio; keep its last list when it can't be asked. Returns the entry saved."""
+    old = saved.get(kind) or {}
+    found = connection(kind)
+    if found is None:
+        return old
+    if in_use(kind):
+        entry = dict(old, error=f"The {kind.capitalize()} tile has the radio; showing the last list.")
+    else:
+        result = (run or ask_in_venv)(kind, *found)
+        if "nodes" in result:
+            entry = {"time": int(time.time()), "error": "", "nodes": result["nodes"]}
+        else:
+            entry = dict(old, error=result.get("error") or "No answer from the radio.")
+    saved[kind] = entry
+    return entry
+
+
+def ask_in_venv(kind, how, where):
+    import subprocess  # pylint: disable=import-outside-toplevel
+    python = os.path.join(VENV.format(kind), "bin", "python3")
+    if not os.path.exists(python):
+        return {"error": f"The {kind.capitalize()} client isn't installed. Run Update station."}
+    try:
+        done = subprocess.run([python, os.path.abspath(__file__), "--inner", kind, how, where],
+                              capture_output=True, text=True, timeout=TIMEOUT + 15, check=False)
+        lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
+        return json.loads(lines[-1]) if lines else {"error": "No answer from the radio."}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {"error": "No answer from the radio."}
+
+
+def main(argv):
+    if len(argv) == 4 and argv[0] == "--inner":
+        return inner(*argv[1:])
+    if argv == ["--show"]:
+        print(json.dumps(load(), indent=1))
+        return 0
+    if argv:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    os.makedirs(OUT, exist_ok=True)
+    with open(os.path.join(OUT, ".lock"), "w", encoding="utf-8") as lock:
+        try:  # the map opened twice: one asks the radios, the other leaves them be
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0
+        saved = load()
+        for kind in CLIENTS:
+            refresh(kind, saved)
+            save(saved)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

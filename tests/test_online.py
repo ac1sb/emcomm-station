@@ -175,6 +175,50 @@ class Refresh(WithHome):
 
 
 
+class AlertMap(WithHome):
+    POLYGON = {"type": "Polygon", "coordinates": [[[-73.1, 43.0], [-73.0, 43.0], [-73.0, 43.1], [-73.1, 43.0]]]}
+    ZONE = {"type": "MultiPolygon", "coordinates": [[[[-72.51234, 44.0], [-72.4, 44.0], [-72.4, 44.2],
+                                                      [-72.5, 44.2]]], [[[-71.0, 44.0], [-71.0, 44.1]]]]}
+    DOC = {"features": [
+        {"geometry": POLYGON, "properties": {"event": "Severe Thunderstorm Warning", "severity": "Severe",
+                                              "areaDesc": "Bennington, VT", "ends": "2026-10-20T19:00:00-04:00"}},
+        {"geometry": None, "properties": {"event": "Wind Advisory", "severity": "Minor", "areaDesc": "Orange",
+                                          "affectedZones": ["https://api.weather.gov/zones/forecast/VTZ010"]}},
+        {"geometry": None, "properties": {"event": "Special Marine Warning", "severity": "Moderate",
+                                          "affectedZones": ["https://api.weather.gov/zones/forecast/ANZ999x"]}},
+    ]}
+
+    def test_storm_polygons_and_zone_outlines(self):
+        asked = []
+
+        def fake_get(url, params=None, headers=None):
+            asked.append(url)
+            if "/points/" in url:
+                return {"properties": {"relativeLocation": {"properties": {"state": "VT"}}}}
+            if "/alerts/active" in url:
+                return self.DOC
+            return {"geometry": self.ZONE}
+
+        online.get_json = fake_get
+        data = online.fetch_alertmap()
+        self.assertEqual(data["states"], "VT,MA,NH,NY")
+        self.assertIn("area=VT,MA,NH,NY", asked[1])
+        events = [a["event"] for a in data["alerts"]]
+        self.assertEqual(events, ["Wind Advisory", "Severe Thunderstorm Warning"])  # worst drawn last
+        wind = data["alerts"][0]
+        self.assertEqual(wind["rings"], [[[44.0, -72.512], [44.0, -72.4], [44.2, -72.4], [44.2, -72.5]]])
+        # The zone and the state are kept: asked once.
+        online.fetch_alertmap()
+        self.assertEqual(sum(1 for u in asked if "/zones/" in u), 1)
+        self.assertEqual(sum(1 for u in asked if "/points/" in u), 1)
+
+    def test_the_map_gets_a_script(self):
+        online.FETCHERS["alertmap"] = lambda: {"states": "VT", "alerts": []}
+        online.refresh("alertmap", now=1000)
+        with open(os.path.join(online.CACHE_DIR, "alertmap.js")) as f:
+            self.assertTrue(f.read().startswith("window.ALERTMAP = {"))
+
+
 class Lookup(WithHome):
     def test_qrz_then_saved_copy_when_offline(self):
         self.set_accounts(qrz_user="AC1SB", qrz_password="secret")

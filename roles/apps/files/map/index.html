@@ -10,19 +10,20 @@
 <div id="map"></div>
 <div id="warning"></div>
 <div id="panel">
-  <span class="dot" style="background:#F2A33A"></span><span>You</span>
   <label><input type="checkbox" id="show-gateways" checked> Gateways
     <span class="dot" style="background:#2E6FD8"></span>HF <span class="dot" style="background:#2E9D5A"></span>VHF</label>
   <select id="gateway-filter">
-    <option value="all">All gateways</option>
+    <option value="all">HF + VHF</option>
     <option value="hf">HF only</option>
-    <option value="vhf">VHF/UHF only</option>
+    <option value="vhf">VHF/UHF</option>
   </select>
   <label><input type="checkbox" id="show-heard" checked> Heard <span class="dot" style="background:#C2410C"></span></label>
   <label><input type="checkbox" id="show-heard-me" checked> Heard me <span class="dot" style="background:#7C3AED"></span></label>
   <label><input type="checkbox" id="show-aircraft" checked> Aircraft <span id="aircraft-count"></span></label>
+  <label><input type="checkbox" id="show-warnings" checked> Warnings <span id="warnings-count"></span></label>
+  <label><input type="checkbox" id="show-mesh" checked> Mesh</label>
   <label><input type="checkbox" id="show-grid" checked> Grid</label>
-  <button id="home">Centre on station</button>
+  <button id="home">Centre</button>
   <span id="note"></span>
 </div>
 <script src="file://@MAP_DIR@/leaflet.js"></script>

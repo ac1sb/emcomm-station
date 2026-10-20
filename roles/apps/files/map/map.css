@@ -1,11 +1,11 @@
 html, body { margin: 0; height: 100%; font-family: 'IBM Plex Sans', sans-serif; background: #AAC3D6; }
 #map { position: absolute; top: 0; bottom: 52px; left: 0; right: 0; background: #AAC3D6; }
 #panel { position: absolute; bottom: 0; left: 0; right: 0; height: 52px; display: flex; align-items: center;
-         gap: 10px; white-space: nowrap; overflow: hidden; padding: 0 12px; background: #15181B; color: #E8E6E1; font-size: 15px; }
-#panel label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+         gap: 6px; white-space: nowrap; overflow: hidden; padding: 0 10px; background: #15181B; color: #E8E6E1; font-size: 14px; }
+#panel label { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid #fff; }
 #panel input[type=checkbox] { width: 22px; height: 22px; }
-#panel select, #panel button { font-size: 15px; height: 38px; padding: 0 10px; border-radius: 8px;
+#panel select, #panel button { font-size: 14px; height: 38px; padding: 0 10px; border-radius: 8px;
          border: 1px solid #3A4048; background: #101214; color: #E8E6E1; }
 #panel > * { flex-shrink: 0; }
 #note { margin-left: auto; color: #9AA0A6; font-size: 13px; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; }
@@ -30,3 +30,10 @@ html, body { margin: 0; height: 100%; font-family: 'IBM Plex Sans', sans-serif; 
                text-shadow: 0 0 3px #fff, 0 0 3px #fff; white-space: nowrap; }
 .base-satellite .plane-label { color: #E0F7FA; text-shadow: 0 0 3px #000, 0 0 3px #000; }
 #aircraft-count { color: #9AA0A6; font-size: 13px; }
+#warnings-count { color: #9AA0A6; font-size: 13px; }
+.mesh-node { overflow: visible; }
+.mesh-dot { position: absolute; left: 0; top: 0; width: 10px; height: 10px; border: 2px solid #fff; border-radius: 3px;
+            box-shadow: 0 0 2px rgba(0, 0, 0, 0.5); }
+.mesh-label { position: absolute; left: 17px; top: -3px; padding: 1px 4px; border-radius: 3px; color: #222;
+              background: rgba(255, 255, 255, 0.85); font: 600 11px 'IBM Plex Mono', monospace; white-space: nowrap; }
+.base-satellite .mesh-label { color: #fff; background: rgba(0, 0, 0, 0.6); }

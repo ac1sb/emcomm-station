@@ -2,8 +2,8 @@
 """Online services for the station's Online page, saved so the last answer
 still shows when the station is offline.
 
-  emcomm-online refresh [--force] [SOURCE...]  fetch alerts, space, bands, heard
-                                               (default: alerts space bands)
+  emcomm-online refresh [--force] [SOURCE...]  fetch alerts, space, bands, heard, alertmap
+                                               (default: alerts space bands alertmap)
   emcomm-online lookup CALL                    callsign lookup (QRZ, else HamQTH) and the
                                                station's last aprs.fi position, as JSON
 
@@ -36,16 +36,35 @@ STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 ACCOUNTS_PATH = os.environ.get("EMCOMM_ACCOUNTS", os.path.expanduser("~/.config/emcomm/accounts.json"))
 CACHE_DIR = os.environ.get("EMCOMM_ONLINE_CACHE", os.path.expanduser("~/.cache/emcomm/online"))
 
-SOURCES = ["alerts", "space", "bands", "heard"]
-DEFAULT_SOURCES = ["alerts", "space", "bands"]
+SOURCES = ["alerts", "space", "bands", "heard", "alertmap"]
+DEFAULT_SOURCES = ["alerts", "space", "bands", "alertmap"]
 # Seconds before a source is fetched again; a forced refresh (the Refresh button)
 # still waits FORCED_MIN_AGE.
-MIN_AGE = {"alerts": 300, "space": 900, "bands": 3600, "heard": 300}
+MIN_AGE = {"alerts": 300, "space": 900, "bands": 3600, "heard": 300, "alertmap": 600}
 FORCED_MIN_AGE = {"heard": 300}
 FORCED_DEFAULT = 30
 HEARD_WINDOW = 6 * 3600  # PSKReporter reports from the last six hours
 
 NWS_ALERTS = "https://api.weather.gov/alerts/active?point={lat:.4f},{lon:.4f}"
+NWS_POINT = "https://api.weather.gov/points/{lat:.4f},{lon:.4f}"
+NWS_AREA_ALERTS = "https://api.weather.gov/alerts/active?area={areas}"
+ZONE_FETCHES = 60  # zone outlines fetched per refresh at most; the rest come next time
+# The map's warning areas cover the station's state and the states touching it.
+NEIGHBOURS = {
+    "AL": "FL GA MS TN", "AZ": "CA CO NM NV UT", "AR": "LA MO MS OK TN TX", "CA": "AZ NV OR",
+    "CO": "AZ KS NE NM OK UT WY", "CT": "MA NY RI", "DE": "MD NJ PA", "DC": "MD VA", "FL": "AL GA",
+    "GA": "AL FL NC SC TN", "ID": "MT NV OR UT WA WY", "IL": "IA IN KY MO WI", "IN": "IL KY MI OH",
+    "IA": "IL MN MO NE SD WI", "KS": "CO MO NE OK", "KY": "IL IN MO OH TN VA WV", "LA": "AR MS TX",
+    "ME": "NH", "MD": "DC DE PA VA WV", "MA": "CT NH NY RI VT", "MI": "IN OH WI",
+    "MN": "IA ND SD WI", "MS": "AL AR LA TN", "MO": "AR IA IL KS KY NE OK TN", "MT": "ID ND SD WY",
+    "NE": "CO IA KS MO SD WY", "NV": "AZ CA ID OR UT", "NH": "MA ME VT", "NJ": "DE NY PA",
+    "NM": "AZ CO OK TX UT", "NY": "CT MA NJ PA VT", "NC": "GA SC TN VA", "ND": "MN MT SD",
+    "OH": "IN KY MI PA WV", "OK": "AR CO KS MO NM TX", "OR": "CA ID NV WA", "PA": "DE MD NJ NY OH WV",
+    "RI": "CT MA", "SC": "GA NC", "SD": "IA MN MT ND NE WY", "TN": "AL AR GA KY MO MS NC VA",
+    "TX": "AR LA NM OK", "UT": "AZ CO ID NM NV WY", "VT": "MA NH NY", "VA": "DC KY MD NC TN WV",
+    "WA": "ID OR", "WV": "KY MD OH PA VA", "WI": "IA IL MI MN", "WY": "CO ID MT NE SD UT",
+    "AK": "", "HI": "", "PR": "", "GU": "", "VI": "", "AS": "", "MP": "",
+}
 SWPC_KP = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
 SWPC_FLUX = "https://services.swpc.noaa.gov/products/summary/10cm-flux.json"
 SWPC_SCALES = "https://services.swpc.noaa.gov/products/noaa-scales.json"
@@ -313,6 +332,93 @@ def fetch_alerts():
     return parse_nws(doc)
 
 
+def station_state(lat, lon):
+    """The station's state, from the NWS (asked once per place, then kept)."""
+    path = os.path.join(CACHE_DIR, "place.json")
+    key = f"{lat:.2f},{lon:.2f}"
+    saved = read_json(path, {})
+    if saved.get("key") == key and saved.get("state"):
+        return saved["state"]
+    doc = get_json(NWS_POINT.format(lat=lat, lon=lon), headers={"Accept": "application/geo+json"})
+    state = (((doc.get("properties") or {}).get("relativeLocation") or {}).get("properties") or {}).get("state")
+    if not state:
+        raise OnlineError("the NWS doesn't cover the station's location")
+    write_json(path, {"key": key, "state": state})
+    return state
+
+
+def outline(geometry):
+    """A GeoJSON Polygon or MultiPolygon as rings of [lat, lon], rounded to about 100 m."""
+    if not isinstance(geometry, dict):
+        return []
+    polygons = geometry.get("coordinates") or []
+    if geometry.get("type") == "Polygon":
+        polygons = [polygons]
+    elif geometry.get("type") != "MultiPolygon":
+        return []
+    rings = []
+    for polygon in polygons:
+        for ring in polygon[:1]:  # the outer edge; holes don't matter for a warning area
+            points = []
+            for lon, lat, *_ in ring:
+                point = [round(lat, 3), round(lon, 3)]
+                if not points or points[-1] != point:
+                    points.append(point)
+            if len(points) >= 3:
+                rings.append(points)
+    return rings
+
+
+def zone_outline(url, budget):
+    """A forecast or county zone's outline, kept on disk (zones hardly ever change).
+    budget is a one-item list: how many more zones may be fetched this time."""
+    zone = url.rstrip("/").rsplit("/", 1)[-1]
+    if not re.fullmatch(r"[A-Z]{2}[CZ]\d{3}", zone):
+        return []
+    path = os.path.join(CACHE_DIR, "zones", zone + ".json")
+    saved = read_json(path, None)
+    if saved is not None:
+        return saved
+    if budget[0] <= 0:
+        return []
+    budget[0] -= 1
+    try:
+        rings = outline(get_json(url, headers={"Accept": "application/geo+json"}).get("geometry"))
+    except OnlineError:
+        return []
+    write_json(path, rings)
+    return rings
+
+
+def parse_alert_areas(doc, zone_rings):
+    """Each alert with the areas it covers: its own polygon (storm-based warnings), or
+    the outlines of the zones it names."""
+    out = []
+    for feature in doc.get("features") or []:
+        p = feature.get("properties") or {}
+        rings = outline(feature.get("geometry"))
+        if not rings:
+            for url in p.get("affectedZones") or []:
+                rings += zone_rings(url)
+        if not rings:
+            continue
+        out.append({"event": p.get("event") or "Alert", "severity": p.get("severity") or "Unknown",
+                    "headline": p.get("headline") or "", "area": p.get("areaDesc") or "",
+                    "ends": p.get("ends") or p.get("expires") or "", "rings": rings})
+    rank = {name: i for i, name in enumerate(SEVERITY)}
+    # Least severe first, so the worst are drawn on top.
+    return sorted(out, key=lambda a: -rank.get(a["severity"], len(SEVERITY)))
+
+
+def fetch_alertmap():
+    lat, lon = my_position()
+    state = station_state(lat, lon)
+    areas = ",".join([state] + NEIGHBOURS.get(state, "").split())
+    doc = get_json(NWS_AREA_ALERTS.format(areas=areas), headers={"Accept": "application/geo+json"})
+    budget = [ZONE_FETCHES]
+    return {"states": areas, "alerts": parse_alert_areas(doc, lambda url: zone_outline(url, budget))}
+
+
 def fetch_space():
     data, errors = {}, []
     for url, parse, key in ((SWPC_KP, parse_kp, "kp"), (SWPC_FLUX, parse_flux, "sfi"),
@@ -344,7 +450,7 @@ def fetch_heard():
 
 
 FETCHERS = {"alerts": fetch_alerts, "space": fetch_space, "bands": fetch_bands,
-            "heard": fetch_heard}
+            "heard": fetch_heard, "alertmap": fetch_alertmap}
 
 
 def cache_path(name):
@@ -367,6 +473,10 @@ def refresh(name, force=False, now=None):
     except OnlineError as exc:
         record["error"] = str(exc)
     write_json(cache_path(name), record)
+    if name == "alertmap":  # the map page loads it as a script (it can't read files)
+        with open(os.path.join(CACHE_DIR, "alertmap.js.tmp"), "w", encoding="utf-8") as f:
+            f.write("window.ALERTMAP = " + json.dumps(record, separators=(",", ":")) + ";\n")
+        os.replace(os.path.join(CACHE_DIR, "alertmap.js.tmp"), os.path.join(CACHE_DIR, "alertmap.js"))
     return record
 
 

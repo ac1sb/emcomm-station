@@ -231,7 +231,7 @@
     var A = window.AIRCRAFT || { state: "none", aircraft: [] };
     var on = document.getElementById("show-aircraft").checked;
     var count = document.getElementById("aircraft-count");
-    count.textContent = A.state === "running" ? "(" + A.aircraft.length + ")" : "(no receiver)";
+    count.textContent = A.state === "running" ? "(" + A.aircraft.length + ")" : "(no rx)";
     count.title = A.text || "";
     var stale = Date.now() / 1000 - (A.time || 0) > 20;  // the receiver stopped writing
     var keep = {};
@@ -252,15 +252,71 @@
       if (!keep[hex]) { aircraft.removeLayer(planes[hex]); delete planes[hex]; }
     });
   }
-  function reloadAircraft() {
-    var old = document.getElementById("aircraft-data");
+  // Load a data script again (its newest copy) and redraw once it's in.
+  function reload(id, src, draw) {
+    var old = document.getElementById(id);
     var s = document.createElement("script");
-    s.id = "aircraft-data";
-    s.src = "../adsb/aircraft.js?" + Date.now();
-    s.onload = s.onerror = function () { if (old) old.remove(); drawAircraft(); };
+    s.id = id;
+    s.src = src + "?" + Date.now();
+    s.onload = s.onerror = function () { if (old) old.remove(); draw(); };
     document.body.appendChild(s);
   }
+  function reloadAircraft() { reload("aircraft-data", "../adsb/aircraft.js", drawAircraft); }
   setInterval(reloadAircraft, 2000);
+
+  // ---- NWS warning areas -------------------------------------------------
+  // emcomm-online's alertmap: the station's state and its neighbours, refreshed when
+  // online; the last ones stay offline, each until it ends.
+  var warnings = L.layerGroup().addTo(map);
+  var SEVERITY = { Extreme: "#B91C1C", Severe: "#EA580C", Moderate: "#CA8A04", Minor: "#2563EB" };
+  function drawWarnings() {
+    warnings.clearLayers();
+    var W = window.ALERTMAP || {}, now = Date.now();
+    var live = (((W.data || {}).alerts) || []).filter(function (a) { return !a.ends || Date.parse(a.ends) > now; });
+    var count = document.getElementById("warnings-count");
+    count.textContent = W.updated ? "(" + live.length + ")" : "";
+    count.title = W.updated ? "NWS, " + ago(W.updated) + (W.error ? " · " + W.error : "") : (W.error || "Not fetched yet");
+    if (!document.getElementById("show-warnings").checked) return;
+    live.forEach(function (a) {
+      var c = SEVERITY[a.severity] || "#6B7280";
+      L.polygon(a.rings, { color: c, weight: 1.5, fillColor: c, fillOpacity: 0.16, renderer: renderer })
+        .bindPopup("<b>" + esc(a.event) + "</b><br>" + esc(a.headline || a.area) +
+                   (a.ends ? "<br>Until " + esc(new Date(a.ends).toLocaleString()) : "") + "<br>NWS · " + esc(a.severity))
+        .addTo(warnings);
+    });
+  }
+  function reloadWarnings() { reload("warnings-data", "../online/alertmap.js", drawWarnings); }
+  setInterval(reloadWarnings, 60000);
+
+  // ---- Meshtastic and MeshCore nodes --------------------------------------
+  // emcomm-mesh-nodes asks the radios when the map opens; the last list stays.
+  var mesh = L.layerGroup().addTo(map);
+  var MESH = { meshtastic: ["Meshtastic", "#0F766E"], meshcore: ["MeshCore", "#BE185D"] };
+  function drawMesh() {
+    mesh.clearLayers();
+    if (!document.getElementById("show-mesh").checked) return;
+    var M = window.MESHNODES || {};
+    Object.keys(MESH).forEach(function (kind) {
+      ((M[kind] || {}).nodes || []).forEach(function (n) {
+        var label = n.short || n.name || n.id;
+        var icon = L.divIcon({ className: "mesh-node", iconSize: [14, 14], iconAnchor: [7, 7],
+          html: '<span class="mesh-dot" style="background:' + MESH[kind][1] + '"></span>' +
+                '<span class="mesh-label">' + esc(label) + "</span>" });
+        L.marker([n.lat, n.lon], { icon: icon })
+          .bindPopup("<b>" + esc(n.name || label) + "</b>" + (n.short ? " · " + esc(n.short) : "") + "<br>" +
+                     MESH[kind][0] + (n.kind ? " " + esc(n.kind.toLowerCase()) : " node") +
+                     (n.me ? " (this station's radio)" : "") +
+                     (n.heard ? "<br>Heard " + ago(n.heard) : "") +
+                     (n.snr != null ? " · SNR " + n.snr + " dB" : "") +
+                     (n.hops != null && n.hops >= 0 ? " · " + n.hops + (n.hops === 1 ? " hop" : " hops") : "") +
+                     (n.battery != null ? "<br>Battery " + n.battery + "%" : "") +
+                     ((M[kind].time) ? "<br>Asked the radio " + ago(M[kind].time) : ""))
+          .addTo(mesh);
+      });
+    });
+  }
+  function reloadMesh() { reload("mesh-data", "../mesh/nodes.js", drawMesh); }
+  setInterval(reloadMesh, 5000);
 
   function ago(t) {
     if (!t) return "";
@@ -281,6 +337,8 @@
   document.getElementById("show-heard-me").addEventListener("change", drawHeardMe);
   document.getElementById("show-grid").addEventListener("change", drawGrid);
   document.getElementById("show-aircraft").addEventListener("change", drawAircraft);
+  document.getElementById("show-warnings").addEventListener("change", drawWarnings);
+  document.getElementById("show-mesh").addEventListener("change", drawMesh);
   document.getElementById("home").addEventListener("click", function () { map.setView(home, 7); });
   function warn(text) {
     var w = document.getElementById("warning");
@@ -294,5 +352,5 @@
   var saved = "offline";
   try { saved = localStorage.getItem("emcomm-map-base") || "offline"; } catch (e) { /* first time */ }
   setBase(saved);
-  drawGrid(); drawGateways(); drawHeard(); drawHeardMe(); reloadAircraft();
+  drawGrid(); drawGateways(); drawHeard(); drawHeardMe(); reloadAircraft(); reloadWarnings(); reloadMesh();
 })();

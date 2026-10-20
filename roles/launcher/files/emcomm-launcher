@@ -1093,7 +1093,7 @@ ACCOUNTS_PATH = os.environ.get("EMCOMM_ACCOUNTS", os.path.expanduser("~/.config/
 ONLINE_SECTIONS = {"alerts": "Weather alerts", "space": "Propagation", "heard": "Who heard me",
                    "lookup": "Callsign lookup"}
 ONLINE_SOURCES = {"alerts": ["alerts"], "space": ["space", "bands"], "heard": ["heard"], "lookup": []}
-BACKGROUND_SOURCES = ["alerts", "space", "bands"]
+BACKGROUND_SOURCES = ["alerts", "space", "bands", "alertmap"]  # alertmap: warning areas for the map
 BANDS = [("160 m", 1.8, 2), ("80 m", 3.5, 4), ("60 m", 5.3, 5.41), ("40 m", 7, 7.3), ("30 m", 10.1, 10.15),
          ("20 m", 14, 14.35), ("17 m", 18.068, 18.168), ("15 m", 21, 21.45), ("12 m", 24.89, 24.99),
          ("10 m", 28, 29.7), ("6 m", 50, 54), ("2 m", 144, 148), ("1.25 m", 222, 225), ("70 cm", 420, 450)]
