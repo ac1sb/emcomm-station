@@ -6,11 +6,22 @@
 Keeps only what the map draws (names, and roads in North America), rounds
 coordinates to about 100 m, and writes one script the map page loads, since a
 page opened from disk can't fetch files.
+
+US town names come from the Census Bureau's gazetteer files, if SOURCE_DIR has
+them (*_Gaz_place_national.zip and *_Gaz_cousubs_national.zip): every city,
+town, village and census-designated place, plus New England's towns, which the
+Census counts as county subdivisions rather than places.
 """
 
+import csv
+import glob
+import io
 import json
+import math
 import os
+import re
 import sys
+import zipfile
 
 ROAD_TYPES = {"Major Highway", "Secondary Highway", "Beltway", "Bypass"}
 
@@ -39,6 +50,50 @@ def collection(features, props, digits=3, keep=lambda p: True):
     return {"type": "FeatureCollection", "features": out}
 
 
+# New England's towns are county subdivisions; elsewhere those are mostly
+# townships and census areas, which would only crowd the map.
+TOWN_STATES = {"CT", "MA", "ME", "NH", "RI", "VT"}
+SUFFIX = re.compile(r"\s+(city|town|village|CDP|borough|municipality|plantation|township|"
+                    r"comunidad|zona urbana|city and borough|unified government|"
+                    r"metropolitan government|consolidated government|urban county)"
+                    r"(\s+\(balance\))?$")
+
+
+def gazetteer(path):
+    """Rows of a Census gazetteer zip (tab-separated; the last header has trailing spaces)."""
+    with zipfile.ZipFile(path) as z:
+        name = next(n for n in z.namelist() if n.endswith(".txt"))
+        with z.open(name) as f:
+            reader = csv.reader(io.TextIOWrapper(f, encoding="latin-1"), delimiter="\t")
+            header = [h.strip() for h in next(reader)]
+            for row in reader:
+                yield dict(zip(header, (v.strip() for v in row)))
+
+
+def towns(src):
+    """[lat, lon, name, tier] for US towns: tier 1 a city or town, 2 a village or CDP."""
+    found = []
+    for path in sorted(glob.glob(os.path.join(src, "*_Gaz_place_national.zip"))):
+        for r in gazetteer(path):
+            name = SUFFIX.sub("", r.get("NAME", ""))
+            tier = 1 if re.search(r" (city|town|municipality|borough)$", r.get("NAME", "")) else 2
+            found.append((float(r["INTPTLAT"]), float(r["INTPTLONG"]), name, tier))
+    for path in sorted(glob.glob(os.path.join(src, "*_Gaz_cousubs_national.zip"))):
+        for r in gazetteer(path):
+            if r.get("USPS") in TOWN_STATES and r.get("FUNCSTAT") == "A" and r.get("NAME", "").endswith(" town"):
+                found.append((float(r["INTPTLAT"]), float(r["INTPTLONG"]), SUFFIX.sub("", r["NAME"]), 1))
+    # A New England town and its village of the same name: keep one, as a town.
+    found.sort(key=lambda t: t[3])
+    kept, seen = [], {}
+    for lat, lon, name, tier in found:
+        if any(abs(lat - a) < 0.08 and abs(lon - b) < 0.08 / math.cos(math.radians(lat))
+               for a, b in seen.get(name, [])):
+            continue
+        seen.setdefault(name, []).append((lat, lon))
+        kept.append([round(lat, 4), round(lon, 4), name, tier])
+    return kept
+
+
 def main(argv):
     if len(argv) != 2:
         print(__doc__.strip(), file=sys.stderr)
@@ -53,6 +108,7 @@ def main(argv):
                             keep=lambda p: str(p.get("continent", "")).startswith("North America")
                             and p.get("type") in ROAD_TYPES),
         "places": collection(load(src, "ne_10m_populated_places_simple"), ["name", "scalerank"], digits=4),
+        "towns": towns(src),
     }
     tmp = dest + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

@@ -15,3 +15,12 @@ html, body { margin: 0; height: 100%; font-family: 'IBM Plex Sans', sans-serif; 
 .leaflet-popup-content table { border-collapse: collapse; }
 .leaflet-popup-content td { padding: 1px 8px 1px 0; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
 .leaflet-container .leaflet-control-zoom a { width: 44px; height: 44px; line-height: 44px; font-size: 24px; }
+.place-label.small { font-size: 11px; color: #555; }
+#bases { display: flex; flex-direction: column; background: #15181B; }
+#bases button { font: 15px 'IBM Plex Sans', sans-serif; height: 44px; min-width: 96px; padding: 0 12px;
+                border: 0; border-bottom: 1px solid #3A4048; background: #15181B; color: #E8E6E1; }
+#bases button:last-child { border-bottom: 0; }
+#bases button.on { background: #F2A33A; color: #101214; font-weight: 600; }
+.base-satellite .grid-label { color: #FFE9B8; text-shadow: 0 0 3px #000, 0 0 3px #000; }
+#warning { display: none; position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 1000;
+           max-width: 70%; padding: 10px 16px; border-radius: 8px; background: #15181B; color: #F2A33A; font-size: 16px; }
