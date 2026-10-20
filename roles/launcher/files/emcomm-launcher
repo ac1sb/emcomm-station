@@ -89,9 +89,10 @@ window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', san
 .arranging .tile.gap { border-color: $input_line; }
 dialog button.chip-x { min-height: 28px; padding: 0 8px; }
 .page-dots { font-size: 15px; color: $muted; }
-.arrange-bar .navbtn { min-height: 40px; }
+.arrange-bar .navbtn { min-height: 36px; }
+.arranging .tile { padding: 8px 14px; }  /* room for the arrange bar's two lines */
 .page-bar .navbtn { min-height: 30px; min-width: 64px; padding: 0 12px; }
-.arrange-bar { background: $surface; border: 1px solid $accent_fill; border-radius: 12px; padding: 8px 12px; }
+.arrange-bar { background: $surface; border: 1px solid $accent_fill; border-radius: 12px; padding: 6px 12px; }
 menu { background: $surface; border: 1px solid $input_line; padding: 4px 0; }
 menuitem { color: $text; font-size: 16px; padding: 12px 18px; }
 menuitem:hover { background: $hover; }
@@ -375,21 +376,56 @@ def format_freq(hz_text):
 
 ICONS_DIR = os.environ.get("EMCOMM_ICONS", "/usr/share/emcomm/icons")
 USER_ICONS = os.path.expanduser("~/.local/share/emcomm/icons")  # the operator's own pictures win
-# The operator's own order of the Home tiles: tile codes, with "" for a gap.
+# The operator's own order of the Home tiles: tile codes, with "" for a gap, and
+# {"folder": name, "apps": [codes]} for a folder.
 TILE_ORDER = os.path.expanduser("~/.config/emcomm/tiles.json")
+# The operator's own names for tiles: {tile code: name}.
+TILE_NAMES = os.path.expanduser("~/.config/emcomm/tile-names.json")
 GAP = ""
 PAGE = "|"  # in the saved order: the next tile starts a new Home page
 TILE_COLUMNS, TILE_ROWS = 6, 3  # a Home page: the same tile size however many apps there are
 PER_PAGE = TILE_COLUMNS * TILE_ROWS
+FOLDER_MAX = PER_PAGE  # a folder opens as one page of tiles
+
+
+def is_folder(entry):
+    return isinstance(entry, dict) and "folder" in entry
+
+
+def apply_folders(order, folders):
+    """order (codes and markers) with the standard folders put in, each where its first app was."""
+    order = list(order)
+    for folder in folders or []:
+        members = [code for code in folder.get("apps", []) if code in order][:FOLDER_MAX]
+        if not members:
+            continue
+        order[order.index(members[0])] = {"folder": folder.get("name") or "Folder", "apps": members}
+        order = [entry for entry in order if is_folder(entry) or entry not in members]
+    return order
+
+
+def standard_order(apps, folders):
+    return apply_folders([app.get("code") for app in apps], folders)
 
 
 def arrange_tiles(apps, order):
-    """The Home slots in the operator's order: apps (dicts), GAP and PAGE. Apps the saved order
-    doesn't know (new ones) go at the end; codes no longer installed are dropped."""
+    """The Home slots in the operator's order: apps (dicts), GAP, PAGE and folders
+    ({"folder": name, "apps": [app dicts]}). Apps the saved order doesn't know (new ones)
+    go at the end; codes no longer installed are dropped."""
     by_code = {app.get("code"): app for app in apps}
     slots, placed = [], set()
     for code in order if isinstance(order, list) else []:
-        if code in (GAP, PAGE):
+        if is_folder(code):
+            inside = []
+            for member in code.get("apps") or []:
+                if isinstance(member, str) and member in by_code and member not in placed \
+                        and len(inside) < FOLDER_MAX:
+                    inside.append(by_code[member])
+                    placed.add(member)
+            slots.append({"folder": str(code.get("folder") or "Folder"), "apps": inside})
+        elif not isinstance(code, str):
+            continue
+        elif code in (GAP, PAGE):
             slots.append(code)
         elif code in by_code and code not in placed:
             slots.append(by_code[code])
@@ -415,6 +451,13 @@ def paginate(slots, per_page=PER_PAGE, keep_empty_last=False):
     if current or not pages or keep_empty_last or (slots and isinstance(slots[-1], str) and slots[-1] == PAGE):
         pages.append((current, len(slots)))
     return pages
+
+
+def unparent(widget):
+    """Take a tile out of the grid it's in, so it can go into another (a Home page or a folder)."""
+    parent = widget.get_parent()
+    if parent is not None:
+        parent.remove(widget)
 
 
 def move_slot(slots, src, dest):
@@ -447,17 +490,17 @@ def find_icon(name):
     return None
 
 
-def load_icon(path, colour):
+def load_icon(path, colour, size=ICON_SIZE):
     """A tile icon as a pixbuf. The standard SVG icons are redrawn in the theme's accent colour."""
     if path.endswith(".svg") and path.startswith(ICONS_DIR + "/"):
         with open(path, "rb") as f:
             svg = f.read().replace(ICON_COLOUR.encode(), colour.encode())
         loader = GdkPixbuf.PixbufLoader()
-        loader.set_size(ICON_SIZE, ICON_SIZE)
+        loader.set_size(size, size)
         loader.write(svg)
         loader.close()
         return loader.get_pixbuf()
-    return GdkPixbuf.Pixbuf.new_from_file_at_scale(path, ICON_SIZE, ICON_SIZE, True)
+    return GdkPixbuf.Pixbuf.new_from_file_at_scale(path, size, size, True)
 
 
 def remove_user_icon(name):
@@ -1251,6 +1294,7 @@ class Launcher(Gtk.Window):
 
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self.stack.add_named(self._home_page(), "home")
+        self.stack.add_named(self._folder_page(), "folder")
         self.stack.add_named(self._diag_page(), "diagnostics")
         self.stack.add_named(self._settings_page(), "settings")
         self.stack.add_named(self._logs_page(), "logs")
@@ -1394,7 +1438,7 @@ class Launcher(Gtk.Window):
         if event.keyval in pages:
             self.stack.set_visible_child_name(pages[event.keyval])
             return True
-        if self.stack.get_visible_child_name() == "home" and Gdk.KEY_1 <= event.keyval <= Gdk.KEY_9:
+        if self.stack.get_visible_child_name() in ("home", "folder") and Gdk.KEY_1 <= event.keyval <= Gdk.KEY_9:
             index, tiles = event.keyval - Gdk.KEY_1, self._page_tiles()
             if index < len(tiles) and tiles[index].get_sensitive():
                 tiles[index].clicked()
@@ -1578,29 +1622,49 @@ class Launcher(Gtk.Window):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=20)
         self.home_page = page
         # Arranging: tap a tile, then tap where it goes.
-        self.arrange_bar = Gtk.Box(spacing=12, no_show_all=True)
+        self.arrange_bar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, no_show_all=True)
         self.arrange_bar.get_style_context().add_class("arrange-bar")
         self.arrange_hint = Gtk.Label(xalign=0, wrap=True)
-        self.arrange_bar.pack_start(self.arrange_hint, True, True, 0)
-        self.arrange_buttons = [self._navbtn("Done", lambda *_: self._arrange(False), "primary"),
-                                self._navbtn("Standard order", lambda *_: self._arrange_reset()),
+        self.arrange_bar.pack_start(self.arrange_hint, False, False, 0)
+        buttons = Gtk.Box(spacing=10)
+        self.arrange_bar.pack_start(buttons, False, False, 0)
+        self.reset_btn = self._navbtn("Standard order", lambda *_: self._arrange_reset())
+        self.folder_new_btn = self._navbtn("New folder", lambda *_: self._arrange_new_folder())
+        self.arrange_buttons = [self._navbtn("Done", lambda *_: self._arrange(False), "primary"), self.reset_btn,
                                 self._navbtn("New page", lambda *_: self._arrange_add_page()),
+                                self.folder_new_btn,
                                 self._navbtn("Add a gap", lambda *_: self._arrange_add_gap())]
         self.gap_remove_btn = self._navbtn("Remove gap", lambda *_: self._arrange_remove_gap())
         self.page_remove_btn = self._navbtn("Remove page", lambda *_: self._arrange_remove_page())
-        for btn in self.arrange_buttons + [self.gap_remove_btn, self.page_remove_btn]:
-            self.arrange_bar.pack_end(btn, False, False, 0)
+        # A folder picked: open it (to arrange what's inside), rename it, or empty it onto Home.
+        self.folder_open_btn = self._navbtn("Open folder", lambda *_: self._open_folder(self.picked))
+        self.folder_rename_btn = self._navbtn("Rename folder", lambda *_: self._rename_folder(self.picked))
+        self.folder_remove_btn = self._navbtn("Remove folder", lambda *_: self._arrange_remove_folder())
+        self.picked_buttons = [self.gap_remove_btn, self.page_remove_btn, self.folder_open_btn,
+                               self.folder_rename_btn, self.folder_remove_btn]
+        for btn in self.arrange_buttons + self.picked_buttons:
+            buttons.pack_end(btn, False, False, 0)
         page.pack_start(self.arrange_bar, False, False, 0)
         # Home pages: a fixed grid of tiles each; swipe, tap the arrows or press Page Up/Down.
         self.home_pages = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT,
                                     transition_duration=200)
+        names = read_json(TILE_NAMES, {})
+        for app in self.config.get("apps", []):
+            app["standard_name"] = app.get("name", "")
+            custom = names.get(app.get("code")) if isinstance(names, dict) else None
+            if isinstance(custom, str) and custom.strip():
+                app["name"] = custom.strip()
         self.app_tiles = {app.get("code"): self._tile(app) for app in self.config.get("apps", [])}
         self.arranging, self.picked = False, None
         self.page_index, self.page_grids, self.last_swipe = 0, [], 0.0
+        self.folder_tiles, self.open_folder = [], None
         saved = read_json(TILE_ORDER, {})
         order = saved.get("order") if isinstance(saved, dict) else None
-        self.slots = [self.app_tiles[a.get("code")] if isinstance(a, dict) else self._gap_tile() if a == GAP else PAGE
-                      for a in arrange_tiles(self.config.get("apps", []), order)]
+        if not isinstance(order, list):
+            order = standard_order(self.config.get("apps", []), self.config.get("folders"))
+        elif not saved.get("folders"):  # arranged before there were folders: add the standard ones
+            order = apply_folders(order, self.config.get("folders"))
+        self.slots = self._slots_from(order)
         swipe = Gtk.GestureSwipe.new(self.home_pages)
         swipe.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         swipe.connect("swipe", self._home_swiped)
@@ -1639,6 +1703,7 @@ class Launcher(Gtk.Window):
         for number, (indices, end) in enumerate(self.pages):
             grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
             for n, i in enumerate(indices):
+                unparent(self.slots[i])
                 grid.attach(self.slots[i], n % TILE_COLUMNS, n // TILE_COLUMNS, 1, 1)
             # Keep every tile the same size on a page that isn't full; while arranging,
             # the spare places take a tile to the end of this page.
@@ -1647,16 +1712,43 @@ class Launcher(Gtk.Window):
                 grid.attach(spare, n % TILE_COLUMNS, n // TILE_COLUMNS, 1, 1)
             self.page_grids.append(grid)
             self.home_pages.add_named(grid, str(number))
-        self.tiles = [t for t in self.slots if not isinstance(t, str) and t.app is not None]
+        self.folder_tiles = [t for t in self.slots if not isinstance(t, str) and t.kind == "folder"]
+        self.tiles = [t for t in self.slots if not isinstance(t, str) and t.kind == "app"]
+        for folder in self.folder_tiles:
+            self.tiles += folder.members
         self.home_pages.show_all()
         self._show_home_page(min(self.page_index, len(self.pages) - 1), animate=False)
         if self.arranging:  # saved as it changes, so leaving the page any way keeps it
-            write_json(TILE_ORDER, {"order": [t if isinstance(t, str) else t.app.get("code") if t.app else GAP
-                                              for t in self.slots]})
+            self._save_tiles()
+
+    def _save_tiles(self):
+        def entry(tile):
+            if isinstance(tile, str):
+                return tile
+            if tile.kind == "folder":
+                return {"folder": tile.name, "apps": [t.app.get("code") for t in tile.members]}
+            return tile.app.get("code") if tile.kind == "app" else GAP
+        write_json(TILE_ORDER, {"order": [entry(t) for t in self.slots], "folders": True})
+
+    def _slots_from(self, order):
+        """Home slots (tile widgets and PAGE markers) for a saved order."""
+        slots = []
+        for entry in arrange_tiles(self.config.get("apps", []), order):
+            if is_folder(entry):
+                slots.append(self._folder_tile(entry["folder"],
+                                               [self.app_tiles[a.get("code")] for a in entry["apps"]]))
+            elif isinstance(entry, dict):
+                slots.append(self.app_tiles[entry.get("code")])
+            else:
+                slots.append(self._gap_tile() if entry == GAP else PAGE)
+        return slots
 
     def _page_tiles(self):
+        """The tiles the number keys open: on the folder shown, or on the Home page shown."""
+        if self.stack.get_visible_child_name() == "folder" and self.open_folder is not None:
+            return list(self.open_folder.members)
         indices = self.pages[self.page_index][0] if self.pages else []
-        return [self.slots[i] for i in indices if self.slots[i].app is not None]
+        return [self.slots[i] for i in indices if self.slots[i].kind != "gap"]
 
     def _show_home_page(self, index, animate=True):
         """Show Home page index (wrapping past either end)."""
@@ -1665,9 +1757,12 @@ class Launcher(Gtk.Window):
         self.home_pages.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT if animate
                                             else Gtk.StackTransitionType.NONE)
         self.home_pages.set_visible_child_name(str(self.page_index))
-        for tile in self.tiles:
-            tile.key_hint.set_text("")
-        for i, tile in enumerate(self._page_tiles()[:9]):
+        inside = self.open_folder.members if self.open_folder is not None else []
+        for tile in self.tiles + self.folder_tiles:
+            if tile not in inside:  # the folder shown numbers its own
+                tile.key_hint.set_text("")
+        indices = self.pages[self.page_index][0] if self.pages else []
+        for i, tile in enumerate([self.slots[i] for i in indices if self.slots[i].kind != "gap"][:9]):
             tile.key_hint.set_text(str(i + 1))
         many = count > 1 or self.arranging
         self.page_bar.set_no_show_all(not many)
@@ -1698,7 +1793,7 @@ class Launcher(Gtk.Window):
         btn = Gtk.Button()
         btn.get_style_context().add_class("tile")
         btn.get_style_context().add_class("gap")
-        btn.app = None
+        btn.app, btn.kind = None, "gap"
         btn.set_can_focus(False)
         btn.connect("clicked", lambda b: self._arrange_tap(b) if self.arranging else None)
         return btn
@@ -1709,9 +1804,10 @@ class Launcher(Gtk.Window):
         if not on:  # an empty page left at the end goes away
             while self.slots and isinstance(self.slots[-1], str):
                 self.slots.pop()
-                write_json(TILE_ORDER, {"order": [t if isinstance(t, str) else t.app.get("code") if t.app
-                                                  else GAP for t in self.slots]})
+                self._save_tiles()
         self._lay_out_tiles()
+        if self.open_folder is not None:
+            self._lay_out_folder()
         ctx = self.home_page.get_style_context()
         (ctx.add_class if on else ctx.remove_class)("arranging")
         # no_show_all keeps the bar hidden when the window first shows everything.
@@ -1725,38 +1821,65 @@ class Launcher(Gtk.Window):
             self.arrange_bar.hide()
         self._arrange_show()
 
-    def _arrange_show(self):
-        for tile in self.slots:
-            if not isinstance(tile, str):
-                (tile.get_style_context().add_class if tile is self.picked
-                 else tile.get_style_context().remove_class)("picked")
-        self.gap_remove_btn.set_visible(self.arranging and self.picked is not None and self.picked.app is None)
-        self.page_remove_btn.set_visible(self.arranging and len(self.pages) > 1)
+    def _arrange_show(self, note=None):
+        for tile in [t for t in self.slots if not isinstance(t, str)] + self.tiles:
+            (tile.get_style_context().add_class if tile is self.picked
+             else tile.get_style_context().remove_class)("picked")
+        kind = self.picked.kind if self.picked is not None else None
+        on_home = self.arranging and self.picked in self.slots
+        self.gap_remove_btn.set_visible(on_home and kind == "gap")
+        for btn in (self.folder_open_btn, self.folder_rename_btn, self.folder_remove_btn):
+            btn.set_visible(on_home and kind == "folder")
+        self.reset_btn.set_visible(kind is None)
+        self.folder_new_btn.set_visible(kind in (None, "app"))
+        self.page_remove_btn.set_visible(self.arranging and kind is None and len(self.pages) > 1)
         if self.picked is None:
-            self.arrange_hint.set_text("Tap a tile, then tap where it should go. Gaps group tiles into rows; "
-                                       "New page adds a page.")
+            hint = ("Tap a tile, then tap where it should go, or tap a folder to put it in. "
+                    "Folders, gaps and pages group apps.")
+        elif kind == "folder":
+            hint = (f"Now tap where the {self.picked.name} folder should go, or open it to arrange "
+                    "what's inside. Tap it again to cancel.")
+        elif kind == "gap":
+            hint = "Now tap where the gap should go (◀ ▶ or swipe for other pages). Tap it again to cancel."
         else:
-            name = self.picked.app["name"] if self.picked.app else "the gap"
-            self.arrange_hint.set_text(f"Now tap where {name} should go, on this page or another "
-                                       "(◀ ▶ or swipe). Tap it again to cancel.")
+            hint = (f"Now tap where {self.picked.app['name']} should go, or a folder to put it in "
+                    "(◀ ▶ or swipe for other pages). Tap it again to cancel.")
+        self.arrange_hint.set_text(note or hint)
+        if self.open_folder is not None:
+            self._folder_show()
 
     def _arrange_tap(self, tile):
+        members = self.open_folder.members if self.open_folder is not None else []
         if self.picked is None:
             self.picked = tile
         elif tile is self.picked:
             self.picked = None
-        else:
-            self.slots = move_slot(self.slots, self.slots.index(self.picked), self.slots.index(tile))
+        elif self.picked in members and tile in members:  # a new place inside the folder
+            members.insert(members.index(tile), members.pop(members.index(self.picked)))
+            self.picked = None
+            self._folder_changed(self.open_folder)
+        elif tile in self.slots and (self.picked in self.slots or self.picked.kind == "app"):
+            if self.picked in self.slots:
+                self.slots = move_slot(self.slots, self.slots.index(self.picked), self.slots.index(tile))
+            else:  # out of its folder onto Home
+                self._take_from_folder(self.picked)
+                self.slots.insert(self.slots.index(tile), self.picked)
             self.picked = None
             self._lay_out_tiles()
+        else:
+            self.picked = tile
         self._arrange_show()
 
     def _arrange_to_end(self, end):
         """Move the picked tile to the end of a page (end: where paginate says a slot there goes)."""
         if self.picked is None:
             return
-        src = self.slots.index(self.picked)
-        self.slots = move_slot(self.slots, src, end - 1 if src < end else end)
+        if self.picked in self.slots:
+            src = self.slots.index(self.picked)
+            self.slots = move_slot(self.slots, src, end - 1 if src < end else end)
+        else:
+            self._take_from_folder(self.picked)
+            self.slots.insert(end, self.picked)
         self.picked = None
         self._lay_out_tiles()
 
@@ -1767,7 +1890,10 @@ class Launcher(Gtk.Window):
         self.slots.append(PAGE)
         picked, self.picked = self.picked, None
         if picked is not None:
-            self.slots.remove(picked)
+            if picked in self.slots:
+                self.slots.remove(picked)
+            else:
+                self._take_from_folder(picked)
             self.slots.append(picked)
         self._lay_out_tiles()
         self._show_home_page(len(self.pages) - 1)
@@ -1801,14 +1927,249 @@ class Launcher(Gtk.Window):
         self._arrange_show()
 
     def _arrange_remove_gap(self):
-        if self.picked is not None and self.picked.app is None:
+        if self.picked is not None and self.picked.kind == "gap":
             self.slots.remove(self.picked)
             self.picked = None
             self._lay_out_tiles()
             self._arrange_show()
 
     def _arrange_reset(self):
-        self.slots = [self.app_tiles[a.get("code")] for a in self.config.get("apps", [])]
+        for tile in self.app_tiles.values():
+            unparent(tile)
+        self.slots = self._slots_from(standard_order(self.config.get("apps", []), self.config.get("folders")))
+        self.picked = None
+        self._lay_out_tiles()
+        self._arrange_show()
+
+    # ---- folders -------------------------------------------------------
+
+    def _folder_tile(self, name, members):
+        btn = Gtk.Button()
+        btn.get_style_context().add_class("tile")
+        btn.get_style_context().add_class("folder")
+        btn.app, btn.kind, btn.name, btn.members = None, "folder", name, list(members)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        btn.icon_slot = Gtk.Box()
+        top = Gtk.Box()
+        top.pack_start(btn.icon_slot, True, True, 0)
+        btn.key_hint = Gtk.Label(yalign=0)
+        btn.key_hint.get_style_context().add_class("key-hint")
+        top.pack_end(btn.key_hint, False, False, 0)
+        btn.name_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        btn.name_label.get_style_context().add_class("tile-name")
+        btn.detail = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        btn.detail.get_style_context().add_class("tile-detail")
+        box.pack_start(top, True, True, 0)
+        box.pack_start(btn.name_label, False, False, 0)
+        box.pack_start(btn.detail, False, False, 0)
+        btn.add(box)
+        btn.connect("clicked", self._folder_clicked)
+        self._add_long_press(btn)
+        self._update_folder_tile(btn)
+        return btn
+
+    def _update_folder_tile(self, btn):
+        btn.name_label.set_text(btn.name)
+        names = [t.app.get("name", "") for t in btn.members]
+        btn.detail.set_text(" · ".join(names) if names else "Empty folder")
+        self._set_tile_icon(btn)
+
+    def _folder_clicked(self, btn):
+        if time.monotonic() - self.last_swipe < 0.5:
+            return
+        if not self.arranging:
+            self._open_folder(btn)
+        elif self.picked is not None and self.picked.kind == "app" and self.picked not in btn.members:
+            if len(btn.members) >= FOLDER_MAX:
+                self._arrange_show(f"The {btn.name} folder is full.")
+                return
+            picked, self.picked = self.picked, None
+            if picked in self.slots:
+                self.slots.remove(picked)
+            else:
+                self._take_from_folder(picked)
+            btn.members.append(picked)
+            self._folder_changed(btn)
+            self._lay_out_tiles()
+            self._arrange_show()
+        else:
+            self._arrange_tap(btn)
+
+    def _take_from_folder(self, tile):
+        for folder in self.folder_tiles:
+            if tile in folder.members:
+                folder.members.remove(tile)
+                unparent(tile)
+                self._folder_changed(folder)
+                return
+
+    def _folder_changed(self, folder):
+        self._update_folder_tile(folder)
+        if folder is self.open_folder:
+            self._lay_out_folder()
+        self._save_tiles()
+
+    def _folder_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")),
+                          False, False, 0)
+        self.folder_title = Gtk.Label(xalign=0)
+        self.folder_title.get_style_context().add_class("title")
+        header.pack_start(self.folder_title, False, False, 0)
+        header.pack_end(self._navbtn("Rename", lambda *_: self._rename_folder(self.open_folder)),
+                        False, False, 0)
+        self.folder_out_btn = self._navbtn("Take out of folder", lambda *_: self._folder_take_out())
+        header.pack_end(self.folder_out_btn, False, False, 0)
+        page.pack_start(header, False, False, 0)
+        self.folder_hint = Gtk.Label(xalign=0, wrap=True)
+        self.folder_hint.get_style_context().add_class("muted")
+        page.pack_start(self.folder_hint, False, False, 0)
+        self.folder_grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True,
+                                    row_homogeneous=True)
+        page.pack_start(self.folder_grid, True, True, 0)
+        # Room for the page buttons Home has, so the tiles are the same size here.
+        page.pack_end(Gtk.Box(height_request=52), False, False, 0)
+        page.connect("unmap", lambda *_: self._folder_closed())
+        return page
+
+    def _open_folder(self, folder):
+        if folder is None or folder.kind != "folder":
+            return
+        self.open_folder = folder
+        if self.picked is folder:
+            self.picked = None
+        self._lay_out_folder()
+        self.stack.set_visible_child_name("folder")
+        self._folder_show()
+
+    def _folder_closed(self):
+        if self.stack.get_visible_child_name() != "folder":
+            self.open_folder = None
+            if self.arranging:
+                self._arrange_show()
+
+    def _lay_out_folder(self):
+        folder = self.open_folder
+        for child in self.folder_grid.get_children():
+            self.folder_grid.remove(child)
+        for n, tile in enumerate(folder.members):
+            unparent(tile)
+            tile.key_hint.set_text(str(n + 1) if n < 9 else "")
+            self.folder_grid.attach(tile, n % TILE_COLUMNS, n // TILE_COLUMNS, 1, 1)
+        for n in range(len(folder.members), PER_PAGE):
+            self.folder_grid.attach(Gtk.Box(), n % TILE_COLUMNS, n // TILE_COLUMNS, 1, 1)
+        self.folder_title.set_text(folder.name)
+        self.folder_grid.show_all()
+
+    def _folder_show(self):
+        """The folder page's hint and buttons, for arranging or not."""
+        picked_here = self.arranging and self.picked in (self.open_folder.members if self.open_folder else [])
+        self.folder_out_btn.set_visible(picked_here)
+        for tile in self.open_folder.members if self.open_folder else []:
+            (tile.get_style_context().add_class if tile is self.picked
+             else tile.get_style_context().remove_class)("picked")
+        if not self.arranging:
+            self.folder_hint.set_text("")
+            self.folder_hint.hide()
+            return
+        self.folder_hint.show()
+        if picked_here:
+            self.folder_hint.set_text(f"Now tap where {self.picked.app['name']} should go in this folder, "
+                                      "or go back Home and tap where it should go there. "
+                                      "Take out of folder puts it next to the folder.")
+        else:
+            self.folder_hint.set_text("Tap a tile, then tap where it should go. ‹ Home goes back to arranging Home.")
+
+    def _folder_take_out(self):
+        tile, folder = self.picked, self.open_folder
+        if tile is None or folder is None or tile not in folder.members:
+            return
+        self._take_from_folder(tile)
+        self.slots.insert(self.slots.index(folder) + 1, tile)
+        self.picked = None
+        self._lay_out_tiles()
+        self._arrange_show()
+
+    def _ask_name(self, title, name=""):
+        dialog = Gtk.Dialog(title=title, transient_for=self, modal=True)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "OK", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        box = dialog.get_content_area()
+        box.set_spacing(10)
+        box.set_border_width(16)
+        label = Gtk.Label(label=title, xalign=0)
+        label.get_style_context().add_class("field-label")
+        entry = Gtk.Entry(text=name, max_length=24, activates_default=True, width_chars=24)
+        box.pack_start(label, False, False, 0)
+        box.pack_start(entry, False, False, 0)
+        dialog.show_all()
+        response = dialog.run()
+        text = entry.get_text().strip()
+        dialog.destroy()
+        return text if response == Gtk.ResponseType.OK and text else None
+
+    def _rename_tile(self, btn):
+        name = self._ask_name(f"Name for the {btn.app['standard_name']} tile", btn.app["name"])
+        if name:
+            self._set_tile_name(btn, name)
+
+    def _set_tile_name(self, btn, name):
+        """Show the tile (and the app in folders and the Home bar) by name; None: the standard name."""
+        names = read_json(TILE_NAMES, {})
+        names = names if isinstance(names, dict) else {}
+        code = btn.app.get("code")
+        if name and name != btn.app["standard_name"]:
+            names[code] = name
+        else:
+            names.pop(code, None)
+            name = btn.app["standard_name"]
+        write_json(TILE_NAMES, names)
+        btn.app["name"] = name
+        btn.name_label.set_text(name)
+        for folder in self.folder_tiles:
+            if btn in folder.members:
+                self._update_folder_tile(folder)
+
+    def _rename_folder(self, folder):
+        if folder is None or folder.kind != "folder":
+            return
+        name = self._ask_name("Folder name", folder.name)
+        if name:
+            folder.name = name
+            self._folder_changed(folder)
+            if self.arranging:
+                self._arrange_show()
+
+    def _arrange_new_folder(self):
+        """A new folder: in the picked tile's place, holding it, or at the end of this page."""
+        name = self._ask_name("Name the new folder", "Folder")
+        if not name:
+            return
+        picked, self.picked = self.picked, None
+        folder = self._folder_tile(name, [])
+        if picked is not None and picked.kind == "app":
+            if picked in self.slots:
+                self.slots[self.slots.index(picked)] = folder
+            else:
+                self._take_from_folder(picked)
+                self.slots.insert(self.pages[self.page_index][1], folder)
+            folder.members.append(picked)
+            self._update_folder_tile(folder)
+        else:
+            self.slots.insert(self.pages[self.page_index][1], folder)
+        self._lay_out_tiles()
+        self._arrange_show()
+
+    def _arrange_remove_folder(self):
+        """Put the picked folder's apps back on Home where it was."""
+        folder = self.picked
+        if folder is None or folder.kind != "folder" or folder not in self.slots:
+            return
+        at = self.slots.index(folder)
+        for tile in folder.members:
+            unparent(tile)
+        self.slots[at:at + 1] = folder.members
         self.picked = None
         self._lay_out_tiles()
         self._arrange_show()
@@ -1817,7 +2178,7 @@ class Launcher(Gtk.Window):
         btn = Gtk.Button()
         btn.get_style_context().add_class("tile")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        btn.app = app
+        btn.app, btn.kind = app, "app"
         btn.icon_slot = Gtk.Box()
         self._set_tile_icon(btn)
         top = Gtk.Box()
@@ -1828,6 +2189,7 @@ class Launcher(Gtk.Window):
         # Ellipsize, so five tiles across still fit a 1024-pixel screen.
         name = Gtk.Label(label=app.get("name", ""), xalign=0, ellipsize=Pango.EllipsizeMode.END)
         name.get_style_context().add_class("tile-name")
+        btn.name_label = name
         detail = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         detail.get_style_context().add_class("tile-detail")
         box.pack_start(top, True, True, 0)
@@ -1836,6 +2198,11 @@ class Launcher(Gtk.Window):
         btn.add(box)
         btn.detail = detail
         btn.connect("clicked", self._tile_clicked)
+        self._add_long_press(btn)
+        self._update_tile(btn)
+        return btn
+
+    def _add_long_press(self, btn):
         # Long-press (touch), right-click or the Menu key: change the tile's icon.
         # The menu opens when the finger lifts: one opened under the finger closes on release.
         btn.long_press = Gtk.GestureLongPress.new(btn)
@@ -1845,8 +2212,6 @@ class Launcher(Gtk.Window):
         btn.long_press.connect("end", lambda *_: self._tile_long_press_end(btn))
         btn.connect("button-press-event", lambda _w, e: e.button == 3 and (self._icon_menu(btn) or True))
         btn.connect("popup-menu", lambda *_: self._icon_menu(btn) or True)
-        self._update_tile(btn)
-        return btn
 
     def _apply_theme(self, name):
         """Switch between the dark and light colours, now and on later starts."""
@@ -1866,7 +2231,7 @@ class Launcher(Gtk.Window):
             save_theme(name)
         except OSError:
             pass
-        for tile in self.tiles:
+        for tile in self.tiles + self.folder_tiles:
             self._set_tile_icon(tile)
         self._poll_status()
 
@@ -1991,6 +2356,24 @@ class Launcher(Gtk.Window):
     def _set_tile_icon(self, btn):
         for child in btn.icon_slot.get_children():
             btn.icon_slot.remove(child)
+        if btn.kind == "folder":
+            # The first four apps' icons, small, two by two.
+            grid = Gtk.Grid(column_spacing=4, row_spacing=4, halign=Gtk.Align.START)
+            grid.get_style_context().add_class("folder-icons")
+            for n, tile in enumerate(btn.members[:4]):
+                path = find_icon(tile.app.get("icon", ""))
+                try:
+                    image = Gtk.Image.new_from_pixbuf(load_icon(path, self.colours["accent"], 20)) if path else None
+                except (GLib.Error, OSError):
+                    image = None
+                if image is None:
+                    image = Gtk.Label(label=tile.app.get("code", "")[:2])
+                    image.get_style_context().add_class("key-hint")
+                image.set_size_request(20, 20)
+                grid.attach(image, n % 2, n // 2, 1, 1)
+            btn.icon_slot.pack_start(grid, False, False, 0)
+            btn.icon_slot.show_all()
+            return
         path = find_icon(btn.app.get("icon", ""))
         widget = None
         if path:
@@ -2024,11 +2407,23 @@ class Launcher(Gtk.Window):
         arrange = Gtk.MenuItem(label="Arrange tiles…")
         arrange.connect("activate", lambda *_: self._arrange(True))
         menu.append(arrange)
-        if btn.app.get("icon"):
+        if btn.kind == "folder":
+            rename = Gtk.MenuItem(label=f"Rename {btn.name} folder…")
+            rename.connect("activate", lambda *_: self._rename_folder(btn))
+            menu.append(rename)
+        else:
+            rename = Gtk.MenuItem(label=f"Rename {btn.app['name']}…")
+            rename.connect("activate", lambda *_: self._rename_tile(btn))
+            menu.append(rename)
+            if btn.app["name"] != btn.app.get("standard_name", btn.app["name"]):
+                standard = Gtk.MenuItem(label=f"Use the standard name ({btn.app['standard_name']})")
+                standard.connect("activate", lambda *_: self._set_tile_name(btn, None))
+                menu.append(standard)
+        if btn.kind == "app" and btn.app.get("icon"):
             change = Gtk.MenuItem(label=f"Change {btn.app['name']} icon…")
             change.connect("activate", lambda *_: self._choose_icon(btn))
             menu.append(change)
-        if btn.app.get("icon") and user_icon(btn.app["icon"]):
+        if btn.kind == "app" and btn.app.get("icon") and user_icon(btn.app["icon"]):
             reset = Gtk.MenuItem(label="Use the standard icon")
             reset.connect("activate", lambda *_: self._reset_icon(btn))
             menu.append(reset)
