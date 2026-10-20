@@ -53,8 +53,14 @@ environment.
   icon" puts it back. To put the tiles in your own order, pick **Arrange tiles** from
   that same menu (or **Home tiles** in Settings), tap a tile, then tap where it
   should go; **Add a gap** leaves an empty space to group tiles into rows, and
-  **Standard order** puts them back. The order is kept in
-  `~/.config/emcomm/tiles.json`, and the 1–9 keys follow it. **Display** in Settings sets the colours (dark, or light for
+  **Standard order** puts them back. Home holds 18 tiles a page (six across,
+  three down) and tiles stay that size: with more apps, or after **New page**,
+  swipe sideways, tap ◀ ▶ under the tiles or press Page Up/Down to change page.
+  While arranging, pick a tile, go to another page and tap a tile or an empty
+  place to move it there; **Remove page** folds the page shown into the one
+  before it. The order and pages are kept in `~/.config/emcomm/tiles.json`
+  (and in USB backups), and the 1–9 keys open the first nine tiles of the page
+  shown. **Display** in Settings sets the colours (dark, or light for
   daylight), the screen resolution (Automatic picks the screen's own), the text
   size (Normal, Large or Extra large, for bigger screens; other apps follow it
   too) and the rotation, for a screen mounted on its side or upside down. A

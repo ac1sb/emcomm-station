@@ -79,7 +79,7 @@ window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', san
 .muted { color: $muted; }
 .mono { font-family: 'IBM Plex Mono', monospace; }
 .tile, .navbtn, .tile label, .navbtn label { background-image: none; box-shadow: none; text-shadow: none; }
-.tile { background: $surface; border: 1px solid $line; border-radius: 12px; padding: 16px; }
+.tile { background: $surface; border: 1px solid $line; border-radius: 12px; padding: 12px 16px; }
 .tile:hover { background: $hover; }
 .tile:focus, .navbtn:focus { border: 2px solid $accent_fill; outline: none; }
 .key-hint { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: $muted; }
@@ -87,6 +87,9 @@ window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', san
 .tile.picked { border: 3px solid $accent_fill; background: $hover; }
 .tile.gap, .tile.gap:hover { background: transparent; border: 1px dashed transparent; }
 .arranging .tile.gap { border-color: $input_line; }
+.page-dots { font-size: 15px; color: $muted; }
+.arrange-bar .navbtn { min-height: 40px; }
+.page-bar .navbtn { min-height: 30px; min-width: 64px; padding: 0 12px; }
 .arrange-bar { background: $surface; border: 1px solid $accent_fill; border-radius: 12px; padding: 8px 12px; }
 menu { background: $surface; border: 1px solid $input_line; padding: 4px 0; }
 menuitem { color: $text; font-size: 16px; padding: 12px 18px; }
@@ -373,23 +376,43 @@ USER_ICONS = os.path.expanduser("~/.local/share/emcomm/icons")  # the operator's
 # The operator's own order of the Home tiles: tile codes, with "" for a gap.
 TILE_ORDER = os.path.expanduser("~/.config/emcomm/tiles.json")
 GAP = ""
+PAGE = "|"  # in the saved order: the next tile starts a new Home page
+TILE_COLUMNS, TILE_ROWS = 6, 3  # a Home page: the same tile size however many apps there are
+PER_PAGE = TILE_COLUMNS * TILE_ROWS
 
 
 def arrange_tiles(apps, order):
-    """The Home slots in the operator's order: apps (dicts) and GAP. Apps the saved order
+    """The Home slots in the operator's order: apps (dicts), GAP and PAGE. Apps the saved order
     doesn't know (new ones) go at the end; codes no longer installed are dropped."""
     by_code = {app.get("code"): app for app in apps}
     slots, placed = [], set()
     for code in order if isinstance(order, list) else []:
-        if code == GAP:
-            slots.append(GAP)
+        if code in (GAP, PAGE):
+            slots.append(code)
         elif code in by_code and code not in placed:
             slots.append(by_code[code])
             placed.add(code)
-    slots += [app for app in apps if app.get("code") not in placed]
-    while slots and slots[-1] == GAP:
-        slots.pop()
-    return slots
+    while slots and slots[-1] in (GAP, PAGE):
+        slots.pop()  # new apps join the last page, not an empty one
+    return slots + [app for app in apps if app.get("code") not in placed]
+
+
+def paginate(slots, per_page=PER_PAGE, keep_empty_last=False):
+    """Split slots into Home pages: [(indices of the page's slots, where a slot added at its end goes)].
+    A PAGE marker starts a new page; a page that fills up carries on onto the next."""
+    pages, current = [], []
+    for i, slot in enumerate(slots):
+        if isinstance(slot, str) and slot == PAGE:
+            pages.append((current, i))
+            current = []
+            continue
+        if len(current) == per_page:
+            pages.append((current, i))
+            current = []
+        current.append(i)
+    if current or not pages or keep_empty_last or (slots and isinstance(slots[-1], str) and slots[-1] == PAGE):
+        pages.append((current, len(slots)))
+    return pages
 
 
 def move_slot(slots, src, dest):
@@ -1324,7 +1347,7 @@ class Launcher(Gtk.Window):
 
     def _on_key(self, _widget, event):
         """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online,
-        F8 Net control, F9 ICS-213 messages, 1-9 open a tile on Home."""
+        F8 Net control, F9 ICS-213 messages, 1-9 open a tile on Home, Page Up/Down change Home page."""
         pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home", Gdk.KEY_F2: "diagnostics",
                  Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs", Gdk.KEY_F5: "reference", Gdk.KEY_F6: "wifi",
                  Gdk.KEY_F7: "online", Gdk.KEY_F8: "net", Gdk.KEY_F9: "ics213"}
@@ -1332,9 +1355,12 @@ class Launcher(Gtk.Window):
             self.stack.set_visible_child_name(pages[event.keyval])
             return True
         if self.stack.get_visible_child_name() == "home" and Gdk.KEY_1 <= event.keyval <= Gdk.KEY_9:
-            index = event.keyval - Gdk.KEY_1
-            if index < len(self.tiles) and self.tiles[index].get_sensitive():
-                self.tiles[index].clicked()
+            index, tiles = event.keyval - Gdk.KEY_1, self._page_tiles()
+            if index < len(tiles) and tiles[index].get_sensitive():
+                tiles[index].clicked()
+            return True
+        if self.stack.get_visible_child_name() == "home" and event.keyval in (Gdk.KEY_Page_Up, Gdk.KEY_Page_Down):
+            self._show_home_page(self.page_index + (1 if event.keyval == Gdk.KEY_Page_Down else -1))
             return True
         return False
 
@@ -1504,7 +1530,7 @@ class Launcher(Gtk.Window):
     # ---- home ----------------------------------------------------------
 
     def _home_page(self):
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=20)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=20)
         self.home_page = page
         # Arranging: tap a tile, then tap where it goes.
         self.arrange_bar = Gtk.Box(spacing=12, no_show_all=True)
@@ -1513,22 +1539,41 @@ class Launcher(Gtk.Window):
         self.arrange_bar.pack_start(self.arrange_hint, True, True, 0)
         self.arrange_buttons = [self._navbtn("Done", lambda *_: self._arrange(False), "primary"),
                                 self._navbtn("Standard order", lambda *_: self._arrange_reset()),
+                                self._navbtn("New page", lambda *_: self._arrange_add_page()),
                                 self._navbtn("Add a gap", lambda *_: self._arrange_add_gap())]
         self.gap_remove_btn = self._navbtn("Remove gap", lambda *_: self._arrange_remove_gap())
-        for btn in self.arrange_buttons + [self.gap_remove_btn]:
+        self.page_remove_btn = self._navbtn("Remove page", lambda *_: self._arrange_remove_page())
+        for btn in self.arrange_buttons + [self.gap_remove_btn, self.page_remove_btn]:
             self.arrange_bar.pack_end(btn, False, False, 0)
         page.pack_start(self.arrange_bar, False, False, 0)
-        self.home_grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
+        # Home pages: a fixed grid of tiles each; swipe, tap the arrows or press Page Up/Down.
+        self.home_pages = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT,
+                                    transition_duration=200)
         self.app_tiles = {app.get("code"): self._tile(app) for app in self.config.get("apps", [])}
         self.arranging, self.picked = False, None
+        self.page_index, self.page_grids, self.last_swipe = 0, [], 0.0
         saved = read_json(TILE_ORDER, {})
         order = saved.get("order") if isinstance(saved, dict) else None
-        self.slots = [self.app_tiles[a.get("code")] if a != GAP else self._gap_tile()
+        self.slots = [self.app_tiles[a.get("code")] if isinstance(a, dict) else self._gap_tile() if a == GAP else PAGE
                       for a in arrange_tiles(self.config.get("apps", []), order)]
+        swipe = Gtk.GestureSwipe.new(self.home_pages)
+        swipe.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        swipe.connect("swipe", self._home_swiped)
+        self.home_swipe = swipe  # the gesture lives as long as this reference
+        page.pack_start(self.home_pages, True, True, 0)
+        self.page_bar = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER, no_show_all=True)
+        self.page_bar.get_style_context().add_class("page-bar")
+        self.page_prev = self._navbtn("◀", lambda *_: self._show_home_page(self.page_index - 1))
+        self.page_next = self._navbtn("▶", lambda *_: self._show_home_page(self.page_index + 1))
+        self.page_dots = Gtk.Label()
+        self.page_dots.get_style_context().add_class("page-dots")
+        self.page_bar.pack_start(self.page_prev, False, False, 0)
+        self.page_bar.pack_start(self.page_dots, False, False, 0)
+        self.page_bar.pack_start(self.page_next, False, False, 0)
+        page.pack_start(self.page_bar, False, False, 0)
         self._lay_out_tiles()
-        page.pack_start(self.home_grid, True, True, 0)
 
-        nav = Gtk.Box(spacing=12, homogeneous=True)
+        nav = self.home_nav = Gtk.Box(spacing=12, homogeneous=True)
         nav.pack_start(self._navbtn("Diagnostics  F2", lambda *_: self.stack.set_visible_child_name("diagnostics")), True, True, 0)
         nav.pack_start(self._navbtn("Settings  F3", lambda *_: self.stack.set_visible_child_name("settings")), True, True, 0)
         nav.pack_start(self._navbtn("Logs  F4", lambda *_: self.stack.set_visible_child_name("logs")), True, True, 0)
@@ -1539,20 +1584,70 @@ class Launcher(Gtk.Window):
         return page
 
     def _lay_out_tiles(self):
-        """Put the tiles in the grid in self.slots' order. Number keys 1-9 follow the order."""
-        for child in self.home_grid.get_children():
-            self.home_grid.remove(child)
-        # Three rows fit a 600-pixel-high screen: three across for up to nine tiles,
-        # then wider rows.
-        columns = max(3, -(-len(self.slots) // 3))
-        for i, tile in enumerate(self.slots):
-            self.home_grid.attach(tile, i % columns, i // columns, 1, 1)
-        self.tiles = [t for t in self.slots if t.app is not None]
-        for i, tile in enumerate(self.tiles):
-            tile.key_hint.set_text(str(i + 1) if i < 9 else "")
-        self.home_grid.show_all()
+        """Put the tiles on Home pages in self.slots' order. Number keys 1-9 open the page's first nine."""
+        for grid in self.page_grids:
+            for child in grid.get_children():
+                grid.remove(child)  # the tiles live on; only the page grids are rebuilt
+            self.home_pages.remove(grid)
+        self.pages = paginate(self.slots, keep_empty_last=self.arranging)
+        self.page_grids = []
+        for number, (indices, end) in enumerate(self.pages):
+            grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
+            for n, i in enumerate(indices):
+                grid.attach(self.slots[i], n % TILE_COLUMNS, n // TILE_COLUMNS, 1, 1)
+            # Keep every tile the same size on a page that isn't full; while arranging,
+            # the spare places take a tile to the end of this page.
+            for n in range(len(indices), PER_PAGE):
+                spare = self._spare_place(end) if self.arranging else Gtk.Box()
+                grid.attach(spare, n % TILE_COLUMNS, n // TILE_COLUMNS, 1, 1)
+            self.page_grids.append(grid)
+            self.home_pages.add_named(grid, str(number))
+        self.tiles = [t for t in self.slots if not isinstance(t, str) and t.app is not None]
+        self.home_pages.show_all()
+        self._show_home_page(min(self.page_index, len(self.pages) - 1), animate=False)
         if self.arranging:  # saved as it changes, so leaving the page any way keeps it
-            write_json(TILE_ORDER, {"order": [t.app.get("code") if t.app else GAP for t in self.slots]})
+            write_json(TILE_ORDER, {"order": [t if isinstance(t, str) else t.app.get("code") if t.app else GAP
+                                              for t in self.slots]})
+
+    def _page_tiles(self):
+        indices = self.pages[self.page_index][0] if self.pages else []
+        return [self.slots[i] for i in indices if self.slots[i].app is not None]
+
+    def _show_home_page(self, index, animate=True):
+        """Show Home page index (wrapping past either end)."""
+        count = len(self.pages)
+        self.page_index = index % count if count else 0
+        self.home_pages.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT if animate
+                                            else Gtk.StackTransitionType.NONE)
+        self.home_pages.set_visible_child_name(str(self.page_index))
+        for tile in self.tiles:
+            tile.key_hint.set_text("")
+        for i, tile in enumerate(self._page_tiles()[:9]):
+            tile.key_hint.set_text(str(i + 1))
+        many = count > 1 or self.arranging
+        self.page_bar.set_no_show_all(not many)
+        if many:
+            self.page_dots.set_text("  ".join("●" if i == self.page_index else "○" for i in range(count))
+                                    + f"   Page {self.page_index + 1} of {count}")
+            self.page_bar.show_all()
+        else:
+            self.page_bar.hide()
+        if self.arranging:
+            self._arrange_show()
+
+    def _home_swiped(self, _gesture, vx, vy):
+        if abs(vx) > 500 and abs(vx) > 2 * abs(vy) and len(self.pages) > 1:
+            self.last_swipe = time.monotonic()  # the tile under the finger shouldn't open
+            self._show_home_page(self.page_index + (1 if vx < 0 else -1))
+
+    def _spare_place(self, end):
+        """An empty place on a page, while arranging: tapping it moves the picked tile there."""
+        btn = Gtk.Button()
+        btn.get_style_context().add_class("tile")
+        btn.get_style_context().add_class("gap")
+        btn.set_can_focus(False)
+        btn.connect("clicked", lambda *_: self._arrange_to_end(end))
+        return btn
 
     def _gap_tile(self):
         btn = Gtk.Button()
@@ -1566,10 +1661,18 @@ class Launcher(Gtk.Window):
     def _arrange(self, on):
         """Arrange mode: tapping tiles moves them instead of opening apps."""
         self.arranging, self.picked = on, None
+        if not on:  # an empty page left at the end goes away
+            while self.slots and isinstance(self.slots[-1], str):
+                self.slots.pop()
+                write_json(TILE_ORDER, {"order": [t if isinstance(t, str) else t.app.get("code") if t.app
+                                                  else GAP for t in self.slots]})
+        self._lay_out_tiles()
         ctx = self.home_page.get_style_context()
         (ctx.add_class if on else ctx.remove_class)("arranging")
         # no_show_all keeps the bar hidden when the window first shows everything.
         self.arrange_bar.set_no_show_all(not on)
+        # The page buttons make room for the arrange bar: Done leaves arrange mode.
+        self.home_nav.set_visible(not on)
         if on:
             self.arrange_bar.show_all()
             self.stack.set_visible_child_name("home")
@@ -1579,14 +1682,18 @@ class Launcher(Gtk.Window):
 
     def _arrange_show(self):
         for tile in self.slots:
-            (tile.get_style_context().add_class if tile is self.picked
-             else tile.get_style_context().remove_class)("picked")
+            if not isinstance(tile, str):
+                (tile.get_style_context().add_class if tile is self.picked
+                 else tile.get_style_context().remove_class)("picked")
         self.gap_remove_btn.set_visible(self.arranging and self.picked is not None and self.picked.app is None)
+        self.page_remove_btn.set_visible(self.arranging and len(self.pages) > 1)
         if self.picked is None:
-            self.arrange_hint.set_text("Tap a tile, then tap where it should go. Gaps help group tiles into rows.")
+            self.arrange_hint.set_text("Tap a tile, then tap where it should go. Gaps group tiles into rows; "
+                                       "New page adds a page.")
         else:
             name = self.picked.app["name"] if self.picked.app else "the gap"
-            self.arrange_hint.set_text(f"Now tap where {name} should go (or tap it again to cancel).")
+            self.arrange_hint.set_text(f"Now tap where {name} should go, on this page or another "
+                                       "(◀ ▶ or swipe). Tap it again to cancel.")
 
     def _arrange_tap(self, tile):
         if self.picked is None:
@@ -1599,9 +1706,50 @@ class Launcher(Gtk.Window):
             self._lay_out_tiles()
         self._arrange_show()
 
+    def _arrange_to_end(self, end):
+        """Move the picked tile to the end of a page (end: where paginate says a slot there goes)."""
+        if self.picked is None:
+            return
+        src = self.slots.index(self.picked)
+        self.slots = move_slot(self.slots, src, end - 1 if src < end else end)
+        self.picked = None
+        self._lay_out_tiles()
+
+    def _arrange_add_page(self):
+        """A new empty page after the last one; the picked tile, if any, moves onto it."""
+        while self.slots and isinstance(self.slots[-1], str) and self.slots[-1] == PAGE:
+            self.slots.pop()  # one empty page at the end at a time
+        self.slots.append(PAGE)
+        picked, self.picked = self.picked, None
+        if picked is not None:
+            self.slots.remove(picked)
+            self.slots.append(picked)
+        self._lay_out_tiles()
+        self._show_home_page(len(self.pages) - 1)
+
+    def _arrange_remove_page(self):
+        """Fold the page shown into the one before it (its tiles move up, nothing is lost)."""
+        if len(self.pages) < 2:
+            return
+        indices, end = self.pages[self.page_index]
+        start = indices[0] if indices else end
+        # The marker that starts this page, if there is one (an overflow page has none).
+        marker = start - 1 if self.page_index and start and isinstance(self.slots[start - 1], str) else None
+        if marker is None and self.page_index == 0:
+            first_marker = next((i for i, t in enumerate(self.slots) if isinstance(t, str) and t == PAGE), None)
+            marker = first_marker
+        if marker is None:
+            self.arrange_hint.set_text("This page is here because the one before it is full: "
+                                       "move some tiles off that page first.")
+            return
+        del self.slots[marker]
+        self.picked = None
+        self.page_index = max(0, self.page_index - 1)
+        self._lay_out_tiles()
+
     def _arrange_add_gap(self):
         gap = self._gap_tile()
-        at = self.slots.index(self.picked) if self.picked in self.slots else len(self.slots)
+        at = self.slots.index(self.picked) if self.picked in self.slots else self.pages[self.page_index][1]
         self.slots.insert(at, gap)
         self.picked = None
         self._lay_out_tiles()
@@ -1912,6 +2060,8 @@ class Launcher(Gtk.Window):
             self._update_tile(btn)
 
     def _tile_clicked(self, btn):
+        if time.monotonic() - self.last_swipe < 0.5:
+            return  # the end of a swipe between pages, not a tap
         if self.arranging:
             self._arrange_tap(btn)
             return
