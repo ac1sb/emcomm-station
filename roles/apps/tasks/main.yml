@@ -196,7 +196,7 @@
     # census.gov publishes no checksums; a year's files don't change once out.
     - name: Download the Census town lists
       ansible.builtin.get_url:
-        url: "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/{{ apps_census_gazetteer_year }}_Gazetteer/{{ apps_census_gazetteer_year }}_Gaz_{{ item }}_national.zip"
+        url: "{{ apps_census_gazetteer_url }}/{{ apps_census_gazetteer_year }}_Gaz_{{ item }}_national.zip"
         dest: "/var/cache/emcomm/natural-earth/{{ apps_census_gazetteer_year }}_Gaz_{{ item }}_national.zip"
         mode: "0644"
       loop: "{{ apps_census_gazetteer_files }}"

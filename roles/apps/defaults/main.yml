@@ -28,6 +28,7 @@ apps_natural_earth_files:
 # (public domain): cities, towns, villages and CDPs, and New England's towns.
 apps_census_gazetteer_year: "2024"
 apps_census_gazetteer_files: [place, cousubs]
+apps_census_gazetteer_url: "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/{{ apps_census_gazetteer_year }}_Gazetteer"
 
 # winetricks lives in Debian's contrib section, which a default install doesn't
 # enable, so the script comes straight from the upstream release tag.
