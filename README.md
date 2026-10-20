@@ -50,7 +50,11 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   when you're done typing.
 - **Launcher:** the home screen above. Works by touch, mouse or keyboard: Tab moves
   between buttons, 1–9 open tiles, Esc/F1 goes Home, F2 Diagnostics, F3 Settings,
-  F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control, F9 ICS-213 messages. A tile for an app that isn't installed says "tap to install". To use
+  F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control, F9 ICS-213 messages.
+  Every drop-down list (radio make and model, ports, counties, logs...) can be
+  searched: tap it and type in the box at the top, or with a keyboard just start
+  typing on it; only the choices with every word typed stay, and Enter picks the
+  first. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
   icon" puts it back. **Rename** in the same menu gives a tile (or a folder) your own

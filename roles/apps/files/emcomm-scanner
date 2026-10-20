@@ -998,6 +998,10 @@ treeview {{ font-size: 15px; background: {surface}; color: {text}; }}
 treeview:selected {{ background: {hover}; color: {text}; }}
 treeview header button {{ min-height: 30px; font-size: 13px; color: {muted}; border-radius: 0; }}
 combobox button {{ min-height: 40px; }}
+.picklist {{ min-height: 40px; padding: 0 10px; }}
+.picklist-pop list, .picklist-pop row {{ background: {surface}; color: {text}; }}
+.picklist-pop row {{ font-size: 16px; min-height: 40px; }}
+.picklist-pop row:selected {{ background: {accent_fill}; color: {on_accent}; }}
 scale trough {{ min-height: 8px; }}
 levelbar trough {{ background: {bg}; border: 1px solid {line}; border-radius: 4px; min-height: 12px; }}
 levelbar block.filled {{ background: {ok}; border: none; border-radius: 4px; }}
@@ -1019,6 +1023,148 @@ def theme():
             return THEMES.get(f.read().strip(), THEMES["dark"])
     except OSError:
         return THEMES["dark"]
+
+
+def picklist_class():
+    """PickList: the same searchable drop-down list as the launcher's (made once Gtk is loaded)."""
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gdk, GLib, GObject, Gtk, Pango
+
+    class PickList(Gtk.Button):
+        """A drop-down list that can be searched by typing, standing in for Gtk.ComboBoxText
+        (append, set_active_id, get_active_id, get_active_text, set_active, get_active,
+        remove_all and the "changed" signal). Tapping it opens the list under a search box;
+        typing, on the button or in the box, keeps only the choices with every word typed."""
+
+        __gsignals__ = {"changed": (GObject.SignalFlags.RUN_FIRST, None, ())}
+
+        def __init__(self):
+            super().__init__()
+            self.get_style_context().add_class("picklist")
+            self.items, self.active = [], -1
+            box = Gtk.Box(spacing=8)
+            self.label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, width_chars=8)
+            box.pack_start(self.label, True, True, 0)
+            box.pack_end(Gtk.Image.new_from_icon_name("pan-down-symbolic", Gtk.IconSize.BUTTON), False, False, 0)
+            self.add(box)
+            self.connect("clicked", lambda *_: self.popup())
+            self.connect("key-press-event", self._key)
+            self.popover = None
+
+        # ---- the Gtk.ComboBoxText calls the windows use ----
+        def append(self, item_id, text):
+            self.items.append((item_id, text))
+
+        def append_text(self, text):
+            self.append(None, text)
+
+        def remove_all(self):
+            self.items = []
+            self._select(-1)
+
+        def get_active(self):
+            return self.active
+
+        def set_active(self, index):
+            self._select(index if 0 <= index < len(self.items) else -1)
+
+        def get_active_id(self):
+            return self.items[self.active][0] if self.active >= 0 else None
+
+        def get_active_text(self):
+            return self.items[self.active][1] if self.active >= 0 else None
+
+        def set_active_id(self, item_id):
+            if item_id is None:
+                self._select(-1)
+                return True
+            for n, (value, _text) in enumerate(self.items):
+                if value == item_id:
+                    self._select(n)
+                    return True
+            return False
+
+        def _select(self, index):
+            changed = index != self.active
+            self.active = index
+            self.label.set_text(self.items[index][1] if index >= 0 else "")
+            if changed:
+                self.emit("changed")
+
+        # ---- the list ----
+        def _key(self, _widget, event):
+            char = chr(Gdk.keyval_to_unicode(event.keyval) or 0)
+            if char.isprintable() and char.strip() and not event.state & Gdk.ModifierType.CONTROL_MASK:
+                self.popup(char)
+                return True
+            return False
+
+        def popup(self, typed=""):
+            if not self.items:
+                return
+            self.popover = Gtk.Popover(relative_to=self, position=Gtk.PositionType.BOTTOM)
+            self.popover.get_style_context().add_class("picklist-pop")
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
+            search = Gtk.SearchEntry(placeholder_text="Type to search", can_default=False)
+            box.pack_start(search, False, False, 0)
+            listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE, activate_on_single_click=True)
+            rows = []
+            for n, (_value, text) in enumerate(self.items):
+                row = Gtk.ListBoxRow()
+                row.index, row.words = n, text.lower()
+                label = Gtk.Label(label=text, xalign=0, margin=10, ellipsize=Pango.EllipsizeMode.END)
+                row.add(label)
+                listbox.add(row)
+                rows.append(row)
+            empty = Gtk.Label(label="No matches", margin=10)
+            empty.get_style_context().add_class("muted")
+            listbox.set_placeholder(empty)
+            empty.show()
+            scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+            scroller.set_propagate_natural_height(True)
+            scroller.set_max_content_height(300)
+            box.set_size_request(max(260, self.get_allocated_width()), -1)
+            scroller.add(listbox)
+            box.pack_start(scroller, True, True, 0)
+            self.popover.add(box)
+
+            def matches(row):
+                words = search.get_text().lower().split()
+                return all(w in row.words for w in words)
+
+            listbox.set_filter_func(matches)
+
+            def choose(row):
+                if row is not None:
+                    self._select(row.index)
+                self.popover.popdown()
+
+            def first_shown():
+                return next((r for r in rows if r.get_child_visible() and matches(r)), None)
+
+            listbox.connect("row-activated", lambda _l, row: choose(row))
+            search.connect("search-changed", lambda *_: listbox.invalidate_filter())
+            search.connect("activate", lambda *_: choose(first_shown()))
+            search.connect("stop-search", lambda *_: self.popover.popdown())
+            self.popover.connect("closed", lambda p: p.destroy())
+            box.show_all()
+            self.popover.popup()
+            # Typing goes to the search box. It isn't focused at first unless something was
+            # typed, so a tap doesn't bring up the on-screen keyboard over the list.
+            self.popover.connect("key-press-event",
+                                 lambda _p, event: not search.has_focus() and search.handle_event(event))
+            if typed:
+                search.grab_focus()
+                search.set_text(typed)
+                search.set_position(-1)
+            elif self.active >= 0:
+                listbox.select_row(rows[self.active])
+                GLib.idle_add(lambda: rows[self.active].grab_focus() and False)  # scrolls it into view
+            else:
+                listbox.grab_focus()
+
+    return PickList
 
 
 def gtk_with_theme():
@@ -1115,6 +1261,7 @@ def ask_network_address(Gtk):
 
 def window_main():
     Gtk, GLib = gtk_with_theme()
+    PickList = picklist_class()  # noqa: N806
 
     class Window(Gtk.Window):
         def __init__(self):
@@ -1203,7 +1350,7 @@ def window_main():
             title = Gtk.Label(label="WITHIN", xalign=0)
             title.get_style_context().add_class("section-title")
             side.pack_start(title, False, False, 0)
-            self.distance = Gtk.ComboBoxText()
+            self.distance = PickList()
             for miles, label in DISTANCES:
                 self.distance.append(str(miles), label)
             self.distance.set_active_id(str(self.settings["miles"]))
@@ -1557,7 +1704,7 @@ def window_main():
             dialog = Gtk.Dialog(title="Receiver", transient_for=self, modal=True)
             dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
             grid = Gtk.Grid(row_spacing=10, column_spacing=12, margin=16)
-            which = Gtk.ComboBoxText()
+            which = PickList()
             which.append("", "Automatic")
             for rx in receivers(probe=False):
                 which.append(rx["key"], rx["label"])
@@ -1566,7 +1713,7 @@ def window_main():
                 which.set_active_id("")
             grid.attach(Gtk.Label(label="Receiver", xalign=0), 0, 3, 1, 1)
             grid.attach(which, 1, 3, 1, 1)
-            gain = Gtk.ComboBoxText()
+            gain = PickList()
             gain.append("auto", "Automatic")
             for db in (20, 30, 35, 40, 45, 49):
                 gain.append(str(db), f"{db} dB")
