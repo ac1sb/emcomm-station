@@ -1,7 +1,7 @@
 #!/bin/bash
 # Start a radio app from a launcher tile, with its settings filled in from the
 # station settings first.
-# Usage: emcomm-start js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore
+# Usage: emcomm-start js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore|sdr
 set -u
 
 STATE="$HOME/.local/state/emcomm"
@@ -166,8 +166,39 @@ case "${1:-}" in
     if [ "${node%% *}" = ble ]; then exec meshcore-cli -a "${node#* }"; fi
     exec meshcore-cli -s "${node#* }"
     ;;
+  sdr)
+    # Gqrx on any SDR receiver (RTL-SDR, Airspy, HackRF, SDRplay...), with the
+    # scanner's channel list as bookmarks. With more than one receiver, or an
+    # RTL-SDR that can also do HF by direct sampling, it asks which. Each choice
+    # keeps its own Gqrx settings (~/.config/gqrx/KEY.conf). The weather radio
+    # listener uses the first RTL-SDR and lets go of it while sdr.json names a
+    # running app.
+    choice=$(emcomm-scanner --pick-receiver 2>/dev/null) || exit 0
+    IFS=$'\t' read -r key device rate start rtl_index <<< "$choice"
+    mkdir -p "$HOME/.config/gqrx"
+    conf="$HOME/.config/gqrx/$key.conf"
+    if [ ! -f "$conf" ]; then
+      printf '[General]\nconfigversion=4\ncrashed=false\n\n[input]\ndevice="%s"\nsample_rate=%s\nfrequency=%s\n' \
+        "$device" "$rate" "$start" > "$conf"
+    else
+      # An RTL-SDR's number can change when dongles are plugged in a different order.
+      sed -i "s|^device=.*|device=\"$device\"|" "$conf"
+    fi
+    marks="$HOME/.config/gqrx/bookmarks.csv"
+    if [ ! -f "$marks" ] || head -1 "$marks" | grep -q "Emcomm-CNC"; then
+      emcomm-scanner --gqrx-bookmarks > "$marks.tmp" 2>/dev/null && mv "$marks.tmp" "$marks"
+      rm -f "$marks.tmp"
+    fi
+    if [ "$rtl_index" = 0 ]; then
+      printf '{"pid": %s, "app": "Gqrx"}\n' "$$" > "$STATE/sdr.json"
+      trap 'rm -f "$STATE/sdr.json"' EXIT
+      sleep 3  # the weather radio listener checks every 2 seconds
+    fi
+    gqrx -c "$key.conf"
+    exit 0
+    ;;
   *)
-    echo "usage: $0 js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore" >&2
+    echo "usage: $0 js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore|sdr" >&2
     exit 2
     ;;
 esac

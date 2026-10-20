@@ -237,6 +237,41 @@ environment.
   CHIRP is built from its source on GitHub, the same code as its daily builds
   (set `apps_chirp_version` in `roles/apps/defaults/main.yml` to a commit or tag
   to stay on one). Its download site turns away scripts, so it isn't used.
+- **Scanner** (tile, any SDR): plug in an SDR receiver with a VHF/UHF antenna
+  and tap Scanner. It scans `~/Scanner channels.csv`, which starts as Vermont's
+  emergency channels (law enforcement, fire/EMS, interop/EOC, 347 channels), and
+  stops on any channel with a signal. Tick or untick groups on the left, and pick
+  how far away to listen (10, 25, 50, 100 miles or everywhere) from the grid
+  square in Settings > User; statewide channels with no site are always kept.
+  **Hold** stays on the channel, tapping a channel in the list holds there,
+  **Skip** moves on, **Lock out** (or untick a channel) leaves it out of the scan.
+  **Tune** opens a keypad to listen on any frequency the receiver reaches, and
+  **Save to list** adds it to your list in the group My channels; the − and +
+  beside the frequency step 12.5 kHz (5 kHz below 50 MHz).
+  **Tone squelch** only stops when the channel's own PL tone is there, so other
+  users of the frequency are skipped (DPL channels stop on any signal). Squelch 1
+  opens on almost anything, 9 needs a strong signal; 4 suits most antennas.
+  **Load a list** takes any CSV with a Frequency column (MHz), for example a
+  RadioReference export, from a USB stick; Alpha Tag, Group, Agency, County,
+  Tone, Mode, Latitude and Longitude columns are used when present. Analog FM
+  only: P25, DMR and other digital channels are listed but not scanned.
+  **Receiver** picks which SDR to use (Automatic takes an RTL-SDR, or another
+  receiver when the weather radio has the RTL-SDR) and sets the gain and
+  frequency correction (ppm). Audio plays on the station's speaker.
+- **Gqrx** (tile, any SDR): a waterfall receiver for receive-only listening
+  anywhere a receiver reaches, HF included, with the scanner's channel list as its
+  bookmarks (one tag per group). With more than one receiver plugged in it asks
+  which; each keeps its own Gqrx settings. Receivers that work: RTL-SDR (VHF/UHF;
+  an RTL-SDR Blog V4 also does HF, and other RTL-SDR dongles get an "on HF (direct
+  sampling)" choice for 0.5 to 28.8 MHz with the antenna on the dongle's input),
+  Airspy HF+ and Discovery, Airspy R2/Mini, HackRF, LimeSDR, bladeRF, and any
+  other SoapySDR receiver. SDRplay receivers need SDRplay's own API and the
+  SoapySDRPlay3 driver installed by hand (SDRplay doesn't allow Debian to ship
+  them). Airspy HF+ support depends on Debian packaging its SoapySDR driver.
+  The weather radio alert listener uses the first RTL-SDR: while the Scanner or
+  Gqrx has that dongle, alerts pause (the Online page says so) and resume when it
+  closes; with a second receiver plugged in, the Scanner uses that instead.
+  Settings > Devices lists the SDR receivers plugged in.
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 

@@ -263,6 +263,48 @@ def detect_devices():
     return ports, cards
 
 
+SDR_LOCK = os.path.expanduser("~/.local/state/emcomm/sdr.json")
+# SDR receivers by USB vendor:product, for the Devices page.
+SDR_USB_IDS = {
+    ("0bda", "2838"): "RTL-SDR", ("0bda", "2832"): "RTL-SDR", ("1d50", "60a1"): "Airspy",
+    ("03eb", "800c"): "Airspy HF+", ("1d50", "6089"): "HackRF", ("1d50", "cc15"): "HackRF (rad1o)",
+    ("1df7", "2500"): "SDRplay RSP1", ("1df7", "3000"): "SDRplay RSP1A", ("1df7", "3010"): "SDRplay RSP2",
+    ("1df7", "3020"): "SDRplay RSPduo", ("1df7", "3030"): "SDRplay RSPdx", ("1df7", "3050"): "SDRplay RSP1B",
+    ("1df7", "3060"): "SDRplay RSPdx-R2", ("0403", "601f"): "LimeSDR Mini", ("1d50", "6108"): "LimeSDR",
+    ("2cf0", "5246"): "bladeRF", ("2cf0", "5250"): "bladeRF 2.0", ("0456", "b673"): "ADALM-Pluto",
+}
+
+
+def sdr_receivers(sysfs="/sys/bus/usb/devices"):
+    """(kind, label) for each SDR receiver plugged in, RTL-SDR dongles in the order librtlsdr numbers them."""
+    found = []
+    for base in sorted(glob.glob(os.path.join(sysfs, "*"))):
+        def attr(name, base=base):
+            try:
+                with open(os.path.join(base, name), encoding="utf-8", errors="replace") as f:
+                    return f.read().strip()
+            except OSError:
+                return ""
+        kind = SDR_USB_IDS.get((attr("idVendor"), attr("idProduct")))
+        if kind:
+            name = " ".join(x for x in (attr("manufacturer"), attr("product")) if x)
+            serial = attr("serial")
+            found.append((kind, " · ".join(x for x in (kind, name, serial and f"serial {serial}") if x)))
+    return found
+
+
+def sdr_user():
+    """The app holding the RTL-SDR (Scanner, Gqrx), if it's running."""
+    lock = read_json(SDR_LOCK, {})
+    try:
+        os.kill(int(lock.get("pid")), 0)
+    except (TypeError, ValueError, ProcessLookupError):
+        return None
+    except OSError:
+        pass
+    return lock.get("app") or "another app"
+
+
 def rigctld_query(host, port, command, timeout=1.0):
     """Send one rigctld command and return the first reply line, or None."""
     try:
@@ -2123,11 +2165,24 @@ class Launcher(Gtk.Window):
         return page
 
     def _show_devices(self):
-        """What's plugged in now: USB serial ports, USB sound cards, paired Bluetooth radios."""
+        """What's plugged in now: USB serial ports, USB sound cards, RTL-SDR dongles, paired Bluetooth radios."""
         lines = ["USB serial ports (radio CAT/PTT, GPS, mesh radios):"]
         lines += [f"  {label}" for label, _m in self.serial_ports] or ["  none"]
         lines += ["", "USB sound cards:"]
         lines += [f"  {label}" for label, _m in self.sound_cards] or ["  none"]
+        sdrs = sdr_receivers()
+        dongles = [label for kind, label in sdrs if kind == "RTL-SDR"]
+        lines += ["", "SDR receivers (Scanner, Gqrx; weather radio alerts use an RTL-SDR):"]
+        lines += [f"  {label}" for _kind, label in sdrs] or ["  none"]
+        if dongles:
+            user = sdr_user()
+            nwr = read_json(NWR_CONFIG, {}).get("freq")
+            if len(dongles) > 1 and nwr:
+                lines.append("  Weather radio alerts use the first; the Scanner and Gqrx use the second.")
+            elif user:
+                lines.append(f"  In use by the {user}" + ("; weather radio alerts are paused." if nwr else "."))
+            elif nwr:
+                lines.append("  Listening for weather radio alerts. Opening the Scanner or Gqrx pauses them.")
         if shutil.which("bluetoothctl"):
             try:
                 out = subprocess.run(["bluetoothctl", "devices", "Paired"], capture_output=True, text=True,
@@ -3588,7 +3643,8 @@ class Launcher(Gtk.Window):
             test = record.get("last_test")
             detail.append(f"{test['event']} heard {ago(test['time'])}" if test else "no weekly test heard yet")
         else:
-            colour, lead = self.colours["muted"], "Off"
+            paused = (record.get("error") or "").startswith("Paused")
+            colour, lead = self.colours["muted"], "Paused" if paused else "Off"
             detail = [record.get("error") or "Receives alerts with no internet, using an RTL-SDR dongle."]
         return self._info_row(lead, "NOAA Weather Radio", " · ".join(detail), [("Set up", self._edit_nwr)], colour)
 

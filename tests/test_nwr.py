@@ -5,9 +5,11 @@ Run: python3 tests/test_nwr.py
 """
 
 import calendar
+import json
 import importlib.machinery
 import importlib.util
 import os
+import tempfile
 import time
 import unittest
 
@@ -70,6 +72,28 @@ class Same(unittest.TestCase):
         ffw = nwr.parse_header("EAS: ZCZC-WXR-FFW-025017+0300-2922320-KBOX/NWS-", later)
         nwr.keep(record, ffw, ["025017"], 162.55, later)
         self.assertEqual([a["code"] for a in record["data"]], ["FFW"])
+
+
+class SharedDongle(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        nwr.SDR_LOCK = os.path.join(self.dir, "sdr.json")
+
+    def claim(self, pid, app="Scanner"):
+        with open(nwr.SDR_LOCK, "w", encoding="utf-8") as f:
+            json.dump({"pid": pid, "app": app}, f)
+
+    def test_running_app_holds_the_dongle(self):
+        self.assertIsNone(nwr.sdr_claimed())
+        self.claim(os.getpid())
+        self.assertEqual(nwr.sdr_claimed(), "Scanner")
+
+    def test_closed_app_lets_go(self):
+        self.claim(2 ** 22 + 7)  # no such process
+        self.assertIsNone(nwr.sdr_claimed())
+        with open(nwr.SDR_LOCK, "w", encoding="utf-8") as f:
+            f.write("not json")
+        self.assertIsNone(nwr.sdr_claimed())
 
 
 if __name__ == "__main__":
