@@ -106,11 +106,14 @@ def run(everything=False, threshold=-40.0):
     signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
     seg, out, path, since, last_status = Segmenter(threshold, everything), None, None, None, 0
     mode_name = "everything" if everything else "voice"
+    failed = False
     try:
         while not stopping:
             chunk = parec.stdout.read(CHUNK)
             if not chunk:
-                write_status(mode=mode_name, error="Can't read the radio's audio.", recording=False)
+                failed = True
+                write_status(mode=mode_name, error="Stopped: no audio from the radio's sound card.",
+                             recording=False)
                 return 1
             action, chunks = seg.feed(chunk)
             if action == "start":
@@ -136,15 +139,17 @@ def run(everything=False, threshold=-40.0):
             out.close()
             os.replace(path + ".part", path)
         parec.terminate()
-        try:
-            os.remove(STATUS)
-        except OSError:
-            pass
+        if not failed:  # an error stays for the Recorder page to show
+            try:
+                os.remove(STATUS)
+            except OSError:
+                pass
     return 0
 
 
 def other_sink():
-    """A PipeWire speaker that isn't the radio, or None."""
+    """The node name of a PipeWire speaker that isn't the radio, or None. pw-play's
+    --target takes a name or an object serial; a name can't be mistaken."""
     try:
         card = os.path.basename(os.readlink("/proc/asound/rigaudio")).removeprefix("card")
     except OSError:
@@ -156,8 +161,8 @@ def other_sink():
     for obj in dump:
         props = (obj.get("info") or {}).get("props") or {}
         if obj.get("type") == "PipeWire:Interface:Node" and props.get("media.class") == "Audio/Sink":
-            if card is None or all(str(props.get(k)) != card for k in CARD_KEYS):
-                return obj["id"]
+            if props.get("node.name") and (card is None or all(str(props.get(k)) != card for k in CARD_KEYS)):
+                return props["node.name"]
     return None
 
 

@@ -1913,8 +1913,11 @@ class Launcher(Gtk.Window):
         self.rec_all.set_sensitive(not running)
         level = (status or {}).get("level")
         self.rec_level.set_value(max(0, 60 + level) if isinstance(level, (int, float)) else 0)
+        last = None if status else read_json(RECORDER_STATUS, None)
         if status and status.get("error"):
             text = status["error"]
+        elif isinstance(last, dict) and last.get("error"):
+            text = last["error"]  # the recorder stopped with an error
         elif status and status.get("recording"):
             text = f"Recording {status.get('file') or ''}"
         elif status:
@@ -1966,6 +1969,10 @@ class Launcher(Gtk.Window):
         if not shutil.which(RECORDER_CMD):
             self._recorder_message("The recorder isn't installed; tap Update station in Settings.")
             return
+        try:
+            os.remove(RECORDER_STATUS)  # a previous run's error
+        except OSError:
+            pass
         run_detached([RECORDER_CMD, "run"] + (["--all"] if everything else []))
         self._recorder_message("Starting…")
 

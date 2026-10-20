@@ -7,6 +7,7 @@ Run: python3 tests/test_recorder.py
 import array
 import importlib.machinery
 import importlib.util
+import json
 import math
 import os
 import unittest
@@ -63,6 +64,26 @@ class Recorder(unittest.TestCase):
         name = rec.file_name(1792447200, "14074000", "USB")
         self.assertTrue(name.endswith("Recordings/2026-10-19/220000Z 14.074 USB.wav"))
         self.assertTrue(rec.file_name(1792447200, "", "").endswith("220000Z.wav"))
+
+    def test_plays_to_a_named_speaker_that_isnt_the_radio(self):
+        dump = [{"id": 31, "type": "PipeWire:Interface:Node",
+                 "info": {"props": {"media.class": "Audio/Sink", "api.alsa.card": "2",
+                                    "node.name": "alsa_output.usb-radio"}}},
+                {"id": 45, "type": "PipeWire:Interface:Node",
+                 "info": {"props": {"media.class": "Audio/Sink", "api.alsa.card": "0",
+                                    "node.name": "alsa_output.pci-speakers"}}}]
+        real_run, real_readlink = rec.subprocess.run, rec.os.readlink
+        rec.subprocess.run = lambda *a, **k: type("R", (), {"stdout": json.dumps(dump)})()
+        rec.os.readlink = lambda _p: "card2"
+        try:
+            self.assertEqual(rec.other_sink(), "alsa_output.pci-speakers")
+            rec.os.readlink = lambda _p: "card0"
+            self.assertEqual(rec.other_sink(), "alsa_output.usb-radio")
+            dump.pop(1)
+            rec.os.readlink = lambda _p: "card2"
+            self.assertIsNone(rec.other_sink())
+        finally:
+            rec.subprocess.run, rec.os.readlink = real_run, real_readlink
 
 
 if __name__ == "__main__":
