@@ -13,16 +13,25 @@
       - curl
       - git
       - ca-certificates
+      - bluez  # Meshtastic and MeshCore radios can connect by Bluetooth
     install_recommends: false
     update_cache: true
     cache_valid_time: 3600
+
+- name: Start Bluetooth at boot
+  ansible.builtin.systemd_service:
+    name: bluetooth
+    enabled: true
+    state: started
+  failed_when: false  # a machine without a Bluetooth adapter is fine
 
 - name: Create the station user
   ansible.builtin.user:
     name: "{{ station_user }}"
     shell: /bin/bash
     # systemd-journal: Diagnostics shows rigctld's log and recent USB events.
-    groups: [dialout, audio, plugdev, video, systemd-journal]
+    # bluetooth: lets the mesh apps pair with and reach a radio over Bluetooth.
+    groups: [dialout, audio, plugdev, video, systemd-journal, bluetooth]
     append: true
 
 # The station user has no password and isn't meant to use sudo (see README,

@@ -201,9 +201,15 @@ environment.
   only fills in its radio connection the first time, so changes you make in
   Interface Control stick. For HF APRS at 300 baud, put your own Direwolf settings
   in `~/.config/emcomm/direwolf.custom.conf`.
-- **Meshtastic and MeshCore:** plug the node in by USB and tap its tile. The tile
-  finds the node's USB port (skipping the radio's CAT and PTT ports) and asks which
-  one if more than one is plugged in. Meshtastic opens `contact`, a full-screen
+- **Meshtastic and MeshCore:** plug the node in by USB, or turn on its Bluetooth,
+  and tap its tile. The tile finds the node's USB port (skipping the radio's CAT
+  and PTT ports). With no USB node it searches for Bluetooth radios for 10 seconds
+  and asks which one; the first time, it pairs and asks for the radio's PIN
+  (Meshtastic shows it on its screen, or uses 123456 on a node without one;
+  MeshCore uses 123456 unless you changed it). After that the paired radio is
+  offered by name, next to any USB nodes and "Search for a Bluetooth radio".
+  Bluetooth needs an adapter in the station computer (most mini-PCs and laptops
+  have one). Meshtastic opens `contact`, a full-screen
   text client for messages, nodes and settings; MeshCore opens `meshcore-cli`,
   where `?` lists its commands.
 - **CHIRP:** for programming a handheld or mobile over its programming cable (the
