@@ -12,10 +12,13 @@ Settings are in ~/.config/emcomm/nwr.json, written by the launcher:
   {"freq": 162.55, "codes": ["025017"], "ppm": 0}
 codes are 6-digit SAME location codes; none means keep every alert heard.
 While the Scanner or Gqrx holds the dongle (~/.local/state/emcomm/sdr.json names
-it and its process), the listener lets go and waits.
+it and its process), the listener lets go and waits. It uses the first RTL-SDR that
+isn't the ADS-B receiver (emcomm-adsb).
 """
 
 import calendar
+import ctypes
+import ctypes.util
 import json
 import os
 import re
@@ -28,6 +31,8 @@ CONFIG = os.path.expanduser("~/.config/emcomm/nwr.json")
 CACHE = os.path.join(os.environ.get("EMCOMM_ONLINE_CACHE", os.path.expanduser("~/.cache/emcomm/online")),
                      "nwr.json")
 SDR_LOCK = os.path.expanduser("~/.local/state/emcomm/sdr.json")  # written by the Scanner and Gqrx tiles
+ADSB_CONFIG = os.path.expanduser("~/.config/emcomm/adsb.json")  # the ADS-B dongle's serial (emcomm-adsb)
+ADSB_MARK = "00001090"
 CHANNELS = (162.400, 162.425, 162.450, 162.475, 162.500, 162.525, 162.550)
 HEADER_RE = re.compile(r"^EAS: ZCZC-([A-Z]{3})-([A-Z]{3})-((?:\d{6}-?)+)\+(\d{4})-(\d{7})-([^-]{1,8})-?")
 TESTS = {"RWT", "RMT", "DMO", "NPT"}
@@ -173,6 +178,41 @@ def sdr_claimed():
     return str(lock.get("app") or "another app")
 
 
+def rtl_serials():
+    """Each RTL-SDR dongle's serial number, in librtlsdr's order (empty if the library is missing)."""
+    try:
+        lib = ctypes.CDLL(ctypes.util.find_library("rtlsdr") or "librtlsdr.so.2")
+    except OSError:
+        return []
+    lib.rtlsdr_get_device_count.restype = ctypes.c_uint32
+    lib.rtlsdr_get_device_usb_strings.argtypes = [ctypes.c_uint32] + [ctypes.c_char_p] * 3
+    serials = []
+    for i in range(lib.rtlsdr_get_device_count()):
+        bufs = [ctypes.create_string_buffer(256) for _ in range(3)]
+        lib.rtlsdr_get_device_usb_strings(i, *bufs)
+        serials.append(bufs[2].value.decode(errors="replace").strip())
+    return serials
+
+
+def adsb_serial():
+    try:
+        with open(ADSB_CONFIG, encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError):
+        config = {}
+    if not isinstance(config, dict) or config.get("off"):
+        return None
+    return str(config.get("serial") or ADSB_MARK)
+
+
+def weather_dongle(serials, adsb):
+    """The index of the first dongle that isn't the ADS-B receiver, or None. With no list
+    (librtlsdr missing), 0, and rtl_fm says whether there's a dongle."""
+    if not serials:
+        return 0
+    return next((i for i, serial in enumerate(serials) if not adsb or serial != adsb), None)
+
+
 def set_status(error=None, listening=None):
     record = load_record()
     record["tried"] = int(time.time())
@@ -193,9 +233,14 @@ def run():
             set_status(f"Paused while the {claimed} uses the RTL-SDR. Alerts resume when it closes.")
             time.sleep(2)
             continue
+        dongle = weather_dongle(rtl_serials(), adsb_serial())
+        if dongle is None:
+            set_status("The only RTL-SDR is the ADS-B receiver. Plug in another for weather alerts.")
+            time.sleep(10)
+            continue
         stamp = os.path.getmtime(CONFIG)
-        rtl = subprocess.Popen(["rtl_fm", "-f", f"{freq}M", "-M", "fm", "-s", "22050", "-E", "dc",
-                                "-p", str(ppm), "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        rtl = subprocess.Popen(["rtl_fm", "-d", str(dongle), "-f", f"{freq}M", "-M", "fm", "-s", "22050",
+                                "-E", "dc", "-p", str(ppm), "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         mm = subprocess.Popen(["multimon-ng", "-t", "raw", "-a", "EAS", "-q", "/dev/stdin"],
                               stdin=rtl.stdout, stdout=subprocess.PIPE, text=True, bufsize=1)
         rtl.stdout.close()

@@ -14,3 +14,9 @@
     name: emcomm-nwr
     state: restarted
     daemon_reload: true
+
+- name: Restart emcomm-adsb
+  ansible.builtin.systemd:
+    name: emcomm-adsb
+    state: restarted
+    daemon_reload: true

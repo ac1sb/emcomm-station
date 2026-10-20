@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Aircraft from ADS-B on 1090 MHz, received on an RTL-SDR dongle kept for it, for
+the station map.
+
+  emcomm-adsb               run (the emcomm-adsb service does this as the station user)
+  emcomm-adsb --dongles     list the RTL-SDR dongles plugged in, as JSON lines
+  emcomm-adsb --use N       make dongle N (from --dongles) the ADS-B receiver
+  emcomm-adsb --off         use no dongle for ADS-B
+
+The ADS-B dongle is picked by its serial number, saved in ~/.config/emcomm/adsb.json
+({"serial": "00001090"}). With no file it's a dongle with serial 00001090, the usual
+mark for an ADS-B dongle (FlightAware's sticks ship with it). "--use N" saves the
+dongle's own serial when no other dongle shares it; cheap dongles often all say
+00000001, so then it writes 00001090 into the dongle (rtl_eeprom), and the dongle
+has to be unplugged and plugged back in. The Scanner, Gqrx and the weather radio
+listener leave the ADS-B dongle alone.
+
+dump1090-mutability does the decoding into ~/.cache/emcomm/adsb/aircraft.json. That
+is turned into aircraft.js (window.AIRCRAFT = {...}) every 2 seconds, which the map
+reloads: a page opened from a file can load scripts but not read files.
+"""
+
+import ctypes
+import ctypes.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+CONFIG = os.path.join(HOME, ".config/emcomm/adsb.json")
+OUT = os.environ.get("EMCOMM_ADSB_DIR", os.path.join(HOME, ".cache/emcomm/adsb"))
+SDR_LOCK = os.path.join(HOME, ".local/state/emcomm/sdr.json")  # the weather radio listener lets go while held
+STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
+MARK = "00001090"
+DECODER = "dump1090-mutability"
+STALE = 60  # seconds without a position before an aircraft leaves the map
+EMERGENCY = {"7500": "Hijack", "7600": "Radio failure", "7700": "Emergency"}
+
+
+# ---- which dongle -------------------------------------------------------------
+
+def _lib():
+    name = ctypes.util.find_library("rtlsdr")
+    try:
+        lib = ctypes.CDLL(name or "librtlsdr.so.2")
+    except OSError:
+        return None
+    lib.rtlsdr_get_device_count.restype = ctypes.c_uint32
+    lib.rtlsdr_get_device_name.restype = ctypes.c_char_p
+    lib.rtlsdr_get_device_name.argtypes = [ctypes.c_uint32]
+    lib.rtlsdr_get_device_usb_strings.argtypes = [ctypes.c_uint32] + [ctypes.c_char_p] * 3
+    return lib
+
+
+def dongles(lib=None):
+    """[{index, serial, name}] for each RTL-SDR dongle, numbered as librtlsdr (and every program) numbers them.
+    Reading the USB strings works while another program has the dongle open."""
+    lib = lib or _lib()
+    if lib is None:
+        return []
+    found = []
+    for i in range(lib.rtlsdr_get_device_count()):
+        bufs = [ctypes.create_string_buffer(256) for _ in range(3)]
+        lib.rtlsdr_get_device_usb_strings(i, *bufs)
+        maker, product, serial = (b.value.decode(errors="replace").strip() for b in bufs)
+        name = " ".join(x for x in (maker, product) if x) or (lib.rtlsdr_get_device_name(i) or b"").decode()
+        found.append({"index": i, "serial": serial, "name": name or "RTL-SDR"})
+    return found
+
+
+def load_config():
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            config = json.load(f)
+        return config if isinstance(config, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def adsb_serial(config=None):
+    """The ADS-B dongle's serial number, or None when ADS-B is turned off."""
+    config = load_config() if config is None else config
+    if config.get("off"):
+        return None
+    return str(config.get("serial") or MARK)
+
+
+def adsb_dongle(found, serial):
+    return next((d for d in found if serial and d["serial"] == serial), None)
+
+
+def save_config(config):
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    with open(CONFIG + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(config, f)
+    os.replace(CONFIG + ".tmp", CONFIG)
+
+
+def use(index, found=None, write_serial=None):
+    """Make dongle `index` the ADS-B receiver. Returns what to tell the operator."""
+    found = dongles() if found is None else found
+    dongle = next((d for d in found if d["index"] == index), None)
+    if dongle is None:
+        return "That dongle isn't plugged in any more."
+    others = [d for d in found if d["index"] != index]
+    if dongle["serial"] and all(d["serial"] != dongle["serial"] for d in others):
+        save_config({"serial": dongle["serial"]})
+        return f"{dongle['name']} (serial {dongle['serial']}) is the ADS-B receiver now."
+    # Its serial number doesn't tell it apart: give it the ADS-B one.
+    if any(d["serial"] == MARK for d in others):
+        return (f"Another dongle already has serial {MARK}. Unplug it, or pick that one for ADS-B.")
+    error = (write_serial or write_mark)(index)
+    if error:
+        return error
+    save_config({"serial": MARK})
+    return (f"Serial number {MARK} written to the dongle. Unplug it and plug it back in; "
+            "it's the ADS-B receiver from then on.")
+
+
+def write_mark(index):
+    """Write the ADS-B serial number into dongle `index`; an error message, or None."""
+    if not shutil.which("rtl_eeprom"):
+        return "rtl_eeprom isn't installed. Run Update station in Settings."
+    # The weather radio listener lets go of its dongle while the lock names a running program.
+    os.makedirs(os.path.dirname(SDR_LOCK), exist_ok=True)
+    with open(SDR_LOCK, "w", encoding="utf-8") as f:
+        json.dump({"pid": os.getpid(), "app": "ADS-B setup"}, f)
+    try:
+        time.sleep(3)
+        try:
+            done = subprocess.run(["rtl_eeprom", "-d", str(index), "-s", MARK], input="y\n", text=True,
+                                  capture_output=True, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return "Couldn't write to the dongle."
+        if done.returncode != 0:
+            return ("Couldn't write to the dongle; it may be in use. Close the Scanner and Gqrx "
+                    "(Settings > Devices > Free the SDR receiver) and try again.")
+        return None
+    finally:
+        try:
+            os.remove(SDR_LOCK)
+        except OSError:
+            pass
+
+
+# ---- decoding ----------------------------------------------------------------------
+
+def grid_to_latlon(grid):
+    grid = (grid or "").strip()
+    if not re.fullmatch(r"[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?", grid):
+        return None
+    lon = (ord(grid[0].upper()) - 65) * 20 - 180 + int(grid[2]) * 2
+    lat = (ord(grid[1].upper()) - 65) * 10 - 90 + int(grid[3])
+    if len(grid) == 6:
+        lon += (ord(grid[4].lower()) - 97) * 5 / 60 + 2.5 / 60
+        lat += (ord(grid[5].lower()) - 97) * 2.5 / 60 + 1.25 / 60
+    else:
+        lon, lat = lon + 1, lat + 0.5
+    return round(lat, 4), round(lon, 4)
+
+
+def decoder_command(index):
+    command = [DECODER, "--device-index", str(index), "--quiet", "--fix", "--gain", "-10",
+               "--write-json", OUT, "--write-json-every", "1", "--json-location-accuracy", "0"]
+    try:
+        with open(STATION_PATH, encoding="utf-8") as f:
+            here = grid_to_latlon(json.load(f).get("grid", ""))
+    except (OSError, ValueError, AttributeError):
+        here = None
+    if here:  # lets it place aircraft from a single position message
+        command += ["--lat", str(here[0]), "--lon", str(here[1])]
+    return command
+
+
+def _num(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def aircraft(data):
+    """The aircraft worth showing, from dump1090's aircraft.json (old and new field names)."""
+    shown = []
+    for a in data.get("aircraft") or []:
+        lat, lon = _num(a.get("lat")), _num(a.get("lon"))
+        seen = _num(a.get("seen_pos"))
+        if lat is None or lon is None or (seen is not None and seen > STALE):
+            continue
+        alt = a.get("alt_baro", a.get("altitude"))
+        squawk = str(a.get("squawk") or "")
+        shown.append({"hex": str(a.get("hex", "")).strip("~"), "flight": str(a.get("flight") or "").strip(),
+                      "lat": lat, "lon": lon, "alt": "ground" if alt == "ground" else _num(alt),
+                      "speed": _num(a.get("gs", a.get("speed"))), "track": _num(a.get("track")),
+                      "squawk": squawk, "emergency": EMERGENCY.get(squawk, ""), "seen": seen or 0})
+    return shown
+
+
+def write_js(state, text="", planes=()):
+    os.makedirs(OUT, exist_ok=True)
+    data = {"state": state, "text": text, "time": int(time.time()), "aircraft": list(planes)}
+    path = os.path.join(OUT, "aircraft.js")
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        f.write("window.AIRCRAFT = " + json.dumps(data, separators=(",", ":")) + ";\n")
+    os.replace(path + ".tmp", path)
+
+
+def config_stamp():
+    try:
+        return os.path.getmtime(CONFIG)
+    except OSError:
+        return None
+
+
+def run():
+    if not shutil.which(DECODER):
+        write_js("missing", "The ADS-B decoder isn't installed. Run Update station in Settings.")
+    while not shutil.which(DECODER):
+        time.sleep(60)
+    while True:
+        serial = adsb_serial()
+        found = dongles()
+        dongle = adsb_dongle(found, serial)
+        if serial is None:
+            write_js("off", "ADS-B is turned off (Settings > Devices > ADS-B receiver).")
+            time.sleep(10)
+            continue
+        if dongle is None:
+            write_js("none", "No ADS-B receiver: pick a dongle in Settings > Devices > ADS-B receiver.")
+            time.sleep(10)
+            continue
+        stamp = config_stamp()
+        try:
+            os.remove(os.path.join(OUT, "aircraft.json"))
+        except OSError:
+            pass
+        write_js("starting", "Starting the ADS-B receiver…")
+        proc = subprocess.Popen(decoder_command(dongle["index"]), stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        while proc.poll() is None:
+            time.sleep(2)
+            try:
+                with open(os.path.join(OUT, "aircraft.json"), encoding="utf-8") as f:
+                    write_js("running", "", aircraft(json.load(f)))
+            except (OSError, ValueError):
+                pass
+            if config_stamp() != stamp or adsb_dongle(dongles(), adsb_serial()) is None:
+                proc.terminate()
+                try:
+                    proc.wait(10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        write_js("stopped", "The ADS-B receiver stopped; trying again.")
+        time.sleep(5)
+
+
+def main(argv):
+    if argv == ["--dongles"]:
+        serial = adsb_serial()
+        found = dongles()
+        for d in found:
+            shared = sum(1 for o in found if o["serial"] == d["serial"]) > 1
+            print(json.dumps(dict(d, adsb=bool(serial) and d["serial"] == serial and not shared, shared=shared)))
+        return 0
+    if len(argv) == 2 and argv[0] == "--use" and argv[1].isdigit():
+        print(use(int(argv[1])))
+        return 0
+    if argv == ["--off"]:
+        save_config({"off": True})
+        print("ADS-B is off; every dongle is free for the Scanner, Gqrx and weather alerts.")
+        return 0
+    if argv:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

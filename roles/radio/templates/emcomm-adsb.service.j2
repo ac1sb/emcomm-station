@@ -1,0 +1,14 @@
+# Managed by the emcomm-station playbook.
+# Aircraft from ADS-B on an RTL-SDR dongle kept for it (Settings > Devices > ADS-B receiver), for the map.
+[Unit]
+Description=ADS-B aircraft for the station map (RTL-SDR)
+After=network.target
+
+[Service]
+User={{ station_user }}
+ExecStart=/usr/local/bin/emcomm-adsb
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -30,7 +30,7 @@ jobs:
           python -m py_compile roles/launcher/files/emcomm-launcher roles/radio/files/emcomm-apply-settings
           roles/apps/files/emcomm-app-setup roles/apps/files/emcomm-webview roles/radio/files/emcomm-audio-default
           roles/apps/files/emcomm-map roles/apps/files/emcomm-map-prepare roles/launcher/files/emcomm-online
-          roles/launcher/files/emcomm-ics roles/radio/files/emcomm-nwr roles/apps/files/emcomm-library
+          roles/launcher/files/emcomm-ics roles/radio/files/emcomm-nwr roles/radio/files/emcomm-adsb roles/apps/files/emcomm-library
           roles/launcher/files/emcomm-backup roles/radio/files/emcomm-recorder roles/radio/files/emcomm-stream roles/kiosk/files/emcomm-display
           roles/apps/files/emcomm-scanner
       - name: Helper tests
@@ -40,6 +40,7 @@ jobs:
           python tests/test_online.py
           python tests/test_ics.py
           python tests/test_nwr.py
+          python tests/test_adsb.py
           python tests/test_library.py
           python tests/test_backup.py
           python tests/test_recorder.py

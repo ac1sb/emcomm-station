@@ -207,6 +207,61 @@
         .addTo(heardMe);
     });
   }
+  // ---- aircraft (ADS-B) ---------------------------------------------------
+  // emcomm-adsb rewrites ../adsb/aircraft.js every 2 seconds; a page opened from a
+  // file can't read files, but it can load a script again.
+  var aircraft = L.layerGroup().addTo(map);
+  var planes = {};
+  var PLANE = "M12 2c.8 0 1.3.7 1.3 1.6V9l7.7 4.6v2l-7.7-2.3v4.5l2.4 1.8V21L12 20l-3.7 1v-1.4l2.4-1.8v-4.5L3 15.6v-2L10.7 9V3.6C10.7 2.7 11.2 2 12 2z";
+  function planeIcon(a) {
+    var colour = a.emergency ? "#DC2626" : a.alt === "ground" ? "#6B7280" : "#0E7490";
+    return L.divIcon({ className: "plane", iconSize: [28, 28], iconAnchor: [14, 14],
+      html: '<svg viewBox="0 0 24 24" width="28" height="28" style="transform:rotate(' + (a.track || 0) +
+            'deg)"><path d="' + PLANE + '" fill="' + colour + '" stroke="#fff" stroke-width="1.2"/></svg>' +
+            '<span class="plane-label">' + esc(a.flight || a.hex.toUpperCase()) + '</span>' });
+  }
+  function planeText(a) {
+    var alt = a.alt === "ground" ? "On the ground" : a.alt != null ? a.alt.toLocaleString() + " ft" : "Altitude unknown";
+    return "<b>" + esc(a.flight || "No callsign") + "</b> · " + esc(a.hex.toUpperCase()) + "<br>" + alt +
+      (a.speed != null ? " · " + Math.round(a.speed) + " kt" : "") +
+      (a.track != null ? " · heading " + Math.round(a.track) + "°" : "") +
+      (a.squawk ? "<br>Squawk " + esc(a.squawk) + (a.emergency ? " · <b>" + esc(a.emergency) + "</b>" : "") : "");
+  }
+  function drawAircraft() {
+    var A = window.AIRCRAFT || { state: "none", aircraft: [] };
+    var on = document.getElementById("show-aircraft").checked;
+    var count = document.getElementById("aircraft-count");
+    count.textContent = A.state === "running" ? "(" + A.aircraft.length + ")" : "(no receiver)";
+    count.title = A.text || "";
+    var stale = Date.now() / 1000 - (A.time || 0) > 20;  // the receiver stopped writing
+    var keep = {};
+    if (on && !stale) {
+      A.aircraft.forEach(function (a) {
+        keep[a.hex] = true;
+        var m = planes[a.hex];
+        if (!m) {
+          m = planes[a.hex] = L.marker([a.lat, a.lon], { icon: planeIcon(a) }).bindPopup("").addTo(aircraft);
+        } else {
+          m.setLatLng([a.lat, a.lon]);
+          m.setIcon(planeIcon(a));
+        }
+        m.setPopupContent(planeText(a));
+      });
+    }
+    Object.keys(planes).forEach(function (hex) {
+      if (!keep[hex]) { aircraft.removeLayer(planes[hex]); delete planes[hex]; }
+    });
+  }
+  function reloadAircraft() {
+    var old = document.getElementById("aircraft-data");
+    var s = document.createElement("script");
+    s.id = "aircraft-data";
+    s.src = "../adsb/aircraft.js?" + Date.now();
+    s.onload = s.onerror = function () { if (old) old.remove(); drawAircraft(); };
+    document.body.appendChild(s);
+  }
+  setInterval(reloadAircraft, 2000);
+
   function ago(t) {
     if (!t) return "";
     var m = Math.round((Date.now() / 1000 - t) / 60);
@@ -225,6 +280,7 @@
   document.getElementById("show-heard").addEventListener("change", drawHeard);
   document.getElementById("show-heard-me").addEventListener("change", drawHeardMe);
   document.getElementById("show-grid").addEventListener("change", drawGrid);
+  document.getElementById("show-aircraft").addEventListener("change", drawAircraft);
   document.getElementById("home").addEventListener("click", function () { map.setView(home, 7); });
   function warn(text) {
     var w = document.getElementById("warning");
@@ -238,5 +294,5 @@
   var saved = "offline";
   try { saved = localStorage.getItem("emcomm-map-base") || "offline"; } catch (e) { /* first time */ }
   setBase(saved);
-  drawGrid(); drawGateways(); drawHeard(); drawHeardMe();
+  drawGrid(); drawGateways(); drawHeard(); drawHeardMe(); reloadAircraft();
 })();

@@ -149,6 +149,51 @@
     state: started
     daemon_reload: true
 
+# ADS-B: dump1090-mutability decodes aircraft on 1090 MHz from a dongle kept
+# for it. Its own service would take the first dongle at boot (the weather radio
+# listener's), so it's told not to start and masked; emcomm-adsb runs it on the
+# dongle picked in Settings > Devices > ADS-B receiver.
+- name: Keep the ADS-B decoder's own service from starting
+  ansible.builtin.debconf:
+    name: dump1090-mutability
+    question: dump1090-mutability/auto-start
+    vtype: boolean
+    value: "false"
+
+- name: Mask the ADS-B decoder's own service
+  ansible.builtin.systemd:
+    name: dump1090-mutability
+    masked: true
+
+# If a Debian release drops it, the station still builds; the map says ADS-B
+# isn't installed.
+- name: Install the ADS-B decoder
+  ansible.builtin.apt:
+    name: dump1090-mutability
+    install_recommends: false
+  failed_when: false
+
+- name: Install the ADS-B receiver script
+  ansible.builtin.copy:
+    src: emcomm-adsb
+    dest: /usr/local/bin/emcomm-adsb
+    mode: "0755"
+  notify: Restart emcomm-adsb
+
+- name: Install the ADS-B service
+  ansible.builtin.template:
+    src: emcomm-adsb.service.j2
+    dest: /etc/systemd/system/emcomm-adsb.service
+    mode: "0644"
+  notify: Restart emcomm-adsb
+
+- name: Run the ADS-B receiver
+  ansible.builtin.systemd:
+    name: emcomm-adsb
+    enabled: true
+    state: started
+    daemon_reload: true
+
 # The receive audio recorder reads the radio's audio through PipeWire's
 # PulseAudio side (parec), so other apps can use the sound card meanwhile.
 - name: Install the receive audio recorder
