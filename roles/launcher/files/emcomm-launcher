@@ -174,6 +174,52 @@ textview, textview text { background: $surface; color: $text; font-family: 'IBM 
 """)
 
 
+ZONEINFO = os.environ.get("EMCOMM_ZONEINFO", "/usr/share/zoneinfo")
+ZONE_AREAS = ("Africa", "America", "Antarctica", "Arctic", "Asia", "Atlantic", "Australia", "Europe",
+              "Indian", "Pacific")
+
+
+_ZONES = []
+
+
+def time_zones():
+    """The places a time zone can be picked by (America/New_York...), and UTC. Read once."""
+    if not _ZONES:
+        names = {"UTC"}
+        for area in ZONE_AREAS:
+            for folder, _dirs, files in os.walk(os.path.join(ZONEINFO, area)):
+                names.update(os.path.relpath(os.path.join(folder, f), ZONEINFO) for f in files)
+        _ZONES.extend(sorted(names))
+    return _ZONES
+
+
+def current_time_zone():
+    """The time zone the clock shows: TZ once one has been picked here, else the computer's,
+    from /etc/timezone or the /etc/localtime link."""
+    if os.environ.get("TZ", "").strip(":") in time_zones():
+        return os.environ["TZ"].strip(":")
+    try:
+        with open("/etc/timezone", encoding="utf-8") as f:
+            name = f.read().strip()
+        if name and name not in ("Etc/UTC", "Etc/UCT"):
+            return name
+    except OSError:
+        pass
+    link = os.path.realpath("/etc/localtime")
+    name = link.split("zoneinfo/", 1)[1] if "zoneinfo/" in link else "UTC"
+    return "UTC" if name in ("Etc/UTC", "Etc/UCT", "UCT", "Universal", "Zulu", "Etc/Zulu") else name
+
+
+def clock_text(now=None, utc_seconds=False):
+    """Local time with its zone, then UTC; only UTC when the computer's clock is set to UTC."""
+    now = time.time() if now is None else now
+    utc = time.strftime("%H:%M:%S UTC" if utc_seconds else "%H:%M UTC", time.gmtime(now))
+    local = time.localtime(now)
+    if local.tm_gmtoff == 0 and local.tm_zone in ("UTC", "GMT"):
+        return utc
+    return f"{time.strftime('%H:%M', local)} {local.tm_zone}   {utc}"
+
+
 def load_theme():
     try:
         with open(THEME_PATH, encoding="utf-8") as f:
@@ -1456,7 +1502,7 @@ class PickList(Gtk.Button):
 
 class HomeBar(Gtk.Window):
     """A thin bar across the top of the screen, above every app, with Home, the
-    UTC clock and the on-screen keyboard. Apps open below it; the launcher, when
+    local and UTC clock and the on-screen keyboard. Apps open below it; the launcher, when
     in front, covers it."""
 
     def __init__(self, launcher):
@@ -1830,12 +1876,13 @@ class Launcher(Gtk.Window):
         self.grid_label.set_text(f"Grid {self.station.get('grid', '')}")
 
     def _tick_clock(self):
-        self.clock.set_text(time.strftime("%H:%M UTC", time.gmtime()))
+        now = time.time()
+        self.clock.set_text(clock_text(now))
         rec = self._rec_markup()
         self.rec_status.set_markup(rec)
         if getattr(self, "home_bar", None):
-            now = time.strftime("%H:%M:%S UTC", time.gmtime())
-            self.home_bar.clock.set_text(f"{self.station.get('callsign', '')}   {now}")
+            # UTC to the second there, for setting a clock or checking FT8 timing by eye.
+            self.home_bar.clock.set_text(f"{self.station.get('callsign', '')}   {clock_text(now, utc_seconds=True)}")
             self.home_bar.rec.get_child().set_markup(rec)
         return True
 
@@ -3082,7 +3129,8 @@ class Launcher(Gtk.Window):
             return lambda: self.stack.set_visible_child_name(name)
 
         tiles = [
-            ("USR", "User", "Callsign and grid square", show("station-user")),
+            ("USR", "User", "Callsign and grid square" if self.desktop else "Callsign, grid square, time zone",
+             show("station-user")),
             ("RIG", "Radio", "Model, CAT, PTT, sound card", show("station-radio")),
             ("DEV", "Devices", "GPS and what's plugged in", show("station-devices")),
             ("DSP", "Display", "Theme, resolution, text size", self._display_dialog),
@@ -3280,6 +3328,10 @@ class Launcher(Gtk.Window):
         self.grid_entry = Gtk.Entry(max_length=6)
         self.grid_gps_btn = self._navbtn("From GPS", self._grid_from_gps)
         self.grid_gps_btn.set_sensitive(False)
+        # A desktop keeps its own clock settings.
+        self.zone_combo = None if self.desktop else PickList()
+        for name in time_zones() if self.zone_combo else []:
+            self.zone_combo.append(name, name.replace("_", " ").replace("/", " / "))
         self.preset_combo = PickList()
         self.preset_combo.append("", "None")
         for preset_id, preset in self.presets:
@@ -3304,14 +3356,19 @@ class Launcher(Gtk.Window):
         self.gps_combo = PickList()  # long device names are cut off with "…" instead of widening the screen
 
     def _station_user_page(self):
-        page, body = self._station_subpage("User", "Your callsign goes into JS8Call, WSJT-X, fldigi, Pat and "
-                                                   "the ICS forms; the grid square into the apps and the map.")
+        hint = ("Your callsign goes into JS8Call, WSJT-X, fldigi, Pat and the ICS forms; the grid square "
+                "into the apps and the map.")
+        if self.zone_combo:
+            hint += " The time zone sets the local time in the top bar."
+        page, body = self._station_subpage("User", hint)
         grid = Gtk.Grid(column_spacing=16, row_spacing=10, column_homogeneous=True)
         grid.attach(self._field("Callsign", self.callsign_entry), 0, 0, 1, 1)
         grid_row = Gtk.Box(spacing=8)
         grid_row.pack_start(self.grid_entry, True, True, 0)
         grid_row.pack_start(self.grid_gps_btn, False, False, 0)
         grid.attach(self._field("Grid square", grid_row), 1, 0, 1, 1)
+        if self.zone_combo:
+            grid.attach(self._field("Time zone", self.zone_combo), 0, 1, 1, 1)
         body.pack_start(grid, False, False, 0)
         return page
 
@@ -3396,7 +3453,8 @@ class Launcher(Gtk.Window):
 
     def _settings_form(self):
         """What the Settings page shows now, to tell whether it's been edited."""
-        return (self.callsign_entry.get_text(), self.grid_entry.get_text(), self.preset_combo.get_active_id(),
+        return (self.callsign_entry.get_text(), self.grid_entry.get_text(),
+                self.zone_combo.get_active_id() if self.zone_combo else None, self.preset_combo.get_active_id(),
                 self.model_combo.get_active_id(), self.baud_combo.get_active_id(), self.ptt_combo.get_active_id(),
                 *(self._chosen(c) for c in (self.cat_combo, self.ptt_port_combo, self.audio_combo, self.gps_combo)))
 
@@ -3456,6 +3514,8 @@ class Launcher(Gtk.Window):
         self._filling = True
         self.callsign_entry.set_text("" if st.get("callsign") == "N0CALL" else st.get("callsign", ""))
         self.grid_entry.set_text(st.get("grid", ""))
+        if self.zone_combo:
+            self.zone_combo.set_active_id(current_time_zone())
         preset_id = next((pid for pid, p in self.presets if p.get("radio_name") == st.get("radio_name")), "")
         self.preset_combo.set_active_id(preset_id)
         self._fill_radio(st)
@@ -3521,6 +3581,8 @@ class Launcher(Gtk.Window):
             "audio_match": self._chosen(self.audio_combo) or None,
             "gps_match": self._chosen(self.gps_combo) or None,
         }
+        if self.zone_combo and self.zone_combo.get_active_id():
+            new["timezone"] = self.zone_combo.get_active_id()
         self._set_message("Saving…", None)
 
         def work():
@@ -3542,6 +3604,9 @@ class Launcher(Gtk.Window):
     def _saved(self, ok, text):
         self._set_message(text, ok)
         if ok:
+            if self.zone_combo and self.zone_combo.get_active_id():
+                os.environ["TZ"] = self.zone_combo.get_active_id()  # the clock follows at once
+                time.tzset()
             self.station = load_station()
             self._show_station()
             self.callsign_entry.set_text(self.station.get("callsign", ""))
