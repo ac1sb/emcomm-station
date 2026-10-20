@@ -147,13 +147,18 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   works offline from Pat's saved list; **Update list** downloads a fresh one when
   the station has internet. The nearest HF gateway isn't always the easiest to
   reach: within about 300 miles, NVIS on 80 m or 40 m (or 60 m) works best.
-- **Map** (tile): an offline map (countries, states, US counties, highways and towns
-  from Natural Earth) with Maidenhead grid squares, your station, every Winlink
+- **Map** (tile): an offline map (countries, states, US counties, highways and
+  cities from Natural Earth, and every US town, village and New England town from
+  the Census Bureau's gazetteer, shown as you zoom in) with Maidenhead grid
+  squares, your station, every Winlink
   gateway (blue HF, green VHF/UHF; tap one for its dial frequencies, modes and
   hours) and stations heard on JS8Call and WSJT-X with their grids. The gateway
   list is Pat's: it works offline from the copy built into Pat, and is refreshed
   when it's over a week old and the station is online. It also shows the stations
   that heard you (purple, with a line to each), as the Online page last saved them.
+  The buttons at the top right switch the background: **Map** is the built-in
+  one; **Streets**, **Satellite** (aerial photos with roads and place names) and
+  **Topo** are Esri's online maps, so they need the internet. The choice is kept.
 - **Online** (F7): data from internet services, saved so the last answer still
   shows offline. Each section says when it was last updated.
   - **Weather alerts** for your grid from the National Weather Service (US only),
