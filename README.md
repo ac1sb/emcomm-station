@@ -11,8 +11,10 @@ environment.
 ## What's in it so far
 
 - **Base system:** a `radio` user, SSH for remote troubleshooting, PipeWire audio.
-- **Settings screen:** callsign, grid and the radio, set on the station itself and
-  opened automatically on first boot. Any radio Hamlib supports can be picked by
+- **Settings screen:** a page of large tiles: User (callsign and grid), Radio,
+  Devices (GPS, and what's plugged in), Display, Wi-Fi, Accounts, Weather radio,
+  Backup, Update station, Diagnostics, Power and Home tiles. User opens
+  automatically on first boot. Any radio Hamlib supports can be picked by
   manufacturer and model; the CAT port, PTT port and sound card are picked from the
   USB devices that are plugged in, with a Rescan button. Saving gives those devices
   stable names (`/dev/rig-cat`, `/dev/rig-ptt`, ALSA card `rigaudio`) and restarts
@@ -48,7 +50,11 @@ environment.
   F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control, F9 ICS-213 messages. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
-  icon" puts it back. **Display** in Settings sets the colours (dark, or light for
+  icon" puts it back. To put the tiles in your own order, pick **Arrange tiles** from
+  that same menu (or **Home tiles** in Settings), tap a tile, then tap where it
+  should go; **Add a gap** leaves an empty space to group tiles into rows, and
+  **Standard order** puts them back. The order is kept in
+  `~/.config/emcomm/tiles.json`, and the 1–9 keys follow it. **Display** in Settings sets the colours (dark, or light for
   daylight), the screen resolution (Automatic picks the screen's own), the text
   size (Normal, Large or Extra large, for bigger screens; other apps follow it
   too) and the rotation, for a screen mounted on its side or upside down. A

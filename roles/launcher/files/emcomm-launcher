@@ -84,6 +84,10 @@ window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', san
 .tile:focus, .navbtn:focus { border: 2px solid $accent_fill; outline: none; }
 .key-hint { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: $muted; }
 .tile:disabled, .tile.not-ready { opacity: 0.5; }
+.tile.picked { border: 3px solid $accent_fill; background: $hover; }
+.tile.gap, .tile.gap:hover { background: transparent; border: 1px dashed transparent; }
+.arranging .tile.gap { border-color: $input_line; }
+.arrange-bar { background: $surface; border: 1px solid $accent_fill; border-radius: 12px; padding: 8px 12px; }
 menu { background: $surface; border: 1px solid $input_line; padding: 4px 0; }
 menuitem { color: $text; font-size: 16px; padding: 12px 18px; }
 menuitem:hover { background: $hover; }
@@ -324,6 +328,34 @@ def format_freq(hz_text):
 
 ICONS_DIR = os.environ.get("EMCOMM_ICONS", "/usr/share/emcomm/icons")
 USER_ICONS = os.path.expanduser("~/.local/share/emcomm/icons")  # the operator's own pictures win
+# The operator's own order of the Home tiles: tile codes, with "" for a gap.
+TILE_ORDER = os.path.expanduser("~/.config/emcomm/tiles.json")
+GAP = ""
+
+
+def arrange_tiles(apps, order):
+    """The Home slots in the operator's order: apps (dicts) and GAP. Apps the saved order
+    doesn't know (new ones) go at the end; codes no longer installed are dropped."""
+    by_code = {app.get("code"): app for app in apps}
+    slots, placed = [], set()
+    for code in order if isinstance(order, list) else []:
+        if code == GAP:
+            slots.append(GAP)
+        elif code in by_code and code not in placed:
+            slots.append(by_code[code])
+            placed.add(code)
+    slots += [app for app in apps if app.get("code") not in placed]
+    while slots and slots[-1] == GAP:
+        slots.pop()
+    return slots
+
+
+def move_slot(slots, src, dest):
+    """slots with the one at src moved to position dest."""
+    slots = list(slots)
+    item = slots.pop(src)
+    slots.insert(dest, item)
+    return slots
 ICON_EXTS = (".svg", ".png", ".jpg")
 ICON_SIZE = 44
 
@@ -1374,7 +1406,7 @@ class Launcher(Gtk.Window):
         if not self.gps_grid:
             return
         grid = self.gps_grid
-        self.stack.set_visible_child_name("settings")
+        self.stack.set_visible_child_name("station-user")
         # After the page has filled itself in from the saved settings.
         GLib.idle_add(self._set_grid_from_gps, grid)
 
@@ -1431,17 +1463,28 @@ class Launcher(Gtk.Window):
 
     def _home_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=20)
-        grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
-        self.tiles = []
-        apps = self.config.get("apps", [])
-        # Three rows fit a 600-pixel-high screen: three across for up to nine tiles,
-        # then wider rows.
-        columns = max(3, -(-len(apps) // 3))
-        for i, app in enumerate(apps):
-            tile = self._tile(app, i + 1 if i < 9 else None)
-            self.tiles.append(tile)
-            grid.attach(tile, i % columns, i // columns, 1, 1)
-        page.pack_start(grid, True, True, 0)
+        self.home_page = page
+        # Arranging: tap a tile, then tap where it goes.
+        self.arrange_bar = Gtk.Box(spacing=12, no_show_all=True)
+        self.arrange_bar.get_style_context().add_class("arrange-bar")
+        self.arrange_hint = Gtk.Label(xalign=0, wrap=True)
+        self.arrange_bar.pack_start(self.arrange_hint, True, True, 0)
+        self.arrange_buttons = [self._navbtn("Done", lambda *_: self._arrange(False), "primary"),
+                                self._navbtn("Standard order", lambda *_: self._arrange_reset()),
+                                self._navbtn("Add a gap", lambda *_: self._arrange_add_gap())]
+        self.gap_remove_btn = self._navbtn("Remove gap", lambda *_: self._arrange_remove_gap())
+        for btn in self.arrange_buttons + [self.gap_remove_btn]:
+            self.arrange_bar.pack_end(btn, False, False, 0)
+        page.pack_start(self.arrange_bar, False, False, 0)
+        self.home_grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
+        self.app_tiles = {app.get("code"): self._tile(app) for app in self.config.get("apps", [])}
+        self.arranging, self.picked = False, None
+        saved = read_json(TILE_ORDER, {})
+        order = saved.get("order") if isinstance(saved, dict) else None
+        self.slots = [self.app_tiles[a.get("code")] if a != GAP else self._gap_tile()
+                      for a in arrange_tiles(self.config.get("apps", []), order)]
+        self._lay_out_tiles()
+        page.pack_start(self.home_grid, True, True, 0)
 
         nav = Gtk.Box(spacing=12, homogeneous=True)
         nav.pack_start(self._navbtn("Diagnostics  F2", lambda *_: self.stack.set_visible_child_name("diagnostics")), True, True, 0)
@@ -1453,7 +1496,89 @@ class Launcher(Gtk.Window):
         page.pack_end(nav, False, False, 0)
         return page
 
-    def _tile(self, app, key=None):
+    def _lay_out_tiles(self):
+        """Put the tiles in the grid in self.slots' order. Number keys 1-9 follow the order."""
+        for child in self.home_grid.get_children():
+            self.home_grid.remove(child)
+        # Three rows fit a 600-pixel-high screen: three across for up to nine tiles,
+        # then wider rows.
+        columns = max(3, -(-len(self.slots) // 3))
+        for i, tile in enumerate(self.slots):
+            self.home_grid.attach(tile, i % columns, i // columns, 1, 1)
+        self.tiles = [t for t in self.slots if t.app is not None]
+        for i, tile in enumerate(self.tiles):
+            tile.key_hint.set_text(str(i + 1) if i < 9 else "")
+        self.home_grid.show_all()
+        if self.arranging:  # saved as it changes, so leaving the page any way keeps it
+            write_json(TILE_ORDER, {"order": [t.app.get("code") if t.app else GAP for t in self.slots]})
+
+    def _gap_tile(self):
+        btn = Gtk.Button()
+        btn.get_style_context().add_class("tile")
+        btn.get_style_context().add_class("gap")
+        btn.app = None
+        btn.set_can_focus(False)
+        btn.connect("clicked", lambda b: self._arrange_tap(b) if self.arranging else None)
+        return btn
+
+    def _arrange(self, on):
+        """Arrange mode: tapping tiles moves them instead of opening apps."""
+        self.arranging, self.picked = on, None
+        ctx = self.home_page.get_style_context()
+        (ctx.add_class if on else ctx.remove_class)("arranging")
+        # no_show_all keeps the bar hidden when the window first shows everything.
+        self.arrange_bar.set_no_show_all(not on)
+        if on:
+            self.arrange_bar.show_all()
+            self.stack.set_visible_child_name("home")
+        else:
+            self.arrange_bar.hide()
+        self._arrange_show()
+
+    def _arrange_show(self):
+        for tile in self.slots:
+            (tile.get_style_context().add_class if tile is self.picked
+             else tile.get_style_context().remove_class)("picked")
+        self.gap_remove_btn.set_visible(self.arranging and self.picked is not None and self.picked.app is None)
+        if self.picked is None:
+            self.arrange_hint.set_text("Tap a tile, then tap where it should go. Gaps help group tiles into rows.")
+        else:
+            name = self.picked.app["name"] if self.picked.app else "the gap"
+            self.arrange_hint.set_text(f"Now tap where {name} should go (or tap it again to cancel).")
+
+    def _arrange_tap(self, tile):
+        if self.picked is None:
+            self.picked = tile
+        elif tile is self.picked:
+            self.picked = None
+        else:
+            self.slots = move_slot(self.slots, self.slots.index(self.picked), self.slots.index(tile))
+            self.picked = None
+            self._lay_out_tiles()
+        self._arrange_show()
+
+    def _arrange_add_gap(self):
+        gap = self._gap_tile()
+        at = self.slots.index(self.picked) if self.picked in self.slots else len(self.slots)
+        self.slots.insert(at, gap)
+        self.picked = None
+        self._lay_out_tiles()
+        self._arrange_show()
+
+    def _arrange_remove_gap(self):
+        if self.picked is not None and self.picked.app is None:
+            self.slots.remove(self.picked)
+            self.picked = None
+            self._lay_out_tiles()
+            self._arrange_show()
+
+    def _arrange_reset(self):
+        self.slots = [self.app_tiles[a.get("code")] for a in self.config.get("apps", [])]
+        self.picked = None
+        self._lay_out_tiles()
+        self._arrange_show()
+
+    def _tile(self, app):
         btn = Gtk.Button()
         btn.get_style_context().add_class("tile")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -1462,10 +1587,9 @@ class Launcher(Gtk.Window):
         self._set_tile_icon(btn)
         top = Gtk.Box()
         top.pack_start(btn.icon_slot, True, True, 0)
-        if key:
-            hint = Gtk.Label(label=str(key), yalign=0)
-            hint.get_style_context().add_class("key-hint")
-            top.pack_end(hint, False, False, 0)
+        btn.key_hint = Gtk.Label(yalign=0)
+        btn.key_hint.get_style_context().add_class("key-hint")
+        top.pack_end(btn.key_hint, False, False, 0)
         # Ellipsize, so five tiles across still fit a 1024-pixel screen.
         name = Gtk.Label(label=app.get("name", ""), xalign=0, ellipsize=Pango.EllipsizeMode.END)
         name.get_style_context().add_class("tile-name")
@@ -1659,13 +1783,17 @@ class Launcher(Gtk.Window):
             GLib.idle_add(lambda: self._icon_menu(btn) and False)
 
     def _icon_menu(self, btn):
-        if not btn.app.get("icon"):
+        if self.arranging:
             return
         menu = Gtk.Menu()
-        change = Gtk.MenuItem(label=f"Change {btn.app['name']} icon…")
-        change.connect("activate", lambda *_: self._choose_icon(btn))
-        menu.append(change)
-        if user_icon(btn.app["icon"]):
+        arrange = Gtk.MenuItem(label="Arrange tiles…")
+        arrange.connect("activate", lambda *_: self._arrange(True))
+        menu.append(arrange)
+        if btn.app.get("icon"):
+            change = Gtk.MenuItem(label=f"Change {btn.app['name']} icon…")
+            change.connect("activate", lambda *_: self._choose_icon(btn))
+            menu.append(change)
+        if btn.app.get("icon") and user_icon(btn.app["icon"]):
             reset = Gtk.MenuItem(label="Use the standard icon")
             reset.connect("activate", lambda *_: self._reset_icon(btn))
             menu.append(reset)
@@ -1742,6 +1870,9 @@ class Launcher(Gtk.Window):
             self._update_tile(btn)
 
     def _tile_clicked(self, btn):
+        if self.arranging:
+            self._arrange_tap(btn)
+            return
         app = btn.app
         if btn.app_state != "missing":
             # Already open: bring it to the front rather than start a second copy.
@@ -1819,46 +1950,107 @@ class Launcher(Gtk.Window):
         return box
 
     def _settings_page(self):
+        """Settings: a page of large tiles, each opening one kind of setting."""
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
-
         header = Gtk.Box(spacing=12)
-        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")), False, False, 0)
-        title = Gtk.Label(label="Station settings", xalign=0)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")),
+                          False, False, 0)
+        title = Gtk.Label(label="Settings", xalign=0)
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
-        header.pack_end(self._navbtn("Rescan devices", lambda *_: self._rescan_devices()), False, False, 0)
-        header.pack_end(self._navbtn("Wi-Fi  F6", lambda *_: self.stack.set_visible_child_name("wifi")), False, False, 0)
-        header.pack_end(self._navbtn("Update station", self._update_station), False, False, 0)
-        header.pack_end(self._navbtn("Backup", self._backup_dialog), False, False, 0)
-        header.pack_end(self._navbtn("Display", self._display_dialog), False, False, 0)
         page.pack_start(header, False, False, 0)
 
-        cols = Gtk.Box(spacing=16)
+        def show(name):
+            return lambda: self.stack.set_visible_child_name(name)
 
-        operator = self._section("Operator")
-        operator.set_size_request(280, -1)
+        tiles = [
+            ("USR", "User", "Callsign and grid square", show("station-user")),
+            ("RIG", "Radio", "Model, CAT, PTT, sound card", show("station-radio")),
+            ("DEV", "Devices", "GPS and what's plugged in", show("station-devices")),
+            ("DSP", "Display", "Theme, resolution, text size", self._display_dialog),
+            ("NET", "Wi-Fi", "Networks and the internet", show("wifi")),
+            ("KEY", "Accounts", "QRZ, HamQTH, aprs.fi, email", self._edit_accounts),
+            ("NWR", "Weather radio", "NOAA alerts receiver", self._edit_nwr),
+            ("BAK", "Backup", "Save to or restore from USB", self._backup_dialog),
+            ("UPD", "Update station", "Latest Emcomm-CNC and apps", self._update_station),
+            ("DIA", "Diagnostics", "Check the radio's connections", show("diagnostics")),
+            ("PWR", "Power", "Restart or shut down", self._power_dialog),
+            ("ARR", "Home tiles", "Arrange and group the apps", lambda: self._arrange(True)),
+        ]
+        grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
+        for i, (code, name, detail, handler) in enumerate(tiles):
+            grid.attach(self._settings_tile(code, name, detail, handler), i % 3, i // 3, 1, 1)
+        page.pack_start(grid, True, True, 0)
+
+        self._build_station_form()
+        self.stack.add_named(self._station_user_page(), "station-user")
+        self.stack.add_named(self._station_radio_page(), "station-radio")
+        self.stack.add_named(self._station_devices_page(), "station-devices")
+        self.serial_ports, self.sound_cards = detect_devices()
+        self._fill_settings()
+        return page
+
+    def _settings_tile(self, code, name, detail, handler):
+        btn = Gtk.Button()
+        btn.get_style_context().add_class("tile")
+        row = Gtk.Box(spacing=16)
+        code_label = Gtk.Label(label=code, xalign=0, width_chars=3)
+        code_label.get_style_context().add_class("tile-code")
+        row.pack_start(code_label, False, False, 0)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER)
+        name_label = Gtk.Label(label=name, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        name_label.get_style_context().add_class("tile-name")
+        text.pack_start(name_label, False, False, 0)
+        detail_label = Gtk.Label(label=detail, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        detail_label.get_style_context().add_class("tile-detail")
+        text.pack_start(detail_label, False, False, 0)
+        row.pack_start(text, True, True, 0)
+        btn.add(row)
+        btn.connect("clicked", lambda *_: handler())
+        return btn
+
+    def _station_subpage(self, title, hint=None, save_label="Save"):
+        """A page under Settings: ‹ Settings, its title, and Undo/Save at the bottom. Returns (page, body)."""
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Settings", lambda *_: self.stack.set_visible_child_name("settings")),
+                          False, False, 0)
+        label = Gtk.Label(label=title, xalign=0)
+        label.get_style_context().add_class("title")
+        header.pack_start(label, False, False, 0)
+        page.pack_start(header, False, False, 0)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page.pack_start(body, True, True, 0)
+        message = Gtk.Label(xalign=0, wrap=True)
+        self.settings_messages.append(message)
+        page.pack_end(self._settings_buttons(save_label), False, False, 0)
+        page.pack_end(message, False, False, 0)
+        if hint:
+            note = Gtk.Label(label=hint, xalign=0, wrap=True)
+            note.get_style_context().add_class("muted")
+            page.pack_end(note, False, False, 0)
+        page.connect("map", lambda *_: self._settings_shown())
+        return page, body
+
+    def _settings_buttons(self, save_label):
+        buttons = Gtk.Box(spacing=12, homogeneous=True)
+        buttons.pack_start(self._navbtn("Undo changes", lambda *_: self._fill_settings()), True, True, 0)
+        buttons.pack_start(self._navbtn(save_label, self._save_settings, "primary"),
+                           True, True, 0)
+        return buttons
+
+    def _build_station_form(self):
+        """The station settings' fields, shared by the User, Radio and Devices pages and saved together."""
+        self.settings_messages = []
         self.callsign_entry = Gtk.Entry(max_length=12)
         self.grid_entry = Gtk.Entry(max_length=6)
+        self.grid_gps_btn = self._navbtn("From GPS", self._grid_from_gps)
+        self.grid_gps_btn.set_sensitive(False)
         self.preset_combo = Gtk.ComboBoxText()
         self.preset_combo.append("", "None")
         for preset_id, preset in self.presets:
             self.preset_combo.append(preset_id, preset.get("radio_name", preset_id))
         self.preset_combo.connect("changed", self._preset_changed)
-        operator.pack_start(self._field("Callsign", self.callsign_entry), False, False, 0)
-        grid_row = Gtk.Box(spacing=8)
-        grid_row.pack_start(self.grid_entry, True, True, 0)
-        self.grid_gps_btn = self._navbtn("From GPS", self._grid_from_gps)
-        self.grid_gps_btn.set_sensitive(False)
-        grid_row.pack_start(self.grid_gps_btn, False, False, 0)
-        operator.pack_start(self._field("Grid square", grid_row), False, False, 0)
-        operator.pack_start(self._field("Preset (fills in the radio)", self.preset_combo), False, False, 0)
-        self.settings_message = Gtk.Label(xalign=0, wrap=True)
-        self.settings_message.set_max_width_chars(30)
-        operator.pack_end(self.settings_message, False, False, 0)
-        cols.pack_start(operator, False, False, 0)
-
-        radio = self._section("Radio")
-        grid = Gtk.Grid(column_spacing=12, row_spacing=6, column_homogeneous=True)
         self.mfg_combo = Gtk.ComboBoxText()
         for mfg in sorted(self.models, key=str.lower):
             self.mfg_combo.append(mfg, mfg)
@@ -1875,35 +2067,78 @@ class Launcher(Gtk.Window):
         self.ptt_combo.connect("changed", lambda *_: self._ptt_changed())
         self.ptt_port_combo = Gtk.ComboBoxText()
         self.audio_combo = Gtk.ComboBoxText()
-        grid.attach(self._field("Manufacturer", self.mfg_combo), 0, 0, 1, 1)
-        grid.attach(self._field("Model (Hamlib)", self.model_combo), 1, 0, 1, 1)
-        grid.attach(self._field("CAT port", self.cat_combo), 0, 1, 1, 1)
-        grid.attach(self._field("Baud rate (match the radio)", self.baud_combo), 1, 1, 1, 1)
-        grid.attach(self._field("PTT", self.ptt_combo), 0, 2, 1, 1)
-        grid.attach(self._field("PTT port", self.ptt_port_combo), 1, 2, 1, 1)
         self.gps_combo = Gtk.ComboBoxText()
-        grid.attach(self._field("Sound card", self.audio_combo), 0, 3, 1, 1)
-        grid.attach(self._field("GPS", self.gps_combo), 1, 3, 1, 1)
         for combo in (self.preset_combo, self.mfg_combo, self.model_combo, self.cat_combo, self.baud_combo,
                       self.ptt_combo, self.ptt_port_combo, self.audio_combo, self.gps_combo):
             # Long device names are cut off with "…" instead of widening the screen.
             for cell in combo.get_cells():
                 cell.set_property("ellipsize", Pango.EllipsizeMode.END)
                 cell.set_property("width-chars", 8)
-        radio.pack_start(grid, False, False, 0)
-        cols.pack_start(radio, True, True, 0)
-        page.pack_start(cols, True, True, 0)
 
-        buttons = Gtk.Box(spacing=12, homogeneous=True)
-        buttons.pack_start(self._navbtn("Undo changes", lambda *_: self._fill_settings()), True, True, 0)
-        save = self._navbtn("Save and restart rig control", self._save_settings, "primary")
-        buttons.pack_start(save, True, True, 0)
-        page.pack_end(buttons, False, False, 0)
-
-        self.serial_ports, self.sound_cards = detect_devices()
-        self._fill_settings()
-        page.connect("map", lambda *_: self._settings_shown())
+    def _station_user_page(self):
+        page, body = self._station_subpage("User", "Your callsign goes into JS8Call, WSJT-X, fldigi, Pat and "
+                                                   "the ICS forms; the grid square into the apps and the map.")
+        grid = Gtk.Grid(column_spacing=16, row_spacing=10, column_homogeneous=True)
+        grid.attach(self._field("Callsign", self.callsign_entry), 0, 0, 1, 1)
+        grid_row = Gtk.Box(spacing=8)
+        grid_row.pack_start(self.grid_entry, True, True, 0)
+        grid_row.pack_start(self.grid_gps_btn, False, False, 0)
+        grid.attach(self._field("Grid square", grid_row), 1, 0, 1, 1)
+        body.pack_start(grid, False, False, 0)
         return page
+
+    def _station_radio_page(self):
+        page, body = self._station_subpage("Radio", "A preset fills in a known radio; any radio Hamlib knows can be "
+                                                    "picked by manufacturer and model. Diagnostics checks it after.",
+                                           "Save and restart rig control")
+        grid = Gtk.Grid(column_spacing=12, row_spacing=6, column_homogeneous=True)
+        grid.attach(self._field("Preset (fills in the radio)", self.preset_combo), 0, 0, 1, 1)
+        grid.attach(self._field("Manufacturer", self.mfg_combo), 1, 0, 1, 1)
+        grid.attach(self._field("Model (Hamlib)", self.model_combo), 2, 0, 1, 1)
+        grid.attach(self._field("CAT port", self.cat_combo), 0, 1, 1, 1)
+        grid.attach(self._field("Baud rate (match the radio)", self.baud_combo), 1, 1, 1, 1)
+        grid.attach(self._field("PTT", self.ptt_combo), 2, 1, 1, 1)
+        grid.attach(self._field("PTT port", self.ptt_port_combo), 0, 2, 1, 1)
+        grid.attach(self._field("Sound card", self.audio_combo), 1, 2, 1, 1)
+        rescan = self._navbtn("Rescan devices", lambda *_: self._rescan_devices())
+        rescan.set_valign(Gtk.Align.END)
+        grid.attach(rescan, 2, 2, 1, 1)
+        body.pack_start(grid, False, False, 0)
+        return page
+
+    def _station_devices_page(self):
+        page, body = self._station_subpage("Devices")
+        top = Gtk.Box(spacing=12)
+        top.pack_start(self._field("GPS", self.gps_combo), True, True, 0)
+        rescan = self._navbtn("Rescan devices", lambda *_: self._rescan_devices())
+        rescan.set_valign(Gtk.Align.END)
+        top.pack_start(rescan, False, False, 0)
+        body.pack_start(top, False, False, 0)
+        self.devices_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                         left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        scroller = Gtk.ScrolledWindow()
+        scroller.add(self.devices_view)
+        body.pack_start(scroller, True, True, 0)
+        page.connect("map", lambda *_: self._show_devices())
+        return page
+
+    def _show_devices(self):
+        """What's plugged in now: USB serial ports, USB sound cards, paired Bluetooth radios."""
+        lines = ["USB serial ports (radio CAT/PTT, GPS, mesh radios):"]
+        lines += [f"  {label}" for label, _m in self.serial_ports] or ["  none"]
+        lines += ["", "USB sound cards:"]
+        lines += [f"  {label}" for label, _m in self.sound_cards] or ["  none"]
+        if shutil.which("bluetoothctl"):
+            try:
+                out = subprocess.run(["bluetoothctl", "devices", "Paired"], capture_output=True, text=True,
+                                     timeout=5, check=False).stdout
+            except (OSError, subprocess.TimeoutExpired):
+                out = ""
+            paired = [line.split(" ", 2)[2] for line in out.splitlines()
+                      if line.startswith("Device ") and line.count(" ") >= 2]
+            lines += ["", "Paired Bluetooth radios (Meshtastic, MeshCore):"]
+            lines += [f"  {name}" for name in paired] or ["  none"]
+        self.devices_view.get_buffer().set_text("\n".join(lines) + "\n")
 
     def _settings_form(self):
         """What the Settings page shows now, to tell whether it's been edited."""
@@ -1973,7 +2208,8 @@ class Launcher(Gtk.Window):
         self._fill_match_combo(self.gps_combo, self.serial_ports, st.get("gps_match") or "", fixed=GPS_FIXED)
         self._filling = False
         self._settings_filled = (self.station, self._settings_form())
-        self.settings_message.set_text("")
+        for label in self.settings_messages:
+            label.set_text("")
 
     def _rescan_devices(self):
         self.serial_ports, self.sound_cards = detect_devices()
@@ -2177,12 +2413,13 @@ class Launcher(Gtk.Window):
         dialog.destroy()
 
     def _set_message(self, text, ok):
-        ctx = self.settings_message.get_style_context()
-        ctx.remove_class("ok")
-        ctx.remove_class("error")
-        if ok is not None:
-            ctx.add_class("ok" if ok else "error")
-        self.settings_message.set_text(text)
+        for label in self.settings_messages:
+            ctx = label.get_style_context()
+            ctx.remove_class("ok")
+            ctx.remove_class("error")
+            if ok is not None:
+                ctx.add_class("ok" if ok else "error")
+            label.set_text(text)
 
     # ---- diagnostics ---------------------------------------------------
 
@@ -3762,7 +3999,10 @@ def main():
     win.home_bar.show_all()
     if win.station.get("callsign", "N0CALL") == "N0CALL":
         # First boot: ask for callsign and radio before anything else.
-        win.stack.set_visible_child_name("settings")
+        win.stack.set_visible_child_name("station-user")
+        GLib.timeout_add(500, lambda: win._set_message(
+            "Welcome. Type your callsign and grid square and save, then set up the radio under "
+            "Settings > Radio.", None) and False)
     Gtk.main()
 
 
