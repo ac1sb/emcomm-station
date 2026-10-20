@@ -101,6 +101,13 @@ pick_node() {
   esac
 }
 
+# Remember which radio the tile used, so the map can ask it where the mesh's
+# nodes are (emcomm-mesh-nodes) while the tile is closed.
+remember_node() {
+  mkdir -p "$HOME/.config/emcomm"
+  printf '{"via": "%s", "address": "%s"}\n' "${2%% *}" "${2#* }" > "$HOME/.config/emcomm/mesh-$1.json"
+}
+
 in_terminal() {
   local title=$1; shift
   exec xterm "${TERM_OPTS[@]}" -T "$title" -e bash -c '"$@" || read -r -p "Press Enter to close. " _' _ "$@"
@@ -157,12 +164,14 @@ case "${1:-}" in
   meshtastic)
     [ -t 1 ] || in_terminal "Meshtastic" "$0" meshtastic
     node=$(pick_node Meshtastic) || exit 1
+    remember_node meshtastic "$node"
     if [ "${node%% *}" = ble ]; then exec contact --ble "${node#* }"; fi
     exec contact --port "${node#* }"
     ;;
   meshcore)
     [ -t 1 ] || in_terminal "MeshCore" "$0" meshcore
     node=$(pick_node MeshCore) || exit 1
+    remember_node meshcore "$node"
     if [ "${node%% *}" = ble ]; then exec meshcore-cli -a "${node#* }"; fi
     exec meshcore-cli -s "${node#* }"
     ;;

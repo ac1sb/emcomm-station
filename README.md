@@ -198,6 +198,15 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   Stick ships with 00001090 and is used without asking). The Scanner, Gqrx
   and weather alerts then use the other dongles. The decoder is
   dump1090-mutability with no network ports open.
+  **Warnings** shades the areas under NWS watches, warnings and advisories for
+  your state and its neighbours (red extreme, orange severe, yellow moderate,
+  blue minor; tap one for what it is and when it ends). They're fetched when the
+  station is online, at most every 10 minutes, and kept offline until each one
+  ends. **Mesh** shows the Meshtastic (teal) and MeshCore (magenta) nodes that
+  have sent a position, as the radio the Meshtastic or MeshCore tile last
+  connected to (USB or Bluetooth) knows them: tap one for when it was heard,
+  SNR, hops and battery. The radio is asked when the map opens, with no
+  internet needed; while its tile is open the last list stays.
   The buttons at the top right switch the background: **Map** is the built-in
   one; **Streets**, **Satellite** (aerial photos with roads and place names) and
   **Topo** are Esri's online maps, so they need the internet. The choice is kept.

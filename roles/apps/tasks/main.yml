@@ -207,7 +207,7 @@
         src: "{{ item }}"
         dest: "/usr/local/bin/{{ item }}"
         mode: "0755"
-      loop: [emcomm-map, emcomm-map-prepare]
+      loop: [emcomm-map, emcomm-map-prepare, emcomm-mesh-nodes]
 
     - name: Check for the base map
       ansible.builtin.stat:

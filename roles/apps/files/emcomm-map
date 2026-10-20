@@ -7,6 +7,11 @@ last saved them).
   emcomm-map            build the map's data and open it
   emcomm-map --data     only write the data file and print its path
 
+The page also shows NWS warning areas (emcomm-online's alertmap, refreshed in the
+background when online, the last ones kept offline), Meshtastic and MeshCore nodes
+(emcomm-mesh-nodes, which asks the radios in the background) and ADS-B aircraft
+(emcomm-adsb). Those it reloads as they change.
+
 Gateways come from Pat's saved list (~/.local/share/pat/rmslist.json). If there
 isn't one yet, Pat writes it, falling back to the copy built into Pat when the
 station is offline; a list older than a week is refreshed when online.
@@ -182,11 +187,21 @@ def write_data():
     return os.path.join(CACHE, "index.html")
 
 
+def refresh_in_background():
+    """Ask for fresh warning areas and mesh node positions; the page picks them up when done."""
+    for argv in (["emcomm-online", "refresh", "alertmap"], ["emcomm-mesh-nodes"]):
+        try:
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            pass
+
+
 def main(argv):
     page = write_data()
     if argv[:1] == ["--data"]:
         print(page)
         return 0
+    refresh_in_background()
     os.execvp("emcomm-webview", ["emcomm-webview", "file://" + page, "Station map"])
 
 

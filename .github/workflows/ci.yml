@@ -32,7 +32,7 @@ jobs:
           roles/apps/files/emcomm-map roles/apps/files/emcomm-map-prepare roles/launcher/files/emcomm-online
           roles/launcher/files/emcomm-ics roles/radio/files/emcomm-nwr roles/radio/files/emcomm-adsb roles/apps/files/emcomm-library
           roles/launcher/files/emcomm-backup roles/radio/files/emcomm-recorder roles/radio/files/emcomm-stream roles/kiosk/files/emcomm-display
-          roles/apps/files/emcomm-scanner
+          roles/apps/files/emcomm-scanner roles/apps/files/emcomm-mesh-nodes
       - name: Helper tests
         run: |
           python tests/test_apply_settings.py
@@ -48,4 +48,5 @@ jobs:
           python tests/test_stream.py
           python tests/test_scanner.py
           python tests/test_map_prepare.py
+          python tests/test_mesh_nodes.py
           python tests/test_splash.py
