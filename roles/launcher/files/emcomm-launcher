@@ -48,6 +48,10 @@ FAKE_DEVICES = os.environ.get("EMCOMM_FAKE_DEVICES")  # JSON file of devices, fo
 BACKUP_CMD = os.environ.get("EMCOMM_BACKUP", "emcomm-backup")
 APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply-settings").split()
 UPDATE_CMD = os.environ.get("EMCOMM_UPDATE", "sudo -n /usr/local/sbin/emcomm-update").split()
+SPLASH_CMD = os.environ.get("EMCOMM_SPLASH", "sudo -n /usr/local/sbin/emcomm-splash").split()
+SPLASH_PATH = os.environ.get("EMCOMM_SPLASH_SETTINGS", "/etc/emcomm/splash.json")
+SPLASH_STYLES = [("logo", "Emcomm-CNC logo and callsign"), ("picture", "A picture of your own…"),
+                 ("spinner", "Plain spinner"), ("text", "Start-up messages (text)")]
 RIGCTLD = ("127.0.0.1", 4532)
 BAUD_RATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
 GPS_FIXED = [("", "Automatic (u-blox USB GPS)")]
@@ -157,6 +161,10 @@ dialog button:hover, messagedialog button:hover { background: $hover; }
 dialog button box, dialog button label,
 messagedialog button box, messagedialog button label { background: transparent; }
 dialog check { background: $bg; border: 1px solid $input_line; }
+checkbutton.pick check { min-width: 26px; min-height: 26px; border-radius: 6px; background: $bg;
+                        border: 2px solid $input_line; background-image: none; box-shadow: none; }
+checkbutton.pick check:checked { background-color: $accent_fill; border-color: $accent_fill; color: $on_accent;
+                                -gtk-icon-source: -gtk-icontheme("object-select-symbolic"); }
 .topbar .navbtn { min-height: 40px; padding: 0 12px; }
 .home-nav .navbtn { min-height: 44px; font-size: 15px; padding: 0 14px; }
 .homebar { background: $bar; border-bottom: 1px solid $line; padding: 0 8px; }
@@ -168,6 +176,52 @@ dialog check { background: $bg; border: 1px solid $input_line; }
 .homebar-clock { font-family: 'IBM Plex Mono', monospace; font-size: 16px; color: $muted; }
 textview, textview text { background: $surface; color: $text; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
 """)
+
+
+ZONEINFO = os.environ.get("EMCOMM_ZONEINFO", "/usr/share/zoneinfo")
+ZONE_AREAS = ("Africa", "America", "Antarctica", "Arctic", "Asia", "Atlantic", "Australia", "Europe",
+              "Indian", "Pacific")
+
+
+_ZONES = []
+
+
+def time_zones():
+    """The places a time zone can be picked by (America/New_York...), and UTC. Read once."""
+    if not _ZONES:
+        names = {"UTC"}
+        for area in ZONE_AREAS:
+            for folder, _dirs, files in os.walk(os.path.join(ZONEINFO, area)):
+                names.update(os.path.relpath(os.path.join(folder, f), ZONEINFO) for f in files)
+        _ZONES.extend(sorted(names))
+    return _ZONES
+
+
+def current_time_zone():
+    """The time zone the clock shows: TZ once one has been picked here, else the computer's,
+    from /etc/timezone or the /etc/localtime link."""
+    if os.environ.get("TZ", "").strip(":") in time_zones():
+        return os.environ["TZ"].strip(":")
+    try:
+        with open("/etc/timezone", encoding="utf-8") as f:
+            name = f.read().strip()
+        if name and name not in ("Etc/UTC", "Etc/UCT"):
+            return name
+    except OSError:
+        pass
+    link = os.path.realpath("/etc/localtime")
+    name = link.split("zoneinfo/", 1)[1] if "zoneinfo/" in link else "UTC"
+    return "UTC" if name in ("Etc/UTC", "Etc/UCT", "UCT", "Universal", "Zulu", "Etc/Zulu") else name
+
+
+def clock_text(now=None, utc_seconds=False):
+    """Local time with its zone, then UTC; only UTC when the computer's clock is set to UTC."""
+    now = time.time() if now is None else now
+    utc = time.strftime("%H:%M:%S UTC" if utc_seconds else "%H:%M UTC", time.gmtime(now))
+    local = time.localtime(now)
+    if local.tm_gmtoff == 0 and local.tm_zone in ("UTC", "GMT"):
+        return utc
+    return f"{time.strftime('%H:%M', local)} {local.tm_zone}   {utc}"
 
 
 def load_theme():
@@ -1452,7 +1506,7 @@ class PickList(Gtk.Button):
 
 class HomeBar(Gtk.Window):
     """A thin bar across the top of the screen, above every app, with Home, the
-    UTC clock and the on-screen keyboard. Apps open below it; the launcher, when
+    local and UTC clock and the on-screen keyboard. Apps open below it; the launcher, when
     in front, covers it."""
 
     def __init__(self, launcher):
@@ -1826,12 +1880,13 @@ class Launcher(Gtk.Window):
         self.grid_label.set_text(f"Grid {self.station.get('grid', '')}")
 
     def _tick_clock(self):
-        self.clock.set_text(time.strftime("%H:%M UTC", time.gmtime()))
+        now = time.time()
+        self.clock.set_text(clock_text(now))
         rec = self._rec_markup()
         self.rec_status.set_markup(rec)
         if getattr(self, "home_bar", None):
-            now = time.strftime("%H:%M:%S UTC", time.gmtime())
-            self.home_bar.clock.set_text(f"{self.station.get('callsign', '')}   {now}")
+            # UTC to the second there, for setting a clock or checking FT8 timing by eye.
+            self.home_bar.clock.set_text(f"{self.station.get('callsign', '')}   {clock_text(now, utc_seconds=True)}")
             self.home_bar.rec.get_child().set_markup(rec)
         return True
 
@@ -2009,7 +2064,7 @@ class Launcher(Gtk.Window):
         nav = self.home_nav = Gtk.Box(spacing=10, halign=Gtk.Align.CENTER)
         nav.get_style_context().add_class("home-nav")
         for label, page_name in (("Diagnostics  F2", "diagnostics"), ("Settings  F3", "settings"),
-                                 ("Logs  F4", "logs"), ("Reference  F5", "reference"), ("Online  F7", "online")):
+                                 ("Logs  F4", "logs"), ("Reference  F5", "reference")):
             nav.pack_start(self._navbtn(label, lambda _b, n=page_name: self.stack.set_visible_child_name(n)),
                            False, False, 0)
         page.pack_end(nav, False, False, 0)
@@ -2639,6 +2694,14 @@ class Launcher(Gtk.Window):
         mode = combo(1, "Resolution", modes, old["mode"])
         size = combo(2, "Text size", [(str(v), t) for v, t in TEXT_SIZES], str(old["text_scale"]))
         rotate = combo(3, "Rotation", ROTATIONS, old["rotate"])
+        old_splash = (read_json(SPLASH_PATH, {}) or {}).get("style", "logo")
+        splash = None
+        if not self.desktop:  # a computer used for other things keeps its own start-up screen
+            styles = SPLASH_STYLES
+            if old_splash == "picture":
+                styles = [("logo", SPLASH_STYLES[0][1]), ("picture", "Your picture"),
+                          ("new-picture", "A different picture…")] + SPLASH_STYLES[2:]
+            splash = combo(4, "Start-up screen", styles, old_splash)
         if output:
             where = f"{output['name']} screen, now {(output['current'] or 'off').replace('x', ' × ')}."
             if len(outputs) > 1:
@@ -2660,11 +2723,14 @@ class Launcher(Gtk.Window):
         new = {"mode": mode.get_active_id(), "rotate": rotate.get_active_id(),
                "text_scale": float(size.get_active_id())}
         new_theme = theme.get_active_id()
+        new_splash = splash.get_active_id() if splash else old_splash
         dialog.destroy()
         if response != Gtk.ResponseType.OK:
             return
         if new_theme != self.theme:
             self._set_theme(new_theme)
+        if new_splash != old_splash:
+            self._set_splash("picture" if new_splash == "new-picture" else new_splash)
         if new == old:
             return
         if self.desktop and not self.session:
@@ -2678,6 +2744,65 @@ class Launcher(Gtk.Window):
         # Anything that might leave the screen unreadable goes back by itself unless kept.
         if not self._keep_display():
             self._apply_display(old)
+
+    def _set_splash(self, style):
+        """Change the start-up screen (for a picture, ask which first). The helper
+        rebuilds the boot files, which takes about a minute, so it runs in the background."""
+        args = ["set", style]
+        if style == "picture":
+            png = self._pick_splash_picture()
+            if not png:
+                return
+            args.append(png)
+        self._message("Changing the start-up screen. This takes about a minute; "
+                      "you'll see it the next time the station starts.")
+
+        def work():
+            try:
+                result = subprocess.run(SPLASH_CMD + args, capture_output=True, text=True, timeout=600, check=False)
+                error = None if result.returncode == 0 else (result.stderr.strip() or "it didn't work")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                error = str(exc)
+            if len(args) == 3:
+                try:
+                    os.remove(args[2])
+                except OSError:
+                    pass
+            GLib.idle_add(lambda: self._message(
+                f"The start-up screen didn't change: {error}" if error else "The new start-up screen is ready.")
+                and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pick_splash_picture(self):
+        """Ask for a picture (from a USB stick or Downloads) and make it a PNG no bigger than
+        1920 × 1080 for the start-up screen. Returns the PNG's path, or None."""
+        mount_usb_sticks()
+        dialog = Gtk.FileChooserDialog(title="Pick a picture for the start-up screen", transient_for=self,
+                                       action=Gtk.FileChooserAction.OPEN)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Use this picture", Gtk.ResponseType.OK)
+        images = Gtk.FileFilter()
+        images.set_name("Pictures (PNG, JPG)")
+        for pattern in ("*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG", "*.JPEG"):
+            images.add_pattern(pattern)
+        dialog.add_filter(images)
+        for folder in [os.path.expanduser("~/Downloads")] + glob.glob(f"/media/{os.environ.get('USER', '')}/*"):
+            if os.path.isdir(folder):
+                dialog.add_shortcut_folder(folder)
+        dialog.set_size_request(800, 500)
+        response = dialog.run()
+        path = dialog.get_filename()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK or not path:
+            return None
+        try:
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 1920, 1080, True)
+            out = os.path.join(GLib.get_tmp_dir(), f"emcomm-splash-{os.getpid()}.png")
+            pixbuf.savev(out, "png", [], [])
+        except GLib.Error as exc:
+            self._message(f"Couldn't use that picture: {exc.message}")
+            return None
+        return out
 
     def _apply_display(self, config):
         """Save the display settings and set the screen. Returns an error message, or None."""
@@ -2894,7 +3019,8 @@ class Launcher(Gtk.Window):
             return
         app = btn.app
         if app.get("page"):  # a part of the launcher, not a separate app
-            {"nwr": self._edit_nwr}.get(app["page"], lambda: None)()
+            {"nwr": self._edit_nwr,
+             "online": lambda: self.stack.set_visible_child_name("online")}.get(app["page"], lambda: None)()
             return
         if btn.app_state != "missing":
             # Already open: bring it to the front rather than start a second copy.
@@ -3007,7 +3133,8 @@ class Launcher(Gtk.Window):
             return lambda: self.stack.set_visible_child_name(name)
 
         tiles = [
-            ("USR", "User", "Callsign and grid square", show("station-user")),
+            ("USR", "User", "Callsign and grid square" if self.desktop else "Callsign, grid square, time zone",
+             show("station-user")),
             ("RIG", "Radio", "Model, CAT, PTT, sound card", show("station-radio")),
             ("DEV", "Devices", "GPS and what's plugged in", show("station-devices")),
             ("DSP", "Display", "Theme, resolution, text size", self._display_dialog),
@@ -3205,6 +3332,10 @@ class Launcher(Gtk.Window):
         self.grid_entry = Gtk.Entry(max_length=6)
         self.grid_gps_btn = self._navbtn("From GPS", self._grid_from_gps)
         self.grid_gps_btn.set_sensitive(False)
+        # A desktop keeps its own clock settings.
+        self.zone_combo = None if self.desktop else PickList()
+        for name in time_zones() if self.zone_combo else []:
+            self.zone_combo.append(name, name.replace("_", " ").replace("/", " / "))
         self.preset_combo = PickList()
         self.preset_combo.append("", "None")
         for preset_id, preset in self.presets:
@@ -3229,14 +3360,19 @@ class Launcher(Gtk.Window):
         self.gps_combo = PickList()  # long device names are cut off with "…" instead of widening the screen
 
     def _station_user_page(self):
-        page, body = self._station_subpage("User", "Your callsign goes into JS8Call, WSJT-X, fldigi, Pat and "
-                                                   "the ICS forms; the grid square into the apps and the map.")
+        hint = ("Your callsign goes into JS8Call, WSJT-X, fldigi, Pat and the ICS forms; the grid square "
+                "into the apps and the map.")
+        if self.zone_combo:
+            hint += " The time zone sets the local time in the top bar."
+        page, body = self._station_subpage("User", hint)
         grid = Gtk.Grid(column_spacing=16, row_spacing=10, column_homogeneous=True)
         grid.attach(self._field("Callsign", self.callsign_entry), 0, 0, 1, 1)
         grid_row = Gtk.Box(spacing=8)
         grid_row.pack_start(self.grid_entry, True, True, 0)
         grid_row.pack_start(self.grid_gps_btn, False, False, 0)
         grid.attach(self._field("Grid square", grid_row), 1, 0, 1, 1)
+        if self.zone_combo:
+            grid.attach(self._field("Time zone", self.zone_combo), 0, 1, 1, 1)
         body.pack_start(grid, False, False, 0)
         return page
 
@@ -3321,7 +3457,8 @@ class Launcher(Gtk.Window):
 
     def _settings_form(self):
         """What the Settings page shows now, to tell whether it's been edited."""
-        return (self.callsign_entry.get_text(), self.grid_entry.get_text(), self.preset_combo.get_active_id(),
+        return (self.callsign_entry.get_text(), self.grid_entry.get_text(),
+                self.zone_combo.get_active_id() if self.zone_combo else None, self.preset_combo.get_active_id(),
                 self.model_combo.get_active_id(), self.baud_combo.get_active_id(), self.ptt_combo.get_active_id(),
                 *(self._chosen(c) for c in (self.cat_combo, self.ptt_port_combo, self.audio_combo, self.gps_combo)))
 
@@ -3381,6 +3518,8 @@ class Launcher(Gtk.Window):
         self._filling = True
         self.callsign_entry.set_text("" if st.get("callsign") == "N0CALL" else st.get("callsign", ""))
         self.grid_entry.set_text(st.get("grid", ""))
+        if self.zone_combo:
+            self.zone_combo.set_active_id(current_time_zone())
         preset_id = next((pid for pid, p in self.presets if p.get("radio_name") == st.get("radio_name")), "")
         self.preset_combo.set_active_id(preset_id)
         self._fill_radio(st)
@@ -3446,6 +3585,8 @@ class Launcher(Gtk.Window):
             "audio_match": self._chosen(self.audio_combo) or None,
             "gps_match": self._chosen(self.gps_combo) or None,
         }
+        if self.zone_combo and self.zone_combo.get_active_id():
+            new["timezone"] = self.zone_combo.get_active_id()
         self._set_message("Saving…", None)
 
         def work():
@@ -3467,6 +3608,9 @@ class Launcher(Gtk.Window):
     def _saved(self, ok, text):
         self._set_message(text, ok)
         if ok:
+            if self.zone_combo and self.zone_combo.get_active_id():
+                os.environ["TZ"] = self.zone_combo.get_active_id()  # the clock follows at once
+                time.tzset()
             self.station = load_station()
             self._show_station()
             self.callsign_entry.set_text(self.station.get("callsign", ""))
@@ -4252,7 +4396,23 @@ class Launcher(Gtk.Window):
         stream.pack_end(self.stream_at_start, False, False, 0)
         page.pack_start(stream, False, False, 0)
 
+        # Select picks several recordings to delete at once; tapping a row then ticks it.
+        self.rec_selecting, self.rec_selected = False, set()
+        pick_bar = Gtk.Box(spacing=12)
+        self.rec_pick_note = Gtk.Label(xalign=0)
+        self.rec_pick_note.get_style_context().add_class("muted")
+        pick_bar.pack_start(self.rec_pick_note, True, True, 0)
+        self.rec_pick_cancel = self._navbtn("Cancel", lambda *_: self._recorder_select(False))
+        self.rec_pick_delete = self._navbtn("Delete", lambda *_: self._recorder_delete_selected(), "danger")
+        self.rec_pick_all = self._navbtn("Select all", lambda *_: self._recorder_select_all())
+        self.rec_pick = self._navbtn("Select", lambda *_: self._recorder_select(True))
+        for btn in (self.rec_pick_cancel, self.rec_pick_delete, self.rec_pick_all, self.rec_pick):
+            btn.set_no_show_all(True)  # shown as the list needs them
+            pick_bar.pack_end(btn, False, False, 0)
+        page.pack_start(pick_bar, False, False, 0)
+
         self.rec_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.rec_list.connect("row-activated", self._recorder_row_tapped)
         scroller = Gtk.ScrolledWindow()
         scroller.add(self.rec_list)
         page.pack_start(scroller, True, True, 0)
@@ -4266,6 +4426,7 @@ class Launcher(Gtk.Window):
 
         self.rec_listed = None
         page.connect("map", lambda *_: self._recorder_tick(page))
+        page.connect("unmap", lambda *_: self._recorder_select(False))
         return page
 
     def _recorder_tick(self, page):
@@ -4315,6 +4476,9 @@ class Launcher(Gtk.Window):
             self.rec_list.remove(child)
         if not found:
             self.rec_list.add(self._info_row("", "No recordings yet", "Tap a Record button to start."))
+        shown = {path for path, _s, _l in found[:50]}
+        self.rec_shown_count = len(shown)
+        self.rec_selected &= shown  # deleted elsewhere, or no longer among the newest
         for path, size, seconds in found[:50]:
             day = os.path.basename(os.path.dirname(path))
             name = os.path.splitext(os.path.basename(path))[0]
@@ -4323,10 +4487,99 @@ class Launcher(Gtk.Window):
             mb = f"{size / 1e6:.1f} MB" if size >= 1e6 else f"{size // 1000 + 1} kB"
             detail = " · ".join(filter(None, [rest.replace(" ", " MHz ", 1) if rest else "", length, mb]))
             clock = f"{when[:2]}:{when[2:4]}:{when[4:6]}" if len(when) >= 6 else when
-            self.rec_list.add(self._info_row(clock, day, detail,
-                                             [("Play", lambda *_, p=path: self._recorder_play(p)),
-                                              ("Delete", lambda *_, p=path: self._recorder_delete(p))]))
+            if self.rec_selecting:
+                row = self._info_row(clock, day, detail)
+                tick = Gtk.CheckButton(active=path in self.rec_selected, valign=Gtk.Align.CENTER, can_focus=False)
+                tick.get_style_context().add_class("pick")
+                tick.connect("toggled", lambda b, p=path: self._recorder_tick_one(p, b.get_active()))
+                row.pack_start(tick, False, False, 0)
+                row.reorder_child(tick, 0)
+            else:
+                row = self._info_row(clock, day, detail,
+                                     [("Play", lambda *_, p=path: self._recorder_play(p)),
+                                      ("Delete", lambda *_, p=path: self._recorder_delete(p))])
+            row.rec_path = path
+            self.rec_list.add(row)
         self.rec_list.show_all()
+        self._recorder_pick_show()
+
+    def _recorder_pick_show(self):
+        """The Select bar: Select, or while selecting, how many are ticked and what to do with them."""
+        picking, count = self.rec_selecting, self.rec_shown_count
+        self.rec_pick.set_visible(not picking and count > 0)
+        for btn in (self.rec_pick_all, self.rec_pick_delete, self.rec_pick_cancel):
+            btn.set_visible(picking)
+        n = len(self.rec_selected)
+        self.rec_pick_all.get_child().set_text("Select none" if picking and n == count else "Select all")
+        self.rec_pick_delete.get_child().set_text(f"Delete {n}" if n else "Delete")
+        self.rec_pick_delete.set_sensitive(n > 0)
+        if picking:
+            self.rec_pick_note.set_text(f"{n} of {count} selected. Tap recordings to select them."
+                                        if count else "No recordings.")
+        else:
+            self.rec_pick_note.set_text(f"Newest {count} recordings" if count >= 50 else
+                                        f"{count} recording{'' if count == 1 else 's'}" if count else "")
+
+    def _recorder_select(self, on):
+        if on == self.rec_selecting and not on:
+            return
+        self.rec_selecting = on
+        self.rec_selected = set()
+        found = recordings()  # rebuild the rows, with or without their tick boxes
+        self.rec_listed = [(p, s) for p, s, _l in found[:50]]
+        self._recorder_fill(found)
+
+    def _recorder_tick_one(self, path, on):
+        (self.rec_selected.add if on else self.rec_selected.discard)(path)
+        self._recorder_pick_show()
+
+    def _recorder_row_tapped(self, _list, row):
+        """While selecting, a tap anywhere on a recording ticks or unticks it."""
+        box = row.get_child()
+        if not self.rec_selecting or not hasattr(box, "rec_path"):
+            return
+        tick = box.get_children()[0]
+        tick.set_active(not tick.get_active())
+
+    def _recorder_select_all(self):
+        shown = [row.get_child() for row in self.rec_list.get_children()]
+        paths = {box.rec_path for box in shown if hasattr(box, "rec_path")}
+        everything = paths and self.rec_selected >= paths
+        for box in shown:
+            if hasattr(box, "rec_path"):
+                box.get_children()[0].set_active(not everything)
+
+    def _recorder_delete_selected(self):
+        paths = sorted(self.rec_selected)
+        if not paths:
+            return
+        size = 0
+        for path in paths:
+            try:
+                size += os.path.getsize(path)
+            except OSError:
+                pass
+        what = "this recording" if len(paths) == 1 else f"these {len(paths)} recordings"
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                   text=f"Delete {what}?",
+                                   secondary_text=f"{size / 1e6:.1f} MB. This can't be undone.")
+        dialog.add_buttons("Keep them", Gtk.ResponseType.CANCEL, "Delete", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        failed = []
+        for path in paths:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                failed.append(f"{os.path.basename(path)}: {exc.strerror}")
+        self._recorder_select(False)
+        deleted = len(paths) - len(failed)
+        self._recorder_message(f"Deleted {deleted} recording{'' if deleted == 1 else 's'}."
+                               + (f" Couldn't delete {'; '.join(failed)}" if failed else ""))
 
     def _recorder_message(self, text):
         self.rec_page_status.set_text(text)

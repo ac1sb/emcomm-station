@@ -1,0 +1,40 @@
+#!/usr/sbin/nft -f
+# Written by the Emcomm-CNC playbook (roles/security); changes here are
+# replaced on the next Update station. To let more in, add ports to
+# security_allow_tcp / security_allow_udp in host_vars.
+#
+# Nothing on the network can reach the station except SSH and replies to
+# connections the station made itself, so no one on the same Wi-Fi can use
+# the modems (Direwolf, ARDOP, VARA) to key the radio. Outgoing traffic is
+# not limited.
+
+flush ruleset
+
+table inet emcomm {
+  chain input {
+    type filter hook input priority filter; policy drop;
+
+    iif "lo" accept
+    ct state established,related accept
+    ct state invalid drop
+
+    # Ping, and the ICMPv6 that IPv6 needs to work at all.
+    meta l4proto icmp accept
+    meta l4proto ipv6-icmp accept
+
+    # Addresses from the router (DHCP and DHCPv6 replies).
+    udp sport 67 udp dport 68 accept
+    udp sport 547 udp dport 546 accept
+{% if security_allow_tcp %}
+
+    tcp dport { {{ security_allow_tcp | join(', ') }} } accept
+{% endif %}
+{% if security_allow_udp %}
+    udp dport { {{ security_allow_udp | join(', ') }} } accept
+{% endif %}
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+  }
+}

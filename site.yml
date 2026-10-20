@@ -2,8 +2,14 @@
 - name: Build the Emcomm-CNC station
   hosts: station
   become: true
+  # A background security update can hold the package lock for a while:
+  # wait for it rather than failing the update.
+  module_defaults:
+    ansible.builtin.apt:
+      lock_timeout: 600
   roles:
     - base
+    - security
     - radio
     - diagnostics
     - kiosk
