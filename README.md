@@ -28,13 +28,26 @@ environment.
 - **Presets** (`radios/`): Yaesu FT-891 with a Digirig, and Yaesu FT-710. Optional
   shortcuts that fill in every radio field at once, even before the radio is plugged in.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.
+  The station starts with a spinner instead of scrolling text and goes straight
+  to the launcher (the GRUB menu still shows briefly, for recovery mode). Apps
+  open maximized under a thin **Home bar** across the top of the screen: **⌂ Home**
+  brings the launcher back, and the bar shows the callsign and UTC time.
+- **On-screen keyboard:** ⌨ in the launcher's top bar or **Keyboard** on the Home
+  bar shows or hides Onboard, docked along the bottom of the screen. Tapping a text
+  box in the launcher on a touchscreen brings it up by itself, and it goes away
+  when you're done typing.
 - **Launcher:** the home screen above. Works by touch, mouse or keyboard: Tab moves
   between buttons, 1–9 open tiles, Esc/F1 goes Home, F2 Diagnostics, F3 Settings,
   F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control. A tile for an app that isn't installed says "tap to install". To use
   your own picture on a tile, long-press it (or right-click, or press the Menu key)
   and pick an SVG, PNG or JPG from a USB stick or `~/Downloads`; "Use the standard
-  icon" puts it back. **Light mode** / **Dark mode** in Settings switches the colours
-  (light is easier to read in daylight); the choice is remembered.
+  icon" puts it back. **Display** in Settings sets the colours (dark, or light for
+  daylight), the screen resolution (Automatic picks the screen's own), the text
+  size (Normal, Large or Extra large, for bigger screens; other apps follow it
+  too) and the rotation, for a screen mounted on its side or upside down. A
+  touchscreen turns with the screen. A change to the screen goes back by itself
+  after 15 seconds unless you tap **Keep**, so a setting the screen can't show
+  can't lock you out.
 - **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, flmsg (ICS-213 forms), Pat for
   Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf), Direwolf for
   packet, Xastir for APRS, and the Meshtastic (`contact`) and MeshCore

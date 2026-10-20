@@ -2,3 +2,20 @@
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
+
+- name: Reconfigure Openbox
+  ansible.builtin.command: openbox --reconfigure
+  become: true
+  become_user: "{{ station_user }}"
+  environment:
+    DISPLAY: ":0"
+  changed_when: true
+  failed_when: false  # not running yet: it reads the settings when it starts
+
+- name: Update initramfs
+  ansible.builtin.command: update-initramfs -u
+  changed_when: true
+
+- name: Update GRUB
+  ansible.builtin.command: update-grub
+  changed_when: true

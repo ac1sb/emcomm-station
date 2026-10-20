@@ -1,4 +1,6 @@
 # Managed by the emcomm-station playbook.
+# Resolution, rotation and text size, as set in Settings > Display.
+emcomm-display apply
 # Keep the screen on: this is a station, not a laptop.
 xset s off -dpms s noblank &
 # Hide the mouse pointer when idle (touchscreens).

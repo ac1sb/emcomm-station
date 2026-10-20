@@ -27,7 +27,13 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
-from gi.repository import GdkPixbuf, GLib, Gtk, Gdk, Pango  # noqa: E402
+from gi.repository import GdkPixbuf, Gio, GLib, GObject, Gtk, Gdk, Pango  # noqa: E402
+
+try:
+    gi.require_version("GdkX11", "3.0")
+    from gi.repository import GdkX11  # noqa: E402,F401  (gives windows their X id, for the Home bar)
+except (ImportError, ValueError):
+    GdkX11 = None
 
 CONFIG_PATH = os.environ.get("EMCOMM_LAUNCHER_CONFIG", "/etc/emcomm/launcher.json")
 STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
@@ -53,6 +59,12 @@ THEMES = {
                   danger="#C62828", danger_text="#B71C1C", danger_bg="#FDECEA"),
 }
 THEME_PATH = os.path.expanduser("~/.config/emcomm/theme")
+DISPLAY_PATH = os.path.expanduser("~/.config/emcomm/display.json")
+DISPLAY_CMD = os.environ.get("EMCOMM_DISPLAY", "emcomm-display")
+KEYBOARD_CMD = os.environ.get("EMCOMM_KEYBOARD", "onboard").split()
+TEXT_SIZES = [(1.0, "Normal"), (1.25, "Large"), (1.5, "Extra large")]
+ROTATIONS = [("normal", "Normal"), ("left", "Turned left"), ("right", "Turned right"), ("inverted", "Upside down")]
+HOME_BAR_HEIGHT = 48  # pixels at normal text size
 ICON_COLOUR = "#F2A33A"  # the stroke colour in the standard tile icons
 
 CSS = string.Template("""
@@ -103,6 +115,10 @@ dialog button:hover, messagedialog button:hover { background: $hover; }
 dialog button box, dialog button label,
 messagedialog button box, messagedialog button label { background: transparent; }
 dialog check { background: $bg; border: 1px solid $input_line; }
+.topbar .navbtn { min-height: 40px; padding: 0 12px; }
+.homebar { background: $bar; border-bottom: 1px solid $line; padding: 0 8px; }
+.homebar .navbtn { min-height: 38px; font-size: 16px; }
+.homebar-clock { font-family: 'IBM Plex Mono', monospace; font-size: 16px; color: $muted; }
 textview, textview text { background: $surface; color: $text; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
 """)
 
@@ -114,6 +130,22 @@ def load_theme():
     except OSError:
         name = ""
     return name if name in THEMES else "dark"
+
+
+def load_text_scale():
+    saved = read_json(DISPLAY_PATH, {})
+    scale = saved.get("text_scale") if isinstance(saved, dict) else None
+    return scale if scale in [s for s, _ in TEXT_SIZES] else 1.0
+
+
+def scaled_css(colours, scale=1.0):
+    """The launcher's CSS in these colours, with text and button heights scaled for
+    the Text size setting."""
+    css = CSS.substitute(colours)
+    if scale != 1.0:
+        css = re.sub(r"(font-size|min-height): (\d+)px",
+                     lambda m: f"{m.group(1)}: {round(int(m.group(2)) * scale)}px", css)
+    return css
 
 
 def save_theme(name):
@@ -808,6 +840,64 @@ def checked_in(net):
     return sorted({e["from"] for e in net.get("entries", []) if e.get("checkin") and e.get("from")})
 
 
+class HomeBar(Gtk.Window):
+    """A thin bar across the top of the screen, above every app, with Home, the
+    UTC clock and the on-screen keyboard. Apps open below it; the launcher, when
+    in front, covers it."""
+
+    def __init__(self, launcher):
+        super().__init__(title="Emcomm-CNC Home bar")
+        self.launcher = launcher
+        self.set_type_hint(Gdk.WindowTypeHint.DOCK)
+        self.set_decorated(False)
+        self.set_keep_above(True)
+        self.set_accept_focus(False)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.stick()
+        box = Gtk.Box(spacing=8)
+        box.get_style_context().add_class("homebar")
+        home = Gtk.Button(label="⌂  Home")
+        home.get_style_context().add_class("navbtn")
+        home.connect("clicked", lambda *_: launcher.go_home())
+        box.pack_start(home, False, False, 0)
+        self.clock = Gtk.Label()
+        self.clock.get_style_context().add_class("homebar-clock")
+        box.set_center_widget(self.clock)
+        keyboard = Gtk.Button(label="⌨  Keyboard")
+        keyboard.get_style_context().add_class("navbtn")
+        keyboard.connect("clicked", lambda *_: launcher.toggle_keyboard())
+        box.pack_end(keyboard, False, False, 0)
+        self.add(box)
+        screen = self.get_screen()
+        screen.connect("size-changed", lambda *_: self.place())
+        screen.connect("monitors-changed", lambda *_: self.place())
+        self.connect("realize", lambda *_: self.place())
+
+    def place(self):
+        """Fit the bar to the top of the main screen, and keep apps from covering it."""
+        display = Gdk.Display.get_default()
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+        if not monitor:
+            return
+        geom = monitor.get_geometry()
+        height = round(HOME_BAR_HEIGHT * self.launcher.text_scale)
+        self.set_size_request(geom.width, height)
+        self.resize(geom.width, height)
+        self.move(geom.x, geom.y)
+        window = self.get_window()
+        if not window or not hasattr(window, "get_xid"):
+            return
+        # Reserve the strip (_NET_WM_STRUT_PARTIAL), so Openbox keeps maximized apps below it.
+        strut = [0, 0, geom.y + height, 0, 0, 0, 0, 0, geom.x, geom.x + geom.width - 1, 0, 0]
+        for name, values in (("_NET_WM_STRUT_PARTIAL", strut), ("_NET_WM_STRUT", strut[:4])):
+            try:
+                subprocess.run(["xprop", "-id", str(window.get_xid()), "-f", name, "32c", "-set", name,
+                                ", ".join(map(str, values))], capture_output=True, timeout=5, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+
 class Launcher(Gtk.Window):
     def __init__(self, config):
         super().__init__(title="Emcomm-CNC")
@@ -821,8 +911,15 @@ class Launcher(Gtk.Window):
         self.net_connected = False
         self.nwr_shown = set()
         self.css_provider = None
+        self.text_scale = load_text_scale()
+        self.keyboard_proc = None
+        self.keyboard_auto = False
+        self.last_touch = 0
+        if self.text_scale != 1.0:
+            Gtk.Settings.get_default().set_property("gtk-xft-dpi", round(96 * self.text_scale * 1024))
         self._apply_theme(load_theme())
         self.set_default_size(1024, 600)
+        self.set_decorated(False)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         root.get_style_context().add_class("page")
@@ -850,6 +947,112 @@ class Launcher(Gtk.Window):
         GLib.timeout_add_seconds(20, lambda: self._background_online() and False)
         GLib.timeout_add_seconds(600, self._background_online)
         self.connect("key-press-event", self._on_key)
+        self.home_bar = HomeBar(self)
+        # A keyboard left over from before the launcher restarted would not hide from here.
+        subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "onboard"], capture_output=True, check=False)
+        self._watch_text_entries()
+
+    def go_home(self):
+        """Bring the launcher back in front of any app, on its Home page."""
+        self.stack.set_visible_child_name("home")
+        self.deiconify()
+        self._set_fullscreen(not self._keyboard_shown())
+        self.present_with_time(Gtk.get_current_event_time())
+
+    # ---- on-screen keyboard -------------------------------------------
+
+    def _keyboard_shown(self):
+        return self.keyboard_proc is not None and self.keyboard_proc.poll() is None
+
+    def toggle_keyboard(self, *_):
+        if self._keyboard_shown():
+            self._hide_keyboard()
+        else:
+            self._show_keyboard()
+
+    def _show_keyboard(self, auto=False):
+        if self._keyboard_shown():
+            return
+        try:
+            self.keyboard_proc = subprocess.Popen(KEYBOARD_CMD, stdout=subprocess.DEVNULL,
+                                                  stderr=subprocess.DEVNULL, start_new_session=True)
+            self.keyboard_auto = auto
+            GLib.child_watch_add(GLib.PRIORITY_DEFAULT, self.keyboard_proc.pid, self._keyboard_exited,
+                                 self.keyboard_proc)
+        except OSError:
+            if not auto:
+                self._message("The on-screen keyboard (Onboard) isn't installed. Run Update station.")
+            return
+        # A full-screen window covers the keyboard, so make room for it instead.
+        self._set_fullscreen(False)
+
+    def _hide_keyboard(self):
+        if self._keyboard_shown():
+            self.keyboard_proc.terminate()
+        self.keyboard_proc = None
+        self.keyboard_auto = False
+        self._set_fullscreen(True)
+
+    def _keyboard_exited(self, _pid, _status, proc):
+        """Onboard closed (its own quit key, or hidden from here): back to full screen."""
+        if self.keyboard_proc is proc:
+            self._hide_keyboard()
+
+    def _set_fullscreen(self, full):
+        if os.environ.get("EMCOMM_LAUNCHER_WINDOWED"):
+            return
+        if full:
+            self.fullscreen()
+        else:
+            self.unfullscreen()
+            self.maximize()
+
+    def _watch_text_entries(self):
+        """Show the keyboard when a text box in the launcher (or one of its dialogs) is
+        tapped on a touchscreen, and hide it again when typing is done."""
+        def touched(widget, event):
+            device = event.get_source_device() if event else None
+            if device and device.get_source() == Gdk.InputSource.TOUCHSCREEN:
+                self.last_touch = time.monotonic()
+            return True
+
+        def entry_focused(widget, *_):
+            if isinstance(widget, Gtk.Entry) and time.monotonic() - self.last_touch < 1.0:
+                self._show_keyboard(auto=True)
+            return True
+
+        def entry_left(widget, *_):
+            if isinstance(widget, Gtk.Entry) and self.keyboard_auto:
+                GLib.timeout_add(400, self._hide_auto_keyboard)
+            return True
+
+        GObject.add_emission_hook(Gtk.Widget, "button-press-event", touched)
+        GObject.add_emission_hook(Gtk.Widget, "touch-event", touched)
+        GObject.add_emission_hook(Gtk.Widget, "focus-in-event", entry_focused)
+        GObject.add_emission_hook(Gtk.Widget, "focus-out-event", entry_left)
+
+        # Onboard's own hide key: give the launcher its full screen back.
+        def keyboard_changed(_bus, _sender, _path, _iface, _signal, params):
+            iface, changed, _invalid = params.unpack()
+            if iface == "org.onboard.Onboard.Keyboard" and changed.get("Visible") is False:
+                GLib.idle_add(self._hide_keyboard)
+
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            bus.signal_subscribe(None, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                                 "/org/onboard/Onboard/Keyboard", None, Gio.DBusSignalFlags.NONE, keyboard_changed)
+        except GLib.Error:
+            pass  # no session bus: the keyboard buttons still work
+
+    def _hide_auto_keyboard(self):
+        """Hide a keyboard that came up by itself once no launcher text box has focus."""
+        if not self.keyboard_auto:
+            return False
+        for window in Gtk.Window.list_toplevels():
+            if window.is_active() and isinstance(window.get_focus(), Gtk.Entry):
+                return False
+        self._hide_keyboard()
+        return False
 
     # ---- keyboard ------------------------------------------------------
 
@@ -882,6 +1085,12 @@ class Launcher(Gtk.Window):
         bar.pack_start(self.grid_label, False, False, 0)
         self._show_station()
 
+        keyboard = Gtk.Button(label="⌨", tooltip_text="On-screen keyboard")
+        keyboard.get_style_context().add_class("navbtn")
+        keyboard.set_valign(Gtk.Align.CENTER)
+        keyboard.set_can_focus(False)  # a touch helper; keyboard users don't need it
+        keyboard.connect("clicked", self.toggle_keyboard)
+        bar.pack_end(keyboard, False, False, 0)
         self.clock = Gtk.Label()
         self.clock.get_style_context().add_class("mono")
         bar.pack_end(self.clock, False, False, 0)
@@ -921,6 +1130,9 @@ class Launcher(Gtk.Window):
 
     def _tick_clock(self):
         self.clock.set_text(time.strftime("%H:%M UTC", time.gmtime()))
+        if getattr(self, "home_bar", None):
+            now = time.strftime("%H:%M:%S UTC", time.gmtime())
+            self.home_bar.clock.set_text(f"{self.station.get('callsign', '')}   {now}")
         return True
 
     def _poll_status(self):
@@ -1083,24 +1295,137 @@ class Launcher(Gtk.Window):
         if self.css_provider:
             Gtk.StyleContext.remove_provider_for_screen(screen, self.css_provider)
         self.css_provider = Gtk.CssProvider()
-        self.css_provider.load_from_data(CSS.substitute(self.colours).encode())
+        self.css_provider.load_from_data(scaled_css(self.colours, self.text_scale).encode())
         Gtk.StyleContext.add_provider_for_screen(screen, self.css_provider,
                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-    def _toggle_theme(self, btn):
-        name = "light" if self.theme == "dark" else "dark"
+    def _set_theme(self, name):
         self._apply_theme(name)
         try:
             save_theme(name)
         except OSError:
             pass
-        btn.set_label(self._theme_button_label())
         for tile in self.tiles:
             self._set_tile_icon(tile)
         self._poll_status()
 
-    def _theme_button_label(self):
-        return "Light mode" if self.theme == "dark" else "Dark mode"
+    def _set_text_scale(self, scale):
+        self.text_scale = scale
+        # Text the launcher doesn't size itself (pt sizes) follows the font DPI.
+        Gtk.Settings.get_default().set_property("gtk-xft-dpi", round(96 * scale * 1024))
+        self._apply_theme(self.theme)
+        self.home_bar.place()
+
+    # ---- display -------------------------------------------------------
+
+    def _display_dialog(self, *_):
+        """Colours, resolution, text size and rotation. A change to the screen goes
+        back by itself unless kept, in case the screen can't show it."""
+        try:
+            result = subprocess.run([DISPLAY_CMD, "show"], capture_output=True, text=True, timeout=20, check=False)
+            info = json.loads(result.stdout)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            info = {}
+        outputs = info.get("outputs") or []
+        old = info.get("config") or {"mode": "auto", "rotate": "normal", "text_scale": self.text_scale}
+        output = outputs[0] if outputs else None
+
+        dialog = Gtk.Dialog(title="Display", transient_for=self, modal=True)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Apply", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        box = dialog.get_content_area()
+        box.set_spacing(10)
+        box.set_border_width(16)
+        grid = Gtk.Grid(column_spacing=16, row_spacing=10)
+        box.pack_start(grid, False, False, 0)
+
+        def combo(row, label, choices, current):
+            widget = Gtk.ComboBoxText()
+            for value, text in choices:
+                widget.append(value, text)
+            widget.set_active_id(current if current in [v for v, _ in choices] else choices[0][0])
+            name = Gtk.Label(label=label, xalign=0)
+            name.get_style_context().add_class("field-label")
+            grid.attach(name, 0, row, 1, 1)
+            grid.attach(widget, 1, row, 1, 1)
+            return widget
+
+        theme = combo(0, "Colours", [("dark", "Dark (for night)"), ("light", "Light (easier in daylight)")], self.theme)
+        modes = [("auto", "Automatic" + (f" ({output['preferred']})" if output and output["preferred"] else ""))]
+        modes += [(m, m.replace("x", " × ")) for m in (output["modes"] if output else [])]
+        mode = combo(1, "Resolution", modes, old["mode"])
+        size = combo(2, "Text size", [(str(v), t) for v, t in TEXT_SIZES], str(old["text_scale"]))
+        rotate = combo(3, "Rotation", ROTATIONS, old["rotate"])
+        if output:
+            where = f"{output['name']} screen, now {(output['current'] or 'off').replace('x', ' × ')}."
+            if len(outputs) > 1:
+                where += f" Other screens ({', '.join(o['name'] for o in outputs[1:])}) are left as they are."
+        else:
+            where = "Couldn't read the screen, so only colours and text size can change."
+            mode.set_sensitive(False)
+            rotate.set_sensitive(False)
+        note = Gtk.Label(label=where + " A touchscreen turns with the screen. Large text needs a screen bigger "
+                         "than 1024 × 600.", xalign=0, wrap=True, max_width_chars=50)
+        note.get_style_context().add_class("muted")
+        box.pack_start(note, False, False, 0)
+        dialog.show_all()
+        response = dialog.run()
+        new = {"mode": mode.get_active_id(), "rotate": rotate.get_active_id(),
+               "text_scale": float(size.get_active_id())}
+        new_theme = theme.get_active_id()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        if new_theme != self.theme:
+            self._set_theme(new_theme)
+        if new == old:
+            return
+        error = self._apply_display(new)
+        if error:
+            self._apply_display(old)
+            self._message(f"The screen didn't change: {error}")
+            return
+        # Anything that might leave the screen unreadable goes back by itself unless kept.
+        if not self._keep_display():
+            self._apply_display(old)
+
+    def _apply_display(self, config):
+        """Save the display settings and set the screen. Returns an error message, or None."""
+        try:
+            os.makedirs(os.path.dirname(DISPLAY_PATH), exist_ok=True)
+            with open(DISPLAY_PATH + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(config, f)
+            os.replace(DISPLAY_PATH + ".tmp", DISPLAY_PATH)
+            result = subprocess.run([DISPLAY_CMD, "apply"], capture_output=True, text=True, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return str(exc)
+        self._set_text_scale(config["text_scale"])
+        if result.returncode != 0:
+            return result.stderr.strip() or "it didn't work"
+        return None
+
+    def _keep_display(self, seconds=15):
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                   text="Keep these display settings?")
+        dialog.add_buttons("Go back", Gtk.ResponseType.CANCEL, "Keep", Gtk.ResponseType.OK)
+        left = [seconds]
+
+        def tick():
+            if left[0] is None:
+                return False
+            left[0] -= 1
+            if left[0] <= 0:
+                dialog.response(Gtk.ResponseType.CANCEL)
+                return False
+            dialog.format_secondary_text(f"Going back to the old settings in {left[0]} seconds.")
+            return True
+
+        dialog.format_secondary_text(f"Going back to the old settings in {seconds} seconds.")
+        GLib.timeout_add_seconds(1, tick)
+        response = dialog.run()
+        left[0] = None
+        dialog.destroy()
+        return response == Gtk.ResponseType.OK
 
     def _set_tile_icon(self, btn):
         for child in btn.icon_slot.get_children():
@@ -1298,7 +1623,7 @@ class Launcher(Gtk.Window):
         header.pack_end(self._navbtn("Wi-Fi  F6", lambda *_: self.stack.set_visible_child_name("wifi")), False, False, 0)
         header.pack_end(self._navbtn("Update station", self._update_station), False, False, 0)
         header.pack_end(self._navbtn("Backup", self._backup_dialog), False, False, 0)
-        header.pack_end(self._navbtn(self._theme_button_label(), self._toggle_theme), False, False, 0)
+        header.pack_end(self._navbtn("Display", self._display_dialog), False, False, 0)
         page.pack_start(header, False, False, 0)
 
         cols = Gtk.Box(spacing=16)
@@ -2909,6 +3234,7 @@ def main():
     if not os.environ.get("EMCOMM_LAUNCHER_WINDOWED"):
         win.fullscreen()
     win.show_all()
+    win.home_bar.show_all()
     if win.station.get("callsign", "N0CALL") == "N0CALL":
         # First boot: ask for callsign and radio before anything else.
         win.stack.set_visible_child_name("settings")
