@@ -337,6 +337,11 @@ Ubuntu Server 24.04 should also work if your hardware needs newer drivers.
 
 ### If something goes wrong
 
+- **Update station (or installing an app) fails:** the end of the window says
+  which step stopped and why. Everything it printed is saved in
+  `/var/log/emcomm-update.log` (the run before in `.1`) and shown on the Logs page
+  under **Station updates**. If CHIRP can't install, the rest of the update still
+  carries on and the end of the window says so.
 - **`su -` says "Authentication failure" with the right password:** the keyboard
   layout may not match what you typed during install (common in VM consoles). Type
   the password in a visible place first, such as the login prompt's username field,

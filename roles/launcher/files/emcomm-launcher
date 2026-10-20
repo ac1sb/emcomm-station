@@ -800,6 +800,7 @@ LOG_SOURCES = [
     ("js8-all", "JS8Call all activity", "~/.local/share/JS8Call/ALL.TXT"),
     ("wsjtx", "WSJT-X contacts", "~/.local/share/WSJT-X/wsjtx.log"),
     ("pat", "Winlink mail", None),
+    ("update", "Station updates", "/var/log/emcomm-update.log"),
 ]
 
 
