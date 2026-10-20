@@ -89,6 +89,28 @@ class Lists(unittest.TestCase):
         self.assertEqual(sc.scan_list(channels, dict(sc.DEFAULTS, miles=0)), [channels[0]])
 
 
+class Manual(unittest.TestCase):
+    def test_typed_frequencies(self):
+        self.assertEqual(sc.parse_mhz("155.475"), 155.475)
+        self.assertEqual(sc.parse_mhz("155,475"), 155.475)
+        self.assertEqual(sc.parse_mhz("155475000"), 155.475)
+        self.assertIsNone(sc.parse_mhz("14.074"))  # below what an RTL-SDR tunes
+        self.assertIsNone(sc.parse_mhz("abc"))
+
+    def test_save_to_the_users_list_keeps_its_columns(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "list.csv")
+            with open(VERMONT, encoding="utf-8") as src, open(path, "w", encoding="utf-8") as dst:
+                dst.write(src.read().rstrip("\n"))  # no newline at the end
+            sc.append_channel(path, 155.475, "STATE MUTUAL AID")
+            channels = sc.load_channels(path)
+            self.assertEqual(len(channels), 348)
+            last = channels[-1]
+            self.assertEqual((last["mhz"], last["name"], last["group"]), (155.475, "STATE MUTUAL AID", "My channels"))
+            sc.append_channel(os.path.join(d, "new.csv"), 462.5625, "FRS 1")
+            self.assertEqual(sc.load_channels(os.path.join(d, "new.csv"))[0]["name"], "FRS 1")
+
+
 class Gqrx(unittest.TestCase):
     def test_bookmarks_have_five_fields_and_known_tags(self):
         text = sc.gqrx_bookmarks(sc.load_channels(VERMONT))

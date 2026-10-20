@@ -245,6 +245,9 @@ environment.
   square in Settings > User; statewide channels with no site are always kept.
   **Hold** stays on the channel, tapping a channel in the list holds there,
   **Skip** moves on, **Lock out** (or untick a channel) leaves it out of the scan.
+  **Tune** opens a keypad to listen on any frequency (24 to 1766 MHz), and
+  **Save to list** adds it to your list in the group My channels; the − and +
+  beside the frequency step 12.5 kHz (5 kHz below 50 MHz).
   **Tone squelch** only stops when the channel's own PL tone is there, so other
   users of the frequency are skipped (DPL channels stop on any signal). Squelch 1
   opens on almost anything, 9 needs a strong signal; 4 suits most antennas.

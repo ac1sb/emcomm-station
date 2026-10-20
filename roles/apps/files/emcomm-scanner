@@ -140,6 +140,53 @@ def load_channels(path=CHANNELS):
     return channels
 
 
+def manual_channel(mhz, name=None):
+    """A channel typed in on the Tune pad rather than taken from the list."""
+    return {"mhz": round(mhz, 5), "name": name or "Manual", "group": "Manual", "agency": "",
+            "county": "", "tone_text": "", "tone_kind": None, "tone": None, "mode": "FM",
+            "lat": None, "lon": None, "miles": None, "manual": True}
+
+
+def parse_mhz(text):
+    """MHz from what was typed ("155.475", "155,475", "155475000" Hz), or None if an RTL-SDR can't tune it."""
+    try:
+        mhz = float(text.strip().replace(",", "."))
+    except ValueError:
+        return None
+    if mhz > 10000:
+        mhz /= 1e6
+    return round(mhz, 5) if 24 <= mhz <= 1766 else None
+
+
+def append_channel(path, mhz, name, group="My channels"):
+    """Add a channel to the end of a CSV list, filling whichever of its columns fit."""
+    fields = None
+    if os.path.exists(path):
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            fields = next(csv.reader(f), None)
+    if not fields:
+        fields = ["Group", "Alpha Tag", "Agency", "County", "Frequency", "Callsign", "Tone"]
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            csv.writer(f).writerow(fields)
+    wanted = {"frequency": f"{mhz:.4f}", "frequency output": f"{mhz:.4f}", "freq": f"{mhz:.4f}",
+              "mhz": f"{mhz:.4f}", "alpha tag": name, "name": name, "group": group, "mode": "FM"}
+    row, named = [], False
+    for field in fields:
+        key = field.strip().lower()
+        value = wanted.get(key, "")
+        if key in ("alpha tag", "name"):
+            value, named = ("", True) if named else (value, True)
+        row.append(value)
+    with open(path, "rb+") as f:  # start on a new line even if the file doesn't end with one
+        f.seek(0, os.SEEK_END)
+        if f.tell():
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) not in (b"\n", b"\r"):
+                f.write(b"\n")
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        csv.writer(f).writerow(row)
+
+
 def ensure_list():
     """Give the operator the shipped list the first time."""
     if not os.path.exists(CHANNELS) and os.path.exists(DEFAULT_LIST):
@@ -619,6 +666,12 @@ scale trough {{ min-height: 8px; }}
 levelbar trough {{ background: {bg}; border: 1px solid {line}; border-radius: 4px; min-height: 12px; }}
 levelbar block.filled {{ background: {ok}; border: none; border-radius: 4px; }}
 levelbar block.empty {{ background: transparent; border: none; }}
+dialog, dialog box {{ background: {surface}; color: {text}; }}
+dialog label {{ color: {text}; }}
+dialog .muted {{ color: {muted}; }}
+dialog .error {{ color: {danger_text}; }}
+entry {{ background: {bg}; color: {text}; border: 1px solid {input_line}; border-radius: 8px; min-height: 44px;
+         font-size: 16px; background-image: none; box-shadow: none; }}
 .section-title {{ font-size: 12px; font-weight: 600; color: {muted}; letter-spacing: 1px; }}
 """
 
@@ -672,7 +725,11 @@ def window_main():
             self.freq_label = Gtk.Label(xalign=1)
             self.freq_label.get_style_context().add_class("freq")
             self.level = Gtk.LevelBar(min_value=0, max_value=1, width_request=220)
-            right.pack_start(self.freq_label, False, False, 0)
+            freq_row = Gtk.Box(spacing=6, halign=Gtk.Align.END)
+            freq_row.pack_start(self._button("−", lambda *_: self._step(-1)), False, False, 0)
+            freq_row.pack_start(self.freq_label, False, False, 0)
+            freq_row.pack_start(self._button("+", lambda *_: self._step(1)), False, False, 0)
+            right.pack_start(freq_row, False, False, 0)
             right.pack_start(self.level, False, False, 0)
             now.pack_start(right, False, False, 0)
             page.pack_start(now, False, False, 0)
@@ -685,16 +742,17 @@ def window_main():
             bar.pack_start(self.hold_btn, False, False, 0)
             bar.pack_start(self._button("Skip", lambda *_: self.scanner and self.scanner.skip()), False, False, 0)
             bar.pack_start(self._button("Lock out", self._lock_out), False, False, 0)
-            bar.pack_start(Gtk.Label(label="Squelch", margin_start=10), False, False, 0)
+            bar.pack_start(self._button("Tune", self._tune_dialog), False, False, 0)
+            bar.pack_start(Gtk.Label(label="Squelch", margin_start=4), False, False, 0)
             self.squelch = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 9, 1)
-            self.squelch.set_size_request(130, -1)
+            self.squelch.set_size_request(110, -1)
             self.squelch.set_value(self.settings["squelch"])
             self.squelch.connect("value-changed", self._changed)
             bar.pack_start(self.squelch, False, False, 0)
             bar.pack_start(Gtk.Label(label="Volume"), False, False, 0)
             self.volume = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 5)
             self.volume.set_draw_value(False)
-            self.volume.set_size_request(130, -1)
+            self.volume.set_size_request(100, -1)
             self.volume.set_value(self.settings["volume"])
             self.volume.connect("value-changed", self._changed)
             bar.pack_start(self.volume, False, False, 0)
@@ -817,7 +875,8 @@ def window_main():
         def _fill(self):
             self.filling = True
             self.store.clear()
-            scanning = {channel_key(ch) for ch in scan_list(self.channels, self.settings)}
+            chosen = scan_list(self.channels, self.settings)
+            scanning = {channel_key(ch) for ch in chosen}
             locked = set(self.settings["lockouts"])
             colours = theme()
             self.rows = []
@@ -836,7 +895,7 @@ def window_main():
                                    "" if ch.get("miles") is None else f"{ch['miles']:.0f}",
                                    colours["muted"] if dim else colours["text"], len(self.rows) - 1])
             self.filling = False
-            count = len(scanning)
+            count = len(chosen)
             self.count_text = f"{count} channel{'s' if count != 1 else ''}"
 
         def _changed(self, *_):
@@ -897,6 +956,86 @@ def window_main():
                 self._start()
             self._show_buttons()
 
+        def _listen_to(self, ch):
+            self.held = ch
+            self.state = {"state": "holding", "channel": ch, "level": 1.0, "open": False}
+            if self.scanner and self.scanner.is_alive():
+                self.scanner.set_hold(ch)
+            else:
+                self._start()
+            self._show_buttons()
+
+        def _step(self, direction):
+            """Nudge the frequency by one channel step (12.5 kHz, 5 kHz below 50 MHz) and hold there."""
+            ch = self.state.get("channel") or self.held
+            if not ch:
+                return
+            step = 0.0125 if ch["mhz"] >= 50 else 0.005
+            mhz = round(ch["mhz"] + direction * step, 5)
+            known = [c for c in self.channels if abs(c["mhz"] - mhz) < 0.0001]
+            self._listen_to(known[0] if known else manual_channel(mhz))
+
+        def _tune_dialog(self, *_):
+            """Type a frequency on a big keypad, then listen there or save it to the list."""
+            dialog = Gtk.Dialog(title="Tune", transient_for=self, modal=True)
+            dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save to list", 2, "Listen", Gtk.ResponseType.OK)
+            dialog.set_default_response(Gtk.ResponseType.OK)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=16)
+            entry = Gtk.Entry(activates_default=True, placeholder_text="MHz, e.g. 155.475")
+            ch = self.state.get("channel") or self.held
+            if ch:
+                entry.set_text(f"{ch['mhz']:.4f}")
+            entry.get_style_context().add_class("freq")
+            box.pack_start(entry, False, False, 0)
+            pad = Gtk.Grid(row_spacing=6, column_spacing=6, column_homogeneous=True, row_homogeneous=True)
+
+            def press(_btn, key):
+                text = entry.get_text()
+                entry.set_text(text[:-1] if key == "⌫" else "" if key == "C" else text + key)
+                entry.set_position(-1)
+            for i, key in enumerate("789456123.0⌫"):
+                btn = Gtk.Button(label=key)
+                btn.set_size_request(90, 52)
+                btn.connect("clicked", press, key)
+                pad.attach(btn, i % 3, i // 3, 1, 1)
+            box.pack_start(pad, False, False, 0)
+            name = Gtk.Entry(placeholder_text="Name, for Save to list (optional)")
+            box.pack_start(name, False, False, 0)
+            hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=40)
+            hint.get_style_context().add_class("muted")
+            hint.set_text("Any frequency from 24 to 1766 MHz, narrow FM. The − and + beside the frequency "
+                          "step 12.5 kHz at a time.")
+            box.pack_start(hint, False, False, 0)
+            dialog.get_content_area().add(box)
+            dialog.show_all()
+            while True:
+                response = dialog.run()
+                if response not in (Gtk.ResponseType.OK, 2):
+                    break
+                mhz = parse_mhz(entry.get_text())
+                if mhz is None:
+                    hint.set_text("That isn't a frequency an RTL-SDR can tune: type MHz between 24 and 1766.")
+                    hint.get_style_context().add_class("error")
+                    continue
+                label = name.get_text().strip()[:24]
+                if response == 2:
+                    try:
+                        append_channel(CHANNELS, mhz, label or f"{mhz:.4f}")
+                    except OSError as err:
+                        self._say(f"Couldn't save to the list: {err}", True)
+                        break
+                    self._load()
+                    if self.scanner:
+                        self.scanner.configure(self.channels, self.settings)
+                    self._say(f"Saved {label or f'{mhz:.4f}'} to the list, in the group My channels.")
+                    known = [c for c in self.channels if abs(c["mhz"] - mhz) < 0.0001]
+                    self._listen_to(known[-1] if known else manual_channel(mhz, label))
+                else:
+                    known = [c for c in self.channels if abs(c["mhz"] - mhz) < 0.0001]
+                    self._listen_to(known[0] if known and not label else manual_channel(mhz, label or None))
+                break
+            dialog.destroy()
+
         def _hold_clicked(self, *_):
             ch = self.state.get("channel")
             if ch and not self.held:
@@ -939,7 +1078,8 @@ def window_main():
             elif ch:
                 live = kind in ("listening", "holding") and s.get("open")
                 label = {"scanning": f"SCANNING  {self.count_text}", "listening": "ACTIVE",
-                         "holding": "HOLD" + ("  · another user, wrong tone" if s.get("other") else "")}[kind]
+                         "holding": "HOLD" + ("  · tuned by hand" if ch.get("manual") else "")
+                         + ("  · another user, wrong tone" if s.get("other") else "")}[kind]
                 self.state_label.set_text(label)
                 ctx = self.state_label.get_style_context()
                 (ctx.add_class if live else ctx.remove_class)("live")
