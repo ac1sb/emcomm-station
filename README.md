@@ -31,7 +31,14 @@ environment.
   The station starts with a spinner instead of scrolling text and goes straight
   to the launcher (the GRUB menu still shows briefly, for recovery mode). Apps
   open maximized under a thin **Home bar** across the top of the screen: **⌂ Home**
-  brings the launcher back, and the bar shows the callsign and UTC time.
+  brings the launcher back, each open app has a button to bring it to the front
+  (and ✕ to close it), and the bar shows the callsign and UTC time. Tapping the
+  tile of an app that's already open brings it to the front instead of starting a
+  second copy. With a keyboard, Alt+Tab also switches apps.
+- **Several apps at once:** every app reaches the radio's sound card through
+  PipeWire, so they can all listen together (JS8Call and the recorder, say).
+  Transmit from one app at a time: there's one radio, and each app keys it and
+  sets its frequency through the same rig control.
 - **On-screen keyboard:** ⌨ in the launcher's top bar or **Keyboard** on the Home
   bar shows or hides Onboard, docked along the bottom of the screen. Tapping a text
   box in the launcher on a touchscreen brings it up by itself, and it goes away

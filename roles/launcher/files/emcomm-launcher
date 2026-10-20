@@ -117,7 +117,11 @@ messagedialog button box, messagedialog button label { background: transparent; 
 dialog check { background: $bg; border: 1px solid $input_line; }
 .topbar .navbtn { min-height: 40px; padding: 0 12px; }
 .homebar { background: $bar; border-bottom: 1px solid $line; padding: 0 8px; }
-.homebar .navbtn { min-height: 38px; font-size: 16px; }
+.homebar .navbtn { min-height: 38px; font-size: 16px; padding: 0 12px; }
+.homebar .navbtn.current { border-color: $accent_fill; color: $accent; }
+.homebar .linked .navbtn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.homebar .linked .navbtn:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0;
+                                      border-left-width: 0; padding: 0 10px; }
 .homebar-clock { font-family: 'IBM Plex Mono', monospace; font-size: 16px; color: $muted; }
 textview, textview text { background: $surface; color: $text; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
 """)
@@ -369,8 +373,80 @@ def mount_usb_sticks():
 
 
 def run_detached(argv):
-    subprocess.Popen(argv, start_new_session=True,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return subprocess.Popen(argv, start_new_session=True,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+# ---- open apps (for the Home bar) ----------------------------------------------
+
+def parse_wmctrl(text):
+    """Windows from `wmctrl -lpx`: [{"id", "pid", "cls", "title"}]. Windows on every
+    desktop (-1: the Home bar, the keyboard) aren't apps, so they're left out."""
+    windows = []
+    for line in text.splitlines():
+        parts = line.split(None, 5)
+        if len(parts) < 5 or parts[1] == "-1":
+            continue
+        try:
+            windows.append({"id": int(parts[0], 16), "pid": int(parts[2]), "cls": parts[3],
+                            "title": parts[5].strip() if len(parts) > 5 else ""})
+        except ValueError:
+            continue
+    return windows
+
+
+def open_windows():
+    try:
+        result = subprocess.run(["wmctrl", "-lpx"], capture_output=True, text=True, timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    own = os.getpid()
+    return [w for w in parse_wmctrl(result.stdout)
+            if w["pid"] != own and not w["cls"].lower().startswith("onboard")]
+
+
+def active_window():
+    try:
+        out = subprocess.run(["xprop", "-root", "_NET_ACTIVE_WINDOW"], capture_output=True, text=True,
+                             timeout=3, check=False).stdout
+        return int(out.rsplit("#", 1)[1].split(",")[0], 16)
+    except (OSError, subprocess.TimeoutExpired, IndexError, ValueError):
+        return None
+
+
+def pid_ancestors(pid):
+    """The pid and its parents, nearest first."""
+    chain = []
+    while pid > 1 and len(chain) < 30:
+        chain.append(pid)
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+                pid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            break
+    return chain
+
+
+def window_app(win, apps, started):
+    """The launcher app a window belongs to: started from its tile (the window's
+    process is the one the tile ran, or a child of it), or else its window class
+    names the app's command. None for anything else."""
+    chain = pid_ancestors(win["pid"])
+    for app in apps:
+        if started.get(app.get("code")) in chain:
+            return app
+    cls = win["cls"].lower().split(".")
+    for app in apps:
+        if app.get("command", "").lower() in cls and app.get("command") not in ("wine", "xterm"):
+            return app
+    return None
+
+
+def wmctrl(*args):
+    try:
+        subprocess.run(["wmctrl", *args], capture_output=True, timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 # ---- logs ------------------------------------------------------------------
@@ -861,18 +937,68 @@ class HomeBar(Gtk.Window):
         home.get_style_context().add_class("navbtn")
         home.connect("clicked", lambda *_: launcher.go_home())
         box.pack_start(home, False, False, 0)
-        self.clock = Gtk.Label()
-        self.clock.get_style_context().add_class("homebar-clock")
-        box.set_center_widget(self.clock)
+        # One button per open app: tap to bring it to the front, ✕ to close it.
+        self.apps_box = Gtk.Box(spacing=6)
+        apps_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.EXTERNAL,
+                                         vscrollbar_policy=Gtk.PolicyType.NEVER)
+        apps_scroll.add(self.apps_box)
+        box.pack_start(apps_scroll, True, True, 0)
+        self.shown = None
         keyboard = Gtk.Button(label="⌨  Keyboard")
         keyboard.get_style_context().add_class("navbtn")
         keyboard.connect("clicked", lambda *_: launcher.toggle_keyboard())
         box.pack_end(keyboard, False, False, 0)
+        self.clock = Gtk.Label()
+        self.clock.get_style_context().add_class("homebar-clock")
+        box.pack_end(self.clock, False, False, 0)
         self.add(box)
+        GLib.timeout_add(1500, self.refresh_apps)
         screen = self.get_screen()
         screen.connect("size-changed", lambda *_: self.place())
         screen.connect("monitors-changed", lambda *_: self.place())
         self.connect("realize", lambda *_: self.place())
+
+    def refresh_apps(self):
+        """Show the open apps, the one in front highlighted. Rebuilt only on a change."""
+        windows = open_windows()
+        active = active_window()
+        named = []
+        for win in windows:
+            app = window_app(win, self.launcher.config.get("apps", []), self.launcher.started)
+            named.append((win["id"], app["name"] if app else (win["title"] or win["cls"])))
+        state = (named, active)
+        if state == self.shown:
+            return True
+        self.shown = state
+        for child in self.apps_box.get_children():
+            self.apps_box.remove(child)
+        for wid, name in named:
+            pair = Gtk.Box()
+            pair.get_style_context().add_class("linked")
+            show = Gtk.Button(label=name)
+            show.get_child().set_ellipsize(Pango.EllipsizeMode.END)
+            show.get_child().set_max_width_chars(14)
+            close = Gtk.Button(label="✕", tooltip_text=f"Close {name}")
+            for btn in (show, close):
+                btn.get_style_context().add_class("navbtn")
+                if wid == active:
+                    btn.get_style_context().add_class("current")
+            show.connect("clicked", lambda _b, w=wid: self.bring_forward(w))
+            close.connect("clicked", lambda _b, w=wid: self.close_app(w))
+            pair.pack_start(show, False, False, 0)
+            pair.pack_start(close, False, False, 0)
+            self.apps_box.pack_start(pair, False, False, 0)
+        self.apps_box.show_all()
+        return True
+
+    def bring_forward(self, wid):
+        wmctrl("-i", "-a", hex(wid))
+        GLib.timeout_add(300, lambda: self.refresh_apps() and False)
+
+    def close_app(self, wid):
+        # The polite close, as the window's own ✕: an app can still ask to save first.
+        wmctrl("-i", "-c", hex(wid))
+        GLib.timeout_add(800, lambda: self.refresh_apps() and False)
 
     def place(self):
         """Fit the bar to the top of the main screen, and keep apps from covering it."""
@@ -915,6 +1041,7 @@ class Launcher(Gtk.Window):
         self.keyboard_proc = None
         self.keyboard_auto = False
         self.last_touch = 0
+        self.started = {}  # tile code -> process id the tile started, to find its window
         if self.text_scale != 1.0:
             Gtk.Settings.get_default().set_property("gtk-xft-dpi", round(96 * self.text_scale * 1024))
         self._apply_theme(load_theme())
@@ -1542,7 +1669,12 @@ class Launcher(Gtk.Window):
     def _tile_clicked(self, btn):
         app = btn.app
         if btn.app_state != "missing":
-            run_detached(app.get("run") or [app["command"]])
+            # Already open: bring it to the front rather than start a second copy.
+            for win in open_windows():
+                if window_app(win, [app], self.started):
+                    wmctrl("-i", "-a", hex(win["id"]))
+                    return
+            self.started[app.get("code")] = run_detached(app.get("run") or [app["command"]]).pid
             return
         if self._confirm(f"Install {app['name']}?",
                          "It's downloaded from the internet, which takes a few minutes."):

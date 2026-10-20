@@ -8,6 +8,7 @@
       - xinit
       - x11-xserver-utils
       - x11-utils  # xprop: keeps apps below the launcher's Home bar
+      - wmctrl  # the Home bar's open apps: bring to front, close
       - xinput  # turns a touchscreen with the screen
       - openbox
       - unclutter
