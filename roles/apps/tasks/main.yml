@@ -80,6 +80,7 @@
       loop: "{{ apps_mesh_clients | dict2items }}"
 
 # CHIRP isn't packaged by Debian; the project publishes a Python wheel per build.
+# A failure here is reported, but doesn't stop the rest of the station updating.
 - name: Install CHIRP
   tags: [chirp]
   vars:
@@ -96,23 +97,49 @@
         return_content: true
       register: apps_chirp_builds
 
-    - name: Pick the CHIRP build
+    # The newest builds first. A build folder can be listed before its files
+    # are all uploaded, so look a few back for one with a wheel.
+    - name: Pick the newest CHIRP builds
       ansible.builtin.set_fact:
-        apps_chirp_folder: >-
-          {{ apps_chirp_builds.content | regex_findall('href="((?:next-)?\d{8})/"')
-             | select('search', apps_chirp_build) | sort | last }}
+        apps_chirp_folders: >-
+          {{ (apps_chirp_builds.content | regex_findall('href="((?:next-)?\d{8})/"')
+              | select('search', apps_chirp_build) | sort | reverse | list)[:3] }}
 
-    - name: Find the build's wheel
+    - name: Check a CHIRP build was found
+      ansible.builtin.assert:
+        that: apps_chirp_folders | length > 0
+        fail_msg: "No CHIRP build listed at {{ apps_chirp_index }} (the page may have changed)."
+        quiet: true
+
+    - name: List the builds' files
       ansible.builtin.uri:
-        url: "{{ apps_chirp_index }}{{ apps_chirp_folder }}/"
+        url: "{{ apps_chirp_index }}{{ item }}/"
         return_content: true
+      loop: "{{ apps_chirp_folders }}"
       register: apps_chirp_files
+      failed_when: false
+
+    - name: Pick the newest wheel
+      ansible.builtin.set_fact:
+        apps_chirp_wheel_url: >-
+          {%- set ns = namespace(url='') -%}
+          {%- for listing in apps_chirp_files.results -%}
+            {%- set wheel = listing.content | default('') | regex_search('chirp-\d{8}-py3-none-any\.whl') -%}
+            {%- if wheel and not ns.url -%}{%- set ns.url = apps_chirp_index ~ listing.item ~ '/' ~ wheel -%}{%- endif -%}
+          {%- endfor -%}
+          {{ ns.url }}
+
+    - name: Check a build has a wheel
+      ansible.builtin.assert:
+        that: apps_chirp_wheel_url | length > 0
+        fail_msg: "None of the newest CHIRP builds ({{ apps_chirp_folders | join(', ') }}) has a Python wheel."
+        quiet: true
 
     # Its own Python environment, like the mesh clients, but able to see
-    # Debian's wxPython.
+    # Debian's wxPython and yattag.
     - name: Install CHIRP
       ansible.builtin.pip:
-        name: "{{ apps_chirp_index }}{{ apps_chirp_folder }}/{{ apps_chirp_files.content | regex_search('chirp-\\d{8}-py3-none-any\\.whl') }}"
+        name: "{{ apps_chirp_wheel_url }}"
         virtualenv: /opt/emcomm/chirp
         virtualenv_command: python3 -m venv
         virtualenv_site_packages: true
@@ -122,6 +149,13 @@
         src: /opt/emcomm/chirp/bin/chirp
         dest: /usr/local/bin/chirp
         state: link
+  rescue:
+    - name: Report that CHIRP didn't install
+      ansible.builtin.debug:
+        msg: >-
+          EMCOMM WARNING: CHIRP didn't install or update ({{ ansible_failed_task.name }}:
+          {{ (ansible_failed_result.msg | default('') ~ ' ' ~ ansible_failed_result.stderr | default(''))
+             | trim | truncate(400) }}). Everything else carried on.
 
 - name: Install the station map
   tags: [map]

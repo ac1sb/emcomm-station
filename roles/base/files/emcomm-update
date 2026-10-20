@@ -5,6 +5,9 @@
 #
 #   emcomm-update             download the latest playbook, then rebuild
 #   emcomm-update --app NAME  install one app (a tag in roles/apps)
+#
+# Everything it prints is also saved in /var/log/emcomm-update.log (the run
+# before is kept as .1), which the launcher's Logs page shows.
 set -euo pipefail
 
 APPS="js8call wsjtx fldigi flmsg pat ardop packet vara aprs meshtastic meshcore map browser chirp library"
@@ -38,6 +41,28 @@ read -r owner group mode < <(stat -c '%u %g %a' "$dir")
 (( (8#$mode & 8#020) && group != 0 )) && refuse "$dir can be changed by group id $group (mode $mode)."
 cd "$dir"
 
+LOG=/var/log/emcomm-update.log
+[ -f "$LOG" ] && mv -f "$LOG" "$LOG.1"
+install -m 0644 /dev/null "$LOG"
+exec > >(tee -a "$LOG") 2>&1
+echo "emcomm-update ${*:-} started $(date -u '+%Y-%m-%d %H:%M UTC')"
+
+# What failed, in a few lines at the end, so it needn't be found in the scroll.
+summary() {
+  local rc=$?
+  echo
+  if [ "$rc" -ne 0 ]; then
+    echo "== The update stopped with an error =="
+    awk '/^TASK \[/ { task = $0 } /^fatal:|^failed:/ { print task; print substr($0, 1, 600) }' "$LOG" | tail -n 6
+    echo
+    echo "The whole log is on the Logs page (Station updates) and in $LOG."
+  else
+    grep -h "EMCOMM WARNING" "$LOG" | sed 's/^ *"msg": *"//; s/",\?$//' | sort -u || true
+    echo "Done."
+  fi
+}
+trap summary EXIT
+
 if [ -z "$app" ]; then
   echo "== Downloading updates =="
   # Never stop to ask for a GitHub login: there's no one to type it.
@@ -53,5 +78,3 @@ else
   echo "== Installing $app =="
   ansible-playbook site.yml --tags "$app"
 fi
-echo
-echo "Done."
