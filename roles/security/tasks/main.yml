@@ -1,0 +1,31 @@
+---
+# A dedicated station only: a desktop keeps its own firewall and update settings.
+
+- name: Install the firewall and automatic security updates
+  ansible.builtin.apt:
+    name: [nftables, unattended-upgrades]
+    install_recommends: false
+  when: station_mode == 'kiosk'
+
+- name: Write the firewall rules
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    mode: "0755"
+    validate: nft -c -f %s
+  notify: Load the firewall
+  when: station_mode == 'kiosk'
+
+- name: Start the firewall at boot
+  ansible.builtin.systemd:
+    name: nftables
+    enabled: true
+    state: started
+  when: station_mode == 'kiosk'
+
+- name: Install security updates every day
+  ansible.builtin.copy:
+    src: 20auto-upgrades
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    mode: "0644"
+  when: station_mode == 'kiosk'

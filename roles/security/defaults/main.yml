@@ -1,0 +1,7 @@
+---
+# Incoming connections the firewall lets through, besides replies to the
+# station's own traffic. SSH is for remote troubleshooting (see README).
+# Everything else (the modems' ports, rig control, Pat, fldigi) answers only
+# programs on the station itself.
+security_allow_tcp: [22]
+security_allow_udp: []
