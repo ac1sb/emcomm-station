@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""The offline library: Kiwix books (.zim files) such as emergency medicine,
+first aid and repair guides, readable with no internet.
+
+  emcomm-library          the Library window: books on the station and on USB
+                          sticks, Open library, and Download for suggested books
+  emcomm-library --list   print the books found
+
+Books live in ~/Library. Books on a USB stick are read straight from the stick,
+so a large one (all of Wikipedia) needn't be copied. kiwix-serve serves them on
+127.0.0.1:8090 and the pages open in emcomm-webview.
+"""
+
+import glob
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+
+LIBRARY = os.path.expanduser("~/Library")
+STATE = os.path.expanduser("~/.local/state/emcomm")
+PORT = 8090
+MIRROR = "https://download.kiwix.org/zim/"
+# (folder on the Kiwix server, book name without its date, title, what it is)
+SUGGESTED = [
+    ("other", "wikem_en_all_maxi", "WikEM", "Emergency medicine reference · about 50 MB"),
+    ("other", "zimgit-post-disaster_en", "Post-disaster resources", "Shelter, water, sanitation, first aid · small"),
+    ("other", "zimgit-water_en", "Water", "Finding and treating drinking water · small"),
+    ("wikipedia", "wikipedia_en_medicine_nopic", "Wikipedia: Medicine", "Every medical article, text only · about 1 GB"),
+    ("stack_exchange", "ham.stackexchange.com_en_all", "Amateur Radio Stack Exchange",
+     "Questions and answers on ham radio · about 100 MB"),
+    ("ifixit", "ifixit_en_all_maxi", "iFixit", "Repair guides for gear and generators · about 3 GB"),
+    ("wikipedia", "wikipedia_en_all_nopic", "Wikipedia (all, text only)", "About 50 GB: too big to download "
+     "here; put it on a USB stick from another computer"),
+]
+USB_ONLY = {"wikipedia_en_all_nopic"}
+
+
+def usb_dirs():
+    user = os.environ.get("USER", "")
+    return glob.glob(f"/media/{user}/*") + glob.glob(f"/run/media/{user}/*")
+
+
+def find_books(dirs=None):
+    """{book name without its date: path} for every .zim in ~/Library and on USB sticks
+    (a stick's top folder and one folder down). The newest copy of each book wins."""
+    dirs = [LIBRARY] + usb_dirs() if dirs is None else dirs
+    books = {}
+    for folder in dirs:
+        for path in sorted(glob.glob(os.path.join(folder, "*.zim")) + glob.glob(os.path.join(folder, "*", "*.zim"))):
+            name = book_name(os.path.basename(path))
+            if name not in books or os.path.basename(path) > os.path.basename(books[name]):
+                books[name] = path
+    return books
+
+
+def book_name(filename):
+    return re.sub(r"_\d{4}-\d{2}\.zim$|\.zim$", "", filename)
+
+
+def latest_file(listing, name):
+    """The newest NAME_YYYY-MM.zim in a Kiwix folder listing, or None."""
+    found = sorted(set(re.findall(rf'href="({re.escape(name)}_\d{{4}}-\d{{2}}\.zim)"', listing)))
+    return found[-1] if found else None
+
+
+def mount_usb_sticks():
+    for link in glob.glob("/dev/disk/by-id/usb-*-part*"):
+        subprocess.run(["udisksctl", "mount", "--no-user-interaction", "-b", os.path.realpath(link)],
+                       capture_output=True, check=False)
+
+
+def serve(paths):
+    """(Re)start kiwix-serve for these books; returns once it answers."""
+    pid_file = os.path.join(STATE, "kiwix-serve.pid")
+    try:
+        with open(pid_file) as f:
+            os.kill(int(f.read()), signal.SIGTERM)
+        time.sleep(0.5)
+    except (OSError, ValueError):
+        pass
+    os.makedirs(STATE, exist_ok=True)
+    proc = subprocess.Popen(["kiwix-serve", "--address=127.0.0.1", f"--port={PORT}"] + sorted(paths),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    with open(pid_file, "w") as f:
+        f.write(str(proc.pid))
+    for _ in range(40):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{PORT}/", timeout=1)
+            return True
+        except OSError:
+            if proc.poll() is not None:
+                return False
+            time.sleep(0.25)
+    return False
+
+
+def download(folder, name, progress):
+    """Download the newest copy of a book to ~/Library. progress(done, total) is called as it goes."""
+    with urllib.request.urlopen(MIRROR + folder + "/", timeout=30) as r:
+        filename = latest_file(r.read().decode("utf-8", "replace"), name)
+    if not filename:
+        raise OSError("the Kiwix server doesn't have this book any more")
+    os.makedirs(LIBRARY, exist_ok=True)
+    part = os.path.join(LIBRARY, filename + ".part")
+    try:
+        with urllib.request.urlopen(MIRROR + folder + "/" + filename, timeout=60) as r, open(part, "wb") as out:
+            total, done = int(r.headers.get("Content-Length") or 0), 0
+            while chunk := r.read(1 << 20):
+                out.write(chunk)
+                done += len(chunk)
+                progress(done, total)
+        if total and done < total:
+            raise OSError("the download was cut short")
+        os.replace(part, os.path.join(LIBRARY, filename))
+    except BaseException:
+        # Don't leave a half-downloaded book taking space in ~/Library.
+        if os.path.exists(part):
+            os.remove(part)
+        raise
+    for old in glob.glob(os.path.join(LIBRARY, f"{name}_*.zim")):
+        if os.path.basename(old) != filename:
+            os.remove(old)
+
+
+def window():
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import GLib, Gtk, Pango
+
+    win = Gtk.Window(title="Library")
+    win.set_default_size(1024, 600)
+    win.connect("destroy", Gtk.main_quit)
+    page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=16)
+    win.add(page)
+    header = Gtk.Box(spacing=10)
+    title = Gtk.Label(xalign=0)
+    title.set_markup("<big><b>Library</b></big>")
+    header.pack_start(title, False, False, 0)
+    status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+    header.pack_start(status, True, True, 0)
+    close = Gtk.Button(label="Close  Esc")
+    close.connect("clicked", lambda *_: win.destroy())
+    header.pack_end(close, False, False, 0)
+    open_btn = Gtk.Button(label="Open library")
+    header.pack_end(open_btn, False, False, 0)
+    page.pack_start(header, False, False, 0)
+    listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+    scroller = Gtk.ScrolledWindow()
+    scroller.add(listbox)
+    page.pack_start(scroller, True, True, 0)
+    hint = Gtk.Label(xalign=0, wrap=True, label=(
+        "Books are Kiwix .zim files. Download them here when the station has internet, or put them on a USB "
+        "stick from library.kiwix.org on another computer: books on a plugged-in stick show up here and are "
+        "read straight from it."))
+    page.pack_start(hint, False, False, 0)
+    busy = set()
+
+    def row(title_text, detail, button=None):
+        box = Gtk.Box(spacing=12, margin=8)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        name = Gtk.Label(xalign=0)
+        name.set_markup(f"<b>{GLib.markup_escape_text(title_text)}</b>")
+        text.pack_start(name, False, False, 0)
+        sub = Gtk.Label(label=detail, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        text.pack_start(sub, False, False, 0)
+        box.pack_start(text, True, True, 0)
+        if button:
+            box.pack_end(button, False, False, 0)
+        return box, sub
+
+    def fill():
+        for child in listbox.get_children():
+            listbox.remove(child)
+        books = find_books()
+        titles = {name: t for _f, name, t, _d in SUGGESTED}
+        for name, path in sorted(books.items()):
+            where = "on the USB stick" if not path.startswith(LIBRARY) else "on the station"
+            size = os.path.getsize(path) / 1e6
+            listbox.add(row(titles.get(name, name), f"{os.path.basename(path)} · {size:,.0f} MB · {where}")[0])
+        for folder, name, title_text, detail in SUGGESTED:
+            if name in books:
+                continue
+            if name in USB_ONLY:
+                listbox.add(row(title_text, detail)[0])
+                continue
+            btn = Gtk.Button(label="Downloading…" if name in busy else "Download")
+            btn.set_sensitive(name not in busy)
+            box, sub = row(title_text, detail, btn)
+            btn.connect("clicked", start_download, folder, name, btn, sub)
+            listbox.add(box)
+        listbox.show_all()
+        open_btn.set_sensitive(bool(books))
+        status.set_text(f"{len(books)} book{'s' if len(books) != 1 else ''}" if books else
+                        "No books yet: download one below or plug in a USB stick with .zim files.")
+        return False
+
+    def start_download(_btn, folder, name, btn, sub):
+        busy.add(name)
+        btn.set_label("Downloading…")
+        btn.set_sensitive(False)
+
+        def progress(done, total):
+            text = f"{done / 1e6:,.0f} of {total / 1e6:,.0f} MB" if total else f"{done / 1e6:,.0f} MB"
+            GLib.idle_add(sub.set_text, f"Downloading: {text}. You can keep using the station.")
+
+        def work():
+            try:
+                download(folder, name, progress)
+                message = None
+            except OSError as exc:
+                message = f"Download failed: {getattr(exc, 'reason', exc)}. Check the internet and try again."
+            busy.discard(name)
+            GLib.idle_add(fill)
+            if message:
+                GLib.idle_add(status.set_text, message)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def open_library(*_):
+        status.set_text("Opening…")
+
+        def work():
+            ok = serve(find_books().values())
+            if ok:
+                subprocess.Popen(["emcomm-webview", f"http://127.0.0.1:{PORT}/", "Library"], start_new_session=True)
+            GLib.idle_add(status.set_text, "" if ok else "The library server didn't start (is kiwix-tools installed?)")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    open_btn.connect("clicked", open_library)
+    win.connect("key-press-event", lambda _w, e: e.keyval == 0xff1b and (win.destroy() or True))
+    mount_usb_sticks()
+    fill()
+    shown = [None]
+
+    def check_sticks():
+        """Refill only when books come or go (a stick plugged in), so focus stays put."""
+        books = sorted(find_books().items())
+        if not busy and books != shown[0]:
+            shown[0] = books
+            fill()
+        return True
+
+    shown[0] = sorted(find_books().items())
+    GLib.timeout_add_seconds(5, check_sticks)
+    win.show_all()
+    win.maximize()
+    Gtk.main()
+
+
+def main(argv):
+    if "--list" in argv:
+        for name, path in sorted(find_books().items()):
+            print(f"{name}\t{path}")
+        return 0
+    window()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

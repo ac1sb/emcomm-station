@@ -41,6 +41,14 @@ environment.
   (`meshcore-cli`) clients for LoRa mesh radios, and CHIRP for programming
   handhelds and mobiles. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
   once, in Settings. Callsign and grid are filled in for each app.
+- **Library** (tile): offline books from Kiwix, readable with no internet. With
+  internet, tap **Download** next to a suggested book: WikEM (emergency medicine),
+  post-disaster and water guides, Wikipedia's medical articles, Amateur Radio
+  Stack Exchange and iFixit repair guides. Books are saved in `~/Library`. Any
+  Kiwix `.zim` file on a plugged-in USB stick shows up too and is read straight
+  from the stick, which is the way to carry big ones such as all of Wikipedia
+  (get them from library.kiwix.org on another computer). **Open library** shows
+  every book in a window with search.
 - **Logs:** JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
   place, plus a box to note a voice or other contact. Notes get the UTC time,
   frequency and mode from the radio.
