@@ -157,6 +157,10 @@ dialog button:hover, messagedialog button:hover { background: $hover; }
 dialog button box, dialog button label,
 messagedialog button box, messagedialog button label { background: transparent; }
 dialog check { background: $bg; border: 1px solid $input_line; }
+checkbutton.pick check { min-width: 26px; min-height: 26px; border-radius: 6px; background: $bg;
+                        border: 2px solid $input_line; background-image: none; box-shadow: none; }
+checkbutton.pick check:checked { background-color: $accent_fill; border-color: $accent_fill; color: $on_accent;
+                                -gtk-icon-source: -gtk-icontheme("object-select-symbolic"); }
 .topbar .navbtn { min-height: 40px; padding: 0 12px; }
 .home-nav .navbtn { min-height: 44px; font-size: 15px; padding: 0 14px; }
 .homebar { background: $bar; border-bottom: 1px solid $line; padding: 0 8px; }
@@ -4252,7 +4256,23 @@ class Launcher(Gtk.Window):
         stream.pack_end(self.stream_at_start, False, False, 0)
         page.pack_start(stream, False, False, 0)
 
+        # Select picks several recordings to delete at once; tapping a row then ticks it.
+        self.rec_selecting, self.rec_selected = False, set()
+        pick_bar = Gtk.Box(spacing=12)
+        self.rec_pick_note = Gtk.Label(xalign=0)
+        self.rec_pick_note.get_style_context().add_class("muted")
+        pick_bar.pack_start(self.rec_pick_note, True, True, 0)
+        self.rec_pick_cancel = self._navbtn("Cancel", lambda *_: self._recorder_select(False))
+        self.rec_pick_delete = self._navbtn("Delete", lambda *_: self._recorder_delete_selected(), "danger")
+        self.rec_pick_all = self._navbtn("Select all", lambda *_: self._recorder_select_all())
+        self.rec_pick = self._navbtn("Select", lambda *_: self._recorder_select(True))
+        for btn in (self.rec_pick_cancel, self.rec_pick_delete, self.rec_pick_all, self.rec_pick):
+            btn.set_no_show_all(True)  # shown as the list needs them
+            pick_bar.pack_end(btn, False, False, 0)
+        page.pack_start(pick_bar, False, False, 0)
+
         self.rec_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.rec_list.connect("row-activated", self._recorder_row_tapped)
         scroller = Gtk.ScrolledWindow()
         scroller.add(self.rec_list)
         page.pack_start(scroller, True, True, 0)
@@ -4266,6 +4286,7 @@ class Launcher(Gtk.Window):
 
         self.rec_listed = None
         page.connect("map", lambda *_: self._recorder_tick(page))
+        page.connect("unmap", lambda *_: self._recorder_select(False))
         return page
 
     def _recorder_tick(self, page):
@@ -4315,6 +4336,9 @@ class Launcher(Gtk.Window):
             self.rec_list.remove(child)
         if not found:
             self.rec_list.add(self._info_row("", "No recordings yet", "Tap a Record button to start."))
+        shown = {path for path, _s, _l in found[:50]}
+        self.rec_shown_count = len(shown)
+        self.rec_selected &= shown  # deleted elsewhere, or no longer among the newest
         for path, size, seconds in found[:50]:
             day = os.path.basename(os.path.dirname(path))
             name = os.path.splitext(os.path.basename(path))[0]
@@ -4323,10 +4347,99 @@ class Launcher(Gtk.Window):
             mb = f"{size / 1e6:.1f} MB" if size >= 1e6 else f"{size // 1000 + 1} kB"
             detail = " · ".join(filter(None, [rest.replace(" ", " MHz ", 1) if rest else "", length, mb]))
             clock = f"{when[:2]}:{when[2:4]}:{when[4:6]}" if len(when) >= 6 else when
-            self.rec_list.add(self._info_row(clock, day, detail,
-                                             [("Play", lambda *_, p=path: self._recorder_play(p)),
-                                              ("Delete", lambda *_, p=path: self._recorder_delete(p))]))
+            if self.rec_selecting:
+                row = self._info_row(clock, day, detail)
+                tick = Gtk.CheckButton(active=path in self.rec_selected, valign=Gtk.Align.CENTER, can_focus=False)
+                tick.get_style_context().add_class("pick")
+                tick.connect("toggled", lambda b, p=path: self._recorder_tick_one(p, b.get_active()))
+                row.pack_start(tick, False, False, 0)
+                row.reorder_child(tick, 0)
+            else:
+                row = self._info_row(clock, day, detail,
+                                     [("Play", lambda *_, p=path: self._recorder_play(p)),
+                                      ("Delete", lambda *_, p=path: self._recorder_delete(p))])
+            row.rec_path = path
+            self.rec_list.add(row)
         self.rec_list.show_all()
+        self._recorder_pick_show()
+
+    def _recorder_pick_show(self):
+        """The Select bar: Select, or while selecting, how many are ticked and what to do with them."""
+        picking, count = self.rec_selecting, self.rec_shown_count
+        self.rec_pick.set_visible(not picking and count > 0)
+        for btn in (self.rec_pick_all, self.rec_pick_delete, self.rec_pick_cancel):
+            btn.set_visible(picking)
+        n = len(self.rec_selected)
+        self.rec_pick_all.get_child().set_text("Select none" if picking and n == count else "Select all")
+        self.rec_pick_delete.get_child().set_text(f"Delete {n}" if n else "Delete")
+        self.rec_pick_delete.set_sensitive(n > 0)
+        if picking:
+            self.rec_pick_note.set_text(f"{n} of {count} selected. Tap recordings to select them."
+                                        if count else "No recordings.")
+        else:
+            self.rec_pick_note.set_text(f"Newest {count} recordings" if count >= 50 else
+                                        f"{count} recording{'' if count == 1 else 's'}" if count else "")
+
+    def _recorder_select(self, on):
+        if on == self.rec_selecting and not on:
+            return
+        self.rec_selecting = on
+        self.rec_selected = set()
+        found = recordings()  # rebuild the rows, with or without their tick boxes
+        self.rec_listed = [(p, s) for p, s, _l in found[:50]]
+        self._recorder_fill(found)
+
+    def _recorder_tick_one(self, path, on):
+        (self.rec_selected.add if on else self.rec_selected.discard)(path)
+        self._recorder_pick_show()
+
+    def _recorder_row_tapped(self, _list, row):
+        """While selecting, a tap anywhere on a recording ticks or unticks it."""
+        box = row.get_child()
+        if not self.rec_selecting or not hasattr(box, "rec_path"):
+            return
+        tick = box.get_children()[0]
+        tick.set_active(not tick.get_active())
+
+    def _recorder_select_all(self):
+        shown = [row.get_child() for row in self.rec_list.get_children()]
+        paths = {box.rec_path for box in shown if hasattr(box, "rec_path")}
+        everything = paths and self.rec_selected >= paths
+        for box in shown:
+            if hasattr(box, "rec_path"):
+                box.get_children()[0].set_active(not everything)
+
+    def _recorder_delete_selected(self):
+        paths = sorted(self.rec_selected)
+        if not paths:
+            return
+        size = 0
+        for path in paths:
+            try:
+                size += os.path.getsize(path)
+            except OSError:
+                pass
+        what = "this recording" if len(paths) == 1 else f"these {len(paths)} recordings"
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                   text=f"Delete {what}?",
+                                   secondary_text=f"{size / 1e6:.1f} MB. This can't be undone.")
+        dialog.add_buttons("Keep them", Gtk.ResponseType.CANCEL, "Delete", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        failed = []
+        for path in paths:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                failed.append(f"{os.path.basename(path)}: {exc.strerror}")
+        self._recorder_select(False)
+        deleted = len(paths) - len(failed)
+        self._recorder_message(f"Deleted {deleted} recording{'' if deleted == 1 else 's'}."
+                               + (f" Couldn't delete {'; '.join(failed)}" if failed else ""))
 
     def _recorder_message(self, text):
         self.rec_page_status.set_text(text)

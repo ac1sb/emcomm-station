@@ -132,7 +132,8 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   station starts** to have it come back on by itself after a restart or power
   cut. **Rec** turns red while it records, in the launcher's top bar and in the
   Home bar above every app. Recordings play on headphones or a speaker, never
-  through the radio, so they can't key it by VOX.
+  through the radio, so they can't key it by VOX. To delete several at once, tap
+  **Select**, tap the recordings (or **Select all**), then **Delete**.
 - **Broadcastify** (on the Recorder page): streams the same receive audio to a
   Broadcastify feed. Apply for a feed at broadcastify.com; once it's approved,
   type its server, port, mount and password into **Feed settings** and tap **Go
