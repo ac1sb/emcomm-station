@@ -12,6 +12,15 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 ## What's in it so far
 
 - **Base system:** a `radio` user, SSH for remote troubleshooting, PipeWire audio.
+- **Firewall and security updates:** nothing on the network can reach the
+  station except SSH and replies to connections it made itself, so no one on
+  the same Wi-Fi can use the packet, ARDOP or VARA modems to key the radio.
+  Outgoing traffic isn't limited. Debian's security updates install by
+  themselves once a day, along with Debian's stable bug fixes (never new
+  versions, and no restarts: a kernel update takes effect at the next restart).
+  To let more in, list ports in `security_allow_tcp` or
+  `security_allow_udp` in `host_vars`. A desktop install leaves the computer's
+  own firewall and update settings alone.
 - **Settings screen:** a page of large tiles: User (callsign, grid and time zone), Radio,
   Devices (GPS, and what's plugged in), Display, Wi-Fi, Accounts,
   Backup, Update station, Audio (the radio's sound card, and in desktop mode when
@@ -402,7 +411,7 @@ ports, and two sudo rules so Settings and Update station work without a password
 It points gpsd at the GPS chosen in Settings (keeping a copy of your gpsd settings)
 and stops the TV-tuner driver from taking an RTL-SDR dongle. Your account is
 added to the dialout, plugdev and bluetooth groups. It doesn't touch your login,
-desktop, boot screen, clock, network settings or SSH.
+desktop, boot screen, clock, network settings, firewall, update settings or SSH.
 
 To take it all off again:
 
