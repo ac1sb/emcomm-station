@@ -84,6 +84,15 @@ class Form213(unittest.TestCase):
             self.assertEqual(fields["sb"], "Cots — 50")
             self.assertNotIn("hdr_fm", fields)
 
+    def test_writes_files_flmsg_reads(self):
+        fields = dict(MESSAGE)
+        data = ics.write_flmsg(fields, "AC1SB", now=0)
+        self.assertTrue(data.startswith(b"<flmsg>4.0.23\n:hdr_ed:21 \nAC1SB 19700101000000\n<ics213>\n"))
+        self.assertEqual(ics.parse_flmsg(data), fields)
+        self.assertIn(":sb:%d Cots \u2014 50\n" % len("Cots \u2014 50".encode()), data.decode())
+        self.assertLess(data.index(b":inc:"), data.index(b":to:"))
+        self.assertNotIn(b":rp:", data)  # empty fields are left out, as flmsg does
+
     def test_rejects_other_files(self):
         with self.assertRaises(ValueError):
             ics.parse_flmsg(b"<flmsg>4.0\n<ics214>\n:inc:1 x\n")

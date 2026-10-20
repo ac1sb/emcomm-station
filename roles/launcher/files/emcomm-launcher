@@ -123,6 +123,11 @@ menuitem:hover { background: $hover; }
 .navbtn:hover { background: $hover; }
 .danger { border-color: $danger; color: $danger_text; background: $danger_bg; }
 .title { font-size: 20px; font-weight: 600; }
+entry.formfield, textview.formfield text { background: #FFFBE6; color: #10161C; font-size: 15px;
+                                           font-family: 'IBM Plex Sans', sans-serif; }
+entry.formfield { min-height: 0; padding: 0 4px; border-radius: 3px; border: 1px solid #3B82F6; }
+entry.formfield:focus, textview.formfield:focus { border: 2px solid #F2A33A; }
+textview.formfield { border: 1px solid #3B82F6; font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; }
 .section { background: $surface; border: 1px solid $line; border-radius: 12px; padding: 12px 16px; }
 .section-title { font-size: 12px; font-weight: 600; color: $muted; letter-spacing: 1px; }
 .field-label { font-size: 14px; color: $label; }
@@ -1203,6 +1208,18 @@ def recordings(limit=200):
 NETS_DIR = os.path.expanduser("~/.local/share/emcomm/nets")
 ICS_CMD = os.environ.get("EMCOMM_ICS", "emcomm-ics")
 ICS213_BLANK = os.path.join(os.environ.get("EMCOMM_FORMS", "/usr/share/emcomm/forms"), "ics213.pdf")
+ICS213_SENT = os.path.expanduser("~/.nbems/ICS/messages")
+# Where each flmsg ICS-213 field is typed on FEMA's form: (key, left, bottom, right, top) in
+# PDF points from the bottom left, as the PDF's own fields are; two keys share a box side by side.
+ICS213_BOXES = [
+    ("inc", 171, 720, 575, 735), ("to", 162, 690, 400, 718), ("p1", 402, 690, 574, 718),
+    ("fm", 175, 660, 400, 687), ("p2", 402, 660, 574, 687), ("sb", 92, 628, 430, 656),
+    ("d1", 434, 628, 502, 646), ("t1", 506, 628, 574, 646), ("mg", 41, 367, 574, 613),
+    ("s1", 153, 351, 252, 364), ("p3", 474, 351, 570, 364), ("rp", 41, 90, 574, 329),
+    ("s2", 149, 75, 252, 88), ("p4", 317, 75, 419, 88), ("d2", 308, 57, 437, 70), ("t2", 441, 57, 570, 70),
+]
+ICS213_HINTS = {"inc": "Incident name (optional)", "to": "Name", "p1": "Position", "fm": "Name",
+                "p2": "Position", "sb": "Subject", "d1": "Date", "t1": "Time", "d2": "Date", "t2": "Time"}
 
 
 # ICS-213 messages: flmsg's files, shown on FEMA's form (emcomm-ics fills in the PDF).
@@ -1414,6 +1431,7 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._online_page(), "online")
         self.stack.add_named(self._net_page(), "net")
         self.stack.add_named(self._ics213_page(), "ics213")
+        self.stack.add_named(self._ics213_editor(), "ics213-edit")
         self.stack.add_named(self._recorder_page(), "recorder")
         root.pack_start(self.stack, True, True, 0)
 
@@ -3595,10 +3613,13 @@ class Launcher(Gtk.Window):
         self.f213_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         self.f213_status.get_style_context().add_class("muted")
         header.pack_start(self.f213_status, True, True, 0)
-        header.pack_end(self._navbtn("New message", self._ics213_new, "primary"), False, False, 0)
-        self.f213_open_btn = self._navbtn("Reply or edit in flmsg", self._ics213_edit)
+        header.pack_end(self._navbtn("New message", lambda *_: self._ics213_write(None), "primary"),
+                        False, False, 0)
+        self.f213_open_btn = self._navbtn("Reply or edit", lambda *_: self._ics213_write(self.f213_path))
+        self.f213_flmsg_btn = self._navbtn("Open in flmsg", self._ics213_edit)
         self.f213_print_btn = self._navbtn("Print", self._ics213_print)
         header.pack_end(self.f213_open_btn, False, False, 0)
+        header.pack_end(self.f213_flmsg_btn, False, False, 0)
         header.pack_end(self.f213_print_btn, False, False, 0)
         page.pack_start(header, False, False, 0)
 
@@ -3658,7 +3679,7 @@ class Launcher(Gtk.Window):
             self.f213_list.add(row)
         if not found:
             hint = Gtk.Label(xalign=0, wrap=True, margin=12, label=(
-                "No ICS-213 messages yet.\n\nTap New message to write one in flmsg, then save it there. "
+                "No ICS-213 messages yet.\n\nTap New message to type one on the form. "
                 "Messages fldigi receives show here too.\n\nThis is the blank form; Print gives you paper copies."))
             hint.get_style_context().add_class("muted")
             row = Gtk.ListBoxRow(selectable=False, activatable=False)
@@ -3704,7 +3725,8 @@ class Launcher(Gtk.Window):
             except GLib.Error as exc:
                 self.f213_status.set_text(f"Couldn't open the form: {exc.message}")
         self.f213_print_btn.set_sensitive(self.f213_doc is not None)
-        self.f213_open_btn.set_sensitive(self.f213_doc is not None and path is not None)
+        self.f213_open_btn.set_sensitive(path is not None)
+        self.f213_flmsg_btn.set_sensitive(path is not None)
         self._ics213_fit()
         self.f213_form.queue_draw()
 
@@ -3755,14 +3777,174 @@ class Launcher(Gtk.Window):
         if self.f213_path and shutil.which("flmsg"):
             run_detached(["flmsg", self.f213_path])
 
-    def _ics213_new(self, *_):
-        """Open flmsg, as its Home tile does (bringing it forward if it's already open)."""
-        for tile in self.tiles:
-            if tile.app.get("app") == "flmsg":
-                tile.clicked()
-                return
-        if shutil.which("flmsg"):
-            run_detached(["flmsg"])
+    # ---- typing an ICS-213 on the form ------------------------------------
+    # The blank FEMA form is drawn and a box sits on each of its fields, so the
+    # message is typed where it goes on paper. It's saved as an flmsg file, so
+    # flmsg sends it and the messages list shows it.
+
+    def _ics213_editor(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Messages", lambda *_: self.stack.set_visible_child_name("ics213")),
+                          False, False, 0)
+        self.f213e_title = Gtk.Label(xalign=0)
+        self.f213e_title.get_style_context().add_class("title")
+        header.pack_start(self.f213e_title, False, False, 0)
+        self.f213e_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.f213e_status.get_style_context().add_class("muted")
+        header.pack_start(self.f213e_status, True, True, 0)
+        header.pack_end(self._navbtn("Send with flmsg", lambda *_: self._ics213_editor_send(), "primary"),
+                        False, False, 0)
+        header.pack_end(self._navbtn("Save", lambda *_: self._ics213_editor_save()), False, False, 0)
+        header.pack_end(self._navbtn("Print", lambda *_: self._ics213_editor_print()), False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        self.f213e_doc = None
+        if Poppler is not None and os.path.exists(ICS213_BLANK):
+            try:
+                self.f213e_doc = Poppler.Document.new_from_file(GLib.filename_to_uri(ICS213_BLANK, None), None)
+            except GLib.Error:
+                pass
+        overlay = Gtk.Overlay()
+        self.f213e_paper = Gtk.DrawingArea()
+        self.f213e_paper.connect("draw", self._ics213_editor_draw)
+        overlay.add(self.f213e_paper)
+        self.f213e_fixed = Gtk.Fixed()
+        overlay.add_overlay(self.f213e_fixed)
+        self.f213e_fields = {}
+        for key, *_box in ICS213_BOXES:
+            if key in ("mg", "rp"):
+                view = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, left_margin=4, right_margin=4)
+                view.get_style_context().add_class("formfield")
+                widget = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+                widget.add(view)
+                self.f213e_fields[key] = view
+            else:
+                widget = Gtk.Entry(placeholder_text=ICS213_HINTS.get(key, ""), width_chars=1)
+                widget.get_style_context().add_class("formfield")
+                self.f213e_fields[key] = widget
+            widget.box = _box
+            self.f213e_fixed.put(widget, 0, 0)
+        self.f213e_scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.f213e_scroller.add(overlay)
+        self.f213e_scroller.connect("size-allocate", lambda *_: self._ics213_editor_fit())
+        page.pack_start(self.f213e_scroller, True, True, 0)
+        self.f213e_path, self.f213e_scale = None, 0
+        return page
+
+    def _ics213_editor_fit(self):
+        """Scale the form to the page's width and put each box on its field."""
+        width = self.f213e_scroller.get_allocated_width() - 16  # room for the scroll bar
+        if width <= 0 or not self.f213e_doc:
+            return
+        width_pt, height_pt = self.f213e_doc.get_page(0).get_size()
+        scale = width / width_pt
+        if abs(scale - self.f213e_scale) < 0.001:
+            return
+        self.f213e_scale = scale
+        self.f213e_paper.set_size_request(width, int(height_pt * scale))
+        for child in self.f213e_fixed.get_children():
+            left, bottom, right, top = child.box
+            self.f213e_fixed.move(child, int(left * scale), int((height_pt - top) * scale))
+            child.set_size_request(int((right - left) * scale), int((top - bottom) * scale))
+
+    def _ics213_editor_draw(self, widget, cr):
+        cr.set_source_rgb(1, 1, 1)
+        cr.paint()
+        if self.f213e_doc and self.f213e_scale:
+            cr.scale(self.f213e_scale, self.f213e_scale)
+            self.f213e_doc.get_page(0).render(cr)
+        return False
+
+    def _ics213_field(self, key):
+        widget = self.f213e_fields[key]
+        if isinstance(widget, Gtk.TextView):
+            buf = widget.get_buffer()
+            return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        return widget.get_text()
+
+    def _ics213_write(self, path):
+        """Open the form: blank for a new message, or filled from an flmsg file to edit or reply to."""
+        if not self.f213e_doc:
+            self._set_message("Can't show the form: run Update station (it needs gir1.2-poppler-0.18).", None)
+            return
+        fields = {}
+        if path:
+            try:
+                result = subprocess.run([ICS_CMD, "213", "--fields", path], capture_output=True, text=True,
+                                        timeout=20, check=False)
+                fields = json.loads(result.stdout) if result.returncode == 0 else {}
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                fields = {}
+        received = bool(path) and not os.path.dirname(os.path.abspath(path)) == os.path.abspath(ICS213_SENT)
+        if not path:
+            now = time.localtime()
+            fields = {"d1": time.strftime("%Y-%m-%d", now), "t1": time.strftime("%H%M", now)}
+            net_path, net = open_net()
+            if net and net.get("incident"):
+                fields["inc"] = net["incident"]
+        if received and not fields.get("rp"):
+            now = time.localtime()
+            fields.setdefault("d2", time.strftime("%Y-%m-%d", now))
+            fields.setdefault("t2", time.strftime("%H%M", now))
+        for key, widget in self.f213e_fields.items():
+            value = fields.get(key, "")
+            if isinstance(widget, Gtk.TextView):
+                widget.get_buffer().set_text(value)
+            else:
+                widget.set_text(value)
+        # A received message is answered in a copy, so what came in stays as it was.
+        self.f213e_path = None if received else path
+        self.f213e_title.set_text("Reply" if received else "Edit ICS-213" if path else "New ICS-213")
+        self.f213e_status.set_text("Type the reply at the bottom." if received else "")
+        self.stack.set_visible_child_name("ics213-edit")
+        focus = "rp" if received else "to" if not path else "mg"
+        GLib.idle_add(lambda: self.f213e_fields[focus].grab_focus() and False)
+
+    def _ics213_editor_save(self):
+        """Save the form as an flmsg file in flmsg's messages folder; the path, or None."""
+        fields = {key: self._ics213_field(key).strip("\n") if key in ("mg", "rp") else self._ics213_field(key).strip()
+                  for key in self.f213e_fields}
+        if not any(fields.values()):
+            self.f213e_status.set_text("The form is empty.")
+            return None
+        path = self.f213e_path
+        if not path:
+            stem = time.strftime("ICS213-%Y%m%d-%H%M%S")
+            subject = re.sub(r"[^A-Za-z0-9 _-]+", "", fields.get("sb", ""))[:30].strip()
+            path = os.path.join(ICS213_SENT, f"{stem} {subject}.213" if subject else f"{stem}.213")
+        try:
+            result = subprocess.run([ICS_CMD, "213", "--save", path, self.station.get("callsign", "")],
+                                    input=json.dumps(fields), capture_output=True, text=True, timeout=20,
+                                    check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.f213e_status.set_text(f"Couldn't save: {exc}")
+            return None
+        if result.returncode != 0:
+            self.f213e_status.set_text("Couldn't save: " + (result.stderr.strip().splitlines() or ["?"])[-1])
+            return None
+        self.f213e_path = path
+        self.f213e_title.set_text("Edit ICS-213")
+        self.f213e_status.set_text("Saved " + time.strftime("%H:%M") + ". It's in the messages list.")
+        self.f213_listed = None  # list it next time the messages page shows
+        return path
+
+    def _ics213_editor_send(self):
+        path = self._ics213_editor_save()
+        if not path:
+            return
+        if not shutil.which("flmsg"):
+            self.f213e_status.set_text("Saved. flmsg isn't installed: tap its tile on Home to install it.")
+            return
+        run_detached(["flmsg", path])
+        self.f213e_status.set_text("Opened in flmsg: with fldigi open, press AutoSend in flmsg's menu bar to send it.")
+
+    def _ics213_editor_print(self):
+        path = self._ics213_editor_save()
+        if path:
+            self.f213_path = None
+            self._ics213_show(path)
+            self._ics213_print()
 
     # ---- receive audio recorder ----------------------------------------
 
