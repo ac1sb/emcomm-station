@@ -53,10 +53,12 @@
     dest: /etc/systemd/system/rigctld.service
     mode: "0644"
 
-- name: Enable rigctld (it starts when the radio's CAT port appears)
+# Not enabled at boot: the udev rule starts it when the radio's CAT port appears.
+# Enabled, a boot without the radio waits 90 s for the port, then marks rigctld failed.
+- name: Let udev start rigctld when the radio is plugged in
   ansible.builtin.systemd:
     name: rigctld
-    enabled: true
+    enabled: false
     daemon_reload: true
 
 # A USB GPS sets the clock when there's no internet (FT8, JS8 and VARA need it
