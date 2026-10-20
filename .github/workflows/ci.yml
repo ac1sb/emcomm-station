@@ -15,13 +15,16 @@ jobs:
       - name: Install checkers
         run: pip install ansible-core ansible-lint shellcheck-py pyyaml pypdf numpy
       - name: Playbook syntax
-        run: ansible-playbook site.yml --syntax-check
+        run: |
+          ansible-playbook site.yml --syntax-check
+          ansible-playbook site.yml --syntax-check -e station_mode=desktop
       - name: Ansible lint
         run: ansible-lint
       - name: Shell scripts
         run: >-
           shellcheck roles/diagnostics/files/emcomm-diag roles/diagnostics/files/emcomm-ptt-test
           roles/base/files/emcomm-update roles/apps/files/emcomm-start roles/apps/files/emcomm-install-vara
+          roles/kiosk/files/emcomm-session install-desktop.sh uninstall-desktop.sh
       - name: Python compiles
         run: >-
           python -m py_compile roles/launcher/files/emcomm-launcher roles/radio/files/emcomm-apply-settings

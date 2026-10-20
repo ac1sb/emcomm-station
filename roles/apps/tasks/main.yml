@@ -19,40 +19,47 @@
     name: js8call
     install_recommends: false
   tags: [js8call]
+  when: apps_install | bool
 
 - name: Install WSJT-X
   ansible.builtin.apt:
     name: wsjtx
     install_recommends: false
   tags: [wsjtx]
+  when: apps_install | bool
 
 - name: Install fldigi and flamp
   ansible.builtin.apt:
     name: [fldigi, flamp]
     install_recommends: false
   tags: [fldigi]
+  when: apps_install | bool
 
 - name: Install flmsg
   ansible.builtin.apt:
     name: flmsg
     install_recommends: false
   tags: [flmsg]
+  when: apps_install | bool
 
 - name: Install Direwolf
   ansible.builtin.apt:
     name: direwolf
     install_recommends: false
   tags: [packet]
+  when: apps_install | bool
 
 - name: Install Xastir and Direwolf for APRS
   ansible.builtin.apt:
     name: [xastir, direwolf]
     install_recommends: false
   tags: [aprs]
+  when: apps_install | bool
 
 # Both clients are small, so installing either tile installs both.
 - name: Install Meshtastic and MeshCore clients
   tags: [meshtastic, meshcore]
+  when: apps_install | bool
   vars:
     apps_mesh_clients:
       meshtastic: { package: "contact=={{ apps_contact_version }}", command: contact }
@@ -85,6 +92,7 @@
 # A failure here is reported, but doesn't stop the rest of the station updating.
 - name: Install CHIRP
   tags: [chirp]
+  when: apps_install | bool
   vars:
     apps_chirp_repo: https://github.com/kk7ds/chirp
   block:
@@ -155,6 +163,7 @@
 
 - name: Install the station map
   tags: [map]
+  when: apps_install | bool
   block:
     - name: Install the map window's web view
       ansible.builtin.apt:
@@ -207,6 +216,7 @@
 # together and share ~/Scanner channels.csv (Gqrx gets it as bookmarks).
 - name: Install the SDR scanner and Gqrx
   tags: [scanner, sdr]
+  when: apps_install | bool
   block:
     - name: Install the SDR libraries, numpy, the audio player and Gqrx
       ansible.builtin.apt:
@@ -243,8 +253,18 @@
         dest: /usr/local/bin/emcomm-scanner
         mode: "0755"
 
+# A desktop keeps its own browser: the tile opens a page of the same bookmarks in it.
+- name: Write the bookmarks page for the person's own browser
+  ansible.builtin.template:
+    src: bookmarks.html.j2
+    dest: /usr/share/emcomm/bookmarks.html
+    mode: "0644"
+  when: station_mode == 'desktop'
+  tags: [always]
+
 - name: Install the web browser
   tags: [browser]
+  when: apps_install | bool and station_mode == 'kiosk'
   block:
     - name: Install Chromium
       ansible.builtin.apt:
@@ -272,6 +292,7 @@
 
 - name: Install the offline library
   tags: [library]
+  when: apps_install | bool
   block:
     - name: Install Kiwix's book server and the web view
       ansible.builtin.apt:
@@ -286,6 +307,7 @@
 
 - name: Install Pat
   tags: [pat]
+  when: apps_install | bool
   block:
     - name: Install the mailbox window's web view
       ansible.builtin.apt:
@@ -315,9 +337,10 @@
     dest: /usr/local/bin/ardopcf
     mode: "0755"
   tags: [ardop]
+  when: apps_install | bool
 
 - name: Set up Wine for VARA
-  when: apps_vara | bool
+  when: apps_vara | bool and apps_install | bool
   tags: [vara]
   block:
     - name: Check for 32-bit package support

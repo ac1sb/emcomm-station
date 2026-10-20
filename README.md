@@ -4,7 +4,8 @@
 
 Turns a fresh minimal Debian 13 install into a dedicated emcomm station: it boots
 straight into a full-screen touch launcher for the radio apps, with no desktop
-environment.
+environment. To try it on a Debian or Ubuntu computer you already use, see
+[desktop mode](#try-it-on-a-computer-you-already-use-desktop-mode).
 
 ![Home screen](docs/home.png)
 
@@ -13,7 +14,9 @@ environment.
 - **Base system:** a `radio` user, SSH for remote troubleshooting, PipeWire audio.
 - **Settings screen:** a page of large tiles: User (callsign and grid), Radio,
   Devices (GPS, and what's plugged in), Display, Wi-Fi, Accounts,
-  Backup, Update station, Diagnostics, Power and Home tiles. User opens
+  Backup, Update station, Audio (the radio's sound card, and in desktop mode when
+  it's the computer's default), Power and Home tiles (Diagnostics is on Home's
+  buttons and F2). User opens
   automatically on first boot. Any radio Hamlib supports can be picked by
   manufacturer and model; the CAT port, PTT port and sound card are picked from the
   USB devices that are plugged in, with a Rescan button. Saving gives those devices
@@ -294,6 +297,84 @@ environment.
 
 Running more than one sound-card app at a time doesn't work: close one before
 opening the next.
+
+## Try it on a computer you already use (desktop mode)
+
+Emcomm-CNC can also run on top of a Debian or Ubuntu computer that's already set
+up, to try it out or demo it without wiping anything. It adds an **Emcomm-CNC**
+app to your app menu and an **Emcomm-CNC** session to your login screen, and talks
+to the radio, GPS and SDR the same way the station does (no sandbox in the way).
+Your desktop, login, boot screen, clock and other programs are left as they are.
+
+It's tested on Ubuntu 24.04, and should work on Ubuntu 22.04, Linux Mint 22 and
+Debian 12 or 13. VARA, Pat and ardopcf need a 64-bit PC (x86-64).
+
+### Install
+
+Open a terminal and run:
+
+```sh
+sudo apt install -y git
+git clone https://github.com/ac1sb/emcomm-station.git
+cd emcomm-station
+sudo ./install-desktop.sh
+```
+
+It asks for your password, installs Ansible, copies itself to
+`/opt/emcomm-station` and sets Emcomm-CNC up for your account. That takes a few
+minutes. **Log out and back in once** afterwards, so your account can use the
+radio's serial ports and USB devices.
+
+Apps aren't installed up front: tap a tile and it offers to install that app.
+Settings > Update station gets the latest Emcomm-CNC, as on the station.
+
+### Run it
+
+- **From the app menu:** open **Emcomm-CNC**. It fills the screen; when you start
+  an app from a tile, the launcher steps aside so the app is in front. To leave,
+  tap **Power** and choose **Exit Emcomm-CNC**.
+- **As its own session:** on the login screen, pick **Emcomm-CNC** before typing
+  your password (on Ubuntu, click your name, then the gear button at the bottom
+  right). You get the full station: the Home bar across the top, apps opening
+  full screen below it. **Power > Log out** returns to the login screen.
+
+On Ubuntu's normal session (Wayland), the launcher can't bring an app that's
+already open to the front, and Settings > Display only changes the colours and
+text size. The Emcomm-CNC session has everything.
+
+### Sound
+
+The radio apps (fldigi, WSJT-X, JS8Call, Direwolf, VARA) use the computer's
+default speaker and microphone. On the station, the radio's sound card is always
+that default. On your computer it would also send YouTube, calls and alert
+sounds to the radio, so by default the radio is the default **only while
+Emcomm-CNC is open**: open it and the radio takes over, exit and your own speaker
+and microphone come back. Alert sounds are silenced meanwhile, so a notification
+isn't transmitted. **Settings > Audio** shows what's in use now and lets you pick
+**Always** (like the station) or **Never** (set each app to the radio's sound
+card yourself).
+
+### What it changes, and taking it off
+
+It adds its programs under `/usr/local/bin`, `/usr/share/emcomm` and `/opt`,
+the services that run the radio's CAT control (rigctld, started when the radio is
+plugged in) and the weather radio receiver, rules that name the radio's USB
+ports, and two sudo rules so Settings and Update station work without a password.
+It points gpsd at the GPS chosen in Settings (keeping a copy of your gpsd settings)
+and stops the TV-tuner driver from taking an RTL-SDR dongle. Your account is
+added to the dialout, plugdev and bluetooth groups. It doesn't touch your login,
+desktop, boot screen, clock, network settings or SSH.
+
+To take it all off again:
+
+```sh
+sudo /opt/emcomm-station/uninstall-desktop.sh
+```
+
+That removes everything above and puts your gpsd settings back. Add
+`--packages` to also see the packages it installed and choose to remove them.
+Your own files stay: `~/.config/emcomm`, recordings, frequency lists and the
+apps' settings.
 
 ## Install
 

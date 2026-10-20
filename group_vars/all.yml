@@ -12,6 +12,14 @@ station_radio: ft-891-digirig
 # Local account that auto-logs in and runs the kiosk.
 station_user: radio
 
+# kiosk:   a dedicated station. Boots straight into the launcher (auto-login,
+#          Openbox only, quiet boot) and installs every app.
+# desktop: on a Debian or Ubuntu computer already in use, for the person's own
+#          account. Adds an Emcomm-CNC app (and login session) and leaves the
+#          desktop, login, boot and clock as they are; apps install from their
+#          tiles. install-desktop.sh sets this and station_user in host_vars/.
+station_mode: kiosk
+
 # Apps shown on the home screen.
 #   command: the program that must be installed; until it is, the tile offers
 #            to install it (app: its tag in roles/apps).
@@ -20,6 +28,7 @@ station_user: radio
 #   ready:   a file that must exist too, else the tile offers to set it up (VARA).
 #   icon:    image name in /usr/share/emcomm/icons (.svg or .png). Long-press or
 #            right-click a tile to use your own picture instead.
+#   desktop: settings that replace the ones above in desktop mode (station_mode).
 launcher_apps:
   - { code: JS8, icon: js8call, name: JS8Call, detail: HF messaging, command: js8call, app: js8call, run: [emcomm-start, js8call] }
   - { code: WL, icon: winlink, name: Winlink mail, detail: Pat, command: pat, app: pat, run: [emcomm-start, pat] }
@@ -52,7 +61,15 @@ launcher_apps:
   - { code: SCN, icon: scanner, name: Scanner, detail: SDR · police fire EMS, command: emcomm-scanner, app: scanner, run: [emcomm-scanner] }
   - { code: SDR, icon: sdr, name: Gqrx, detail: Any SDR · HF to UHF, command: gqrx, app: sdr, run: [emcomm-start, sdr] }
   - { code: LIB, icon: library, name: Library, detail: Offline books · first aid, command: emcomm-library, app: library, run: [emcomm-library] }
-  - { code: WEB, icon: browser, name: Browser, detail: Chromium · ham bookmarks, command: chromium, app: browser, run: [chromium, --password-store=basic] }
+  - code: WEB
+    icon: browser
+    name: Browser
+    detail: Chromium · ham bookmarks
+    command: chromium
+    app: browser
+    run: [chromium, --password-store=basic]
+    # In desktop mode, the person's own browser with a page of the same bookmarks.
+    desktop: { detail: Your browser · ham bookmarks, command: xdg-open, run: [xdg-open, /usr/share/emcomm/bookmarks.html] }
   - { code: FT8, icon: wsjtx, name: WSJT-X, detail: FT8 · band check, command: wsjtx, app: wsjtx, run: [emcomm-start, wsjtx] }
 
 # Home folders in the standard order, each where its first app would be. Tiles can be

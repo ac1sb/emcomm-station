@@ -1,0 +1,23 @@
+#!/bin/bash
+# Managed by the emcomm-station playbook.
+# The "Emcomm-CNC" session on the login screen of a desktop computer: the
+# station's kiosk (Openbox, the Home bar, the launcher full screen) without
+# changing the computer's own desktop. Exit on the launcher's Power button
+# (launcher exit status 10) ends the session, back to the login screen.
+export EMCOMM_SESSION=1
+# Text size (and, in this session, resolution and rotation) from Settings > Display.
+emcomm-display apply
+# The screen stays on while the station is in use.
+xset s off -dpms s noblank
+unclutter -idle 3 &
+openbox --config-file /usr/share/emcomm/openbox/rc.xml &
+wm=$!
+# The launcher restarts itself if it is closed or crashes (or after Update station).
+while true; do
+  status=0
+  emcomm-launcher || status=$?
+  [ "$status" = 10 ] && break
+  sleep 1
+done
+kill "$wm" 2>/dev/null
+exit 0

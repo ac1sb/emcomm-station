@@ -63,10 +63,23 @@
 
 # A USB GPS sets the clock when there's no internet (FT8, JS8 and VARA need it
 # within a second or so) and gives the launcher a position for the grid square.
-- name: Install gpsd and chrony
+# On a desktop, uninstall-desktop.sh puts back the gpsd settings found here
+# (or gpsd's standard ones, if it wasn't installed).
+- name: Keep a copy of this computer's gpsd settings
+  ansible.builtin.shell: |
+    set -e
+    [ -f /etc/default/gpsd ] || exit 0  # no gpsd yet
+    grep -q "Emcomm-CNC" /etc/default/gpsd && exit 0  # already ours: the copy was made before
+    cp /etc/default/gpsd /etc/emcomm/before/gpsd
+  args:
+    creates: /etc/emcomm/before/gpsd
+  when: station_mode == 'desktop'
+
+- name: Install gpsd
   ansible.builtin.apt:
-    name: [gpsd, gpsd-clients, chrony]
+    name: [gpsd, gpsd-clients]
     install_recommends: false
+
 
 - name: Point gpsd at /dev/gps0 only, so it never opens the radio's ports
   ansible.builtin.copy:
@@ -80,17 +93,26 @@
     mode: "0644"
   notify: Restart gpsd
 
+# A desktop keeps its own clock (Ubuntu's timesyncd would be replaced by chrony).
 - name: Let chrony take the time from the GPS
-  ansible.builtin.copy:
-    content: |
-      # Written by the Emcomm-CNC playbook. GPS time over USB, without PPS, is good to
-      # a few tens of milliseconds: plenty for digital modes, and it works offline.
-      refclock SHM 0 refid GPS precision 1e-1 offset 0.1 delay 0.2
-      # Step the clock at any time if it's more than a second out (a flat CMOS battery).
-      makestep 1 -1
-    dest: /etc/chrony/conf.d/emcomm-gps.conf
-    mode: "0644"
-  notify: Restart chrony
+  when: station_mode == 'kiosk'
+  block:
+    - name: Install chrony
+      ansible.builtin.apt:
+        name: chrony
+        install_recommends: false
+
+    - name: Point chrony at the GPS
+      ansible.builtin.copy:
+        content: |
+          # Written by the Emcomm-CNC playbook. GPS time over USB, without PPS, is good to
+          # a few tens of milliseconds: plenty for digital modes, and it works offline.
+          refclock SHM 0 refid GPS precision 1e-1 offset 0.1 delay 0.2
+          # Step the clock at any time if it's more than a second out (a flat CMOS battery).
+          makestep 1 -1
+        dest: /etc/chrony/conf.d/emcomm-gps.conf
+        mode: "0644"
+      notify: Restart chrony
 
 # NOAA Weather Radio alerts with no internet: an RTL-SDR dongle on 162 MHz, decoded
 # by multimon-ng. The service waits quietly until a channel is picked on the

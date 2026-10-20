@@ -1,0 +1,74 @@
+---
+# Desktop mode: Emcomm-CNC on a Debian or Ubuntu computer that's already in use.
+# The person's own desktop, login screen, boot and clock are left alone; this adds
+#  - an Emcomm-CNC app in the app menu (the launcher, full screen, with Exit), and
+#  - an Emcomm-CNC session on the login screen: the station's kiosk (Openbox,
+#    Home bar) for as long as they're logged into it.
+# uninstall-desktop.sh takes all of it away again.
+
+- name: Install the Emcomm-CNC session script
+  ansible.builtin.copy:
+    src: emcomm-session
+    dest: /usr/local/bin/emcomm-session
+    mode: "0755"
+
+- name: Create the session's Openbox settings folder
+  ansible.builtin.file:
+    path: /usr/share/emcomm/openbox
+    state: directory
+    mode: "0755"
+
+# The session's own Openbox settings, so an Openbox the person already uses keeps theirs.
+- name: Start the session's Openbox settings from the system's
+  ansible.builtin.copy:
+    src: /etc/xdg/openbox/rc.xml
+    dest: /usr/share/emcomm/openbox/rc.xml
+    remote_src: true
+    force: false
+    mode: "0644"
+
+- name: Open apps maximized in the session
+  ansible.builtin.blockinfile:
+    path: /usr/share/emcomm/openbox/rc.xml
+    insertbefore: "^</applications>"
+    marker: "<!-- {mark} emcomm-station: managed by the playbook -->"
+    block: |
+      <application type="normal">
+        <maximized>yes</maximized>
+      </application>
+      <application class="Onboard">
+        <maximized>no</maximized>
+      </application>
+
+- name: Add the Emcomm-CNC session to the login screen
+  ansible.builtin.copy:
+    dest: /usr/share/xsessions/emcomm-cnc.desktop
+    content: |
+      [Desktop Entry]
+      Name=Emcomm-CNC
+      Comment=The emcomm station, full screen. Exit on the Power button logs out.
+      Exec=/usr/local/bin/emcomm-session
+      Type=Application
+      DesktopNames=Emcomm-CNC
+    mode: "0644"
+
+- name: Install the Emcomm-CNC app icon
+  ansible.builtin.copy:
+    src: emcomm-cnc.svg
+    dest: /usr/share/icons/hicolor/scalable/apps/emcomm-cnc.svg
+    mode: "0644"
+
+- name: Add Emcomm-CNC to the app menu
+  ansible.builtin.copy:
+    dest: /usr/share/applications/emcomm-cnc.desktop
+    content: |
+      [Desktop Entry]
+      Name=Emcomm-CNC
+      GenericName=Emcomm station
+      Comment=Radio apps, settings and logs for emergency communications
+      Exec=/usr/local/bin/emcomm-launcher
+      Icon=emcomm-cnc
+      Terminal=false
+      Type=Application
+      Categories=HamRadio;Network;
+    mode: "0644"

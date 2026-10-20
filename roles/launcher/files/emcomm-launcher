@@ -19,6 +19,7 @@ import signal
 import socket
 import string
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -66,6 +67,24 @@ THEMES = {
 THEME_PATH = os.path.expanduser("~/.config/emcomm/theme")
 DISPLAY_PATH = os.path.expanduser("~/.config/emcomm/display.json")
 DISPLAY_CMD = os.environ.get("EMCOMM_DISPLAY", "emcomm-display")
+# "kiosk" (a dedicated station) or "desktop" (a computer already in use; see install-desktop.sh).
+MODE_PATH = os.environ.get("EMCOMM_MODE", "/etc/emcomm/mode")
+# Desktop mode: when the radio is every app's speaker and microphone (Settings > Audio),
+# and the computer's own sound settings to put back.
+AUDIO_PATH = os.path.expanduser("~/.config/emcomm/audio.json")
+AUDIO_BEFORE = os.path.expanduser("~/.local/state/emcomm/audio-before.json")
+AUDIO_CHOICES = [
+    ("while_open", "Only while Emcomm-CNC is open (recommended)",
+     "Open Emcomm-CNC and the radio becomes the speaker and microphone, so every radio app reaches it. "
+     "Exit and your computer's own speaker and microphone come back."),
+    ("always", "Always",
+     "The radio stays the speaker and microphone after you exit too, as on a dedicated station. "
+     "Every sound the computer makes goes to the radio."),
+    ("never", "Never",
+     "Your computer's sound is left alone. Set each radio app to the radio's sound card in its own "
+     "settings (VARA, fldigi, WSJT-X, JS8Call, Direwolf)."),
+]
+EXIT_LOG_OUT = 10  # exit status that ends the Emcomm-CNC login session (see emcomm-session)
 KEYBOARD_CMD = os.environ.get("EMCOMM_KEYBOARD", "onboard").split()
 TEXT_SIZES = [(1.0, "Normal"), (1.25, "Large"), (1.5, "Extra large")]
 ROTATIONS = [("normal", "Normal"), ("left", "Turned left"), ("right", "Turned right"), ("inverted", "Upside down")]
@@ -184,6 +203,83 @@ def read_json(path, default):
 
 def load_config():
     return read_json(CONFIG_PATH, {"apps": []})
+
+
+def station_mode():
+    try:
+        with open(MODE_PATH, encoding="utf-8") as f:
+            return "desktop" if f.read().strip() == "desktop" else "kiosk"
+    except OSError:
+        return "kiosk"
+
+
+def load_audio_settings():
+    settings = {"radio_default": "while_open", "quiet": True}
+    saved = read_json(AUDIO_PATH, {})
+    if isinstance(saved, dict):
+        settings.update({k: v for k, v in saved.items() if k in settings})
+    if settings["radio_default"] not in [c[0] for c in AUDIO_CHOICES]:
+        settings["radio_default"] = "while_open"
+    return settings
+
+
+def pactl(*args):
+    try:
+        result = subprocess.run(["pactl", *args], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def sound_names():
+    """{node name: description} for every speaker and microphone PipeWire knows."""
+    names = {}
+    for kind in ("sinks", "sources"):
+        try:
+            for node in json.loads(pactl("-f", "json", "list", kind) or "[]"):
+                names[node.get("name")] = node.get("description") or node.get("name")
+        except (ValueError, AttributeError):
+            pass
+    return names
+
+
+def alert_sounds(on=None):
+    """GNOME's (and Ubuntu's) alert sounds: on or off now, or switch them. None if there are none."""
+    key = ["org.gnome.desktop.sound", "event-sounds"]
+    try:
+        if on is not None:
+            subprocess.run(["gsettings", "set", *key, "true" if on else "false"],
+                           capture_output=True, timeout=5, check=False)
+        out = subprocess.run(["gsettings", "get", *key], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return {"true": True, "false": False}.get(out.stdout.strip())
+
+
+def save_sound_before():
+    """Note the computer's own speaker, microphone and alert sounds, once, before the radio takes over."""
+    if os.path.exists(AUDIO_BEFORE):
+        return
+    write_json(AUDIO_BEFORE, {"sink": pactl("get-default-sink"), "source": pactl("get-default-source"),
+                              "alert_sounds": alert_sounds()})
+
+
+def restore_sound_before(devices=True):
+    """Put the computer's own sound back (devices=False: only the alert sounds) and forget it."""
+    before = read_json(AUDIO_BEFORE, None)
+    if not isinstance(before, dict):
+        return
+    if devices:
+        if before.get("sink"):
+            pactl("set-default-sink", before["sink"])
+        if before.get("source"):
+            pactl("set-default-source", before["source"])
+    if before.get("alert_sounds") is not None:
+        alert_sounds(before["alert_sounds"])
+    try:
+        os.remove(AUDIO_BEFORE)
+    except OSError:
+        pass
 
 
 def load_station():
@@ -1158,6 +1254,8 @@ class HomeBar(Gtk.Window):
     def __init__(self, launcher):
         super().__init__(title="Emcomm-CNC Home bar")
         self.launcher = launcher
+        # A desktop has its own taskbar to get back to the launcher.
+        self.enabled = not launcher.desktop or launcher.session
         self.set_type_hint(Gdk.WindowTypeHint.DOCK)
         self.set_decorated(False)
         self.set_keep_above(True)
@@ -1191,7 +1289,8 @@ class HomeBar(Gtk.Window):
         self.rec.connect("clicked", lambda *_: launcher.show_page("recorder"))
         box.pack_end(self.rec, False, False, 0)
         self.add(box)
-        GLib.timeout_add(1500, self.refresh_apps)
+        if self.enabled:
+            GLib.timeout_add(1500, self.refresh_apps)
         screen = self.get_screen()
         screen.connect("size-changed", lambda *_: self.place())
         screen.connect("monitors-changed", lambda *_: self.place())
@@ -1241,6 +1340,8 @@ class HomeBar(Gtk.Window):
 
     def place(self):
         """Fit the bar to the top of the main screen, and keep apps from covering it."""
+        if not self.enabled:
+            return
         display = Gdk.Display.get_default()
         monitor = display.get_primary_monitor() or display.get_monitor(0)
         if not monitor:
@@ -1267,6 +1368,16 @@ class Launcher(Gtk.Window):
     def __init__(self, config):
         super().__init__(title="Emcomm-CNC")
         self.config = config
+        self.desktop = station_mode() == "desktop"
+        # The Emcomm-CNC session on a desktop's login screen works like the kiosk.
+        self.session = self.desktop and os.environ.get("EMCOMM_SESSION") == "1"
+        self.exit_status = 0
+        self.audio = load_audio_settings()
+        if self.desktop:
+            for app in self.config.get("apps", []):
+                app.update(app.pop("desktop", None) or {})
+            # The computer's own sound from a run that ended without putting it back.
+            restore_sound_before()
         self.station = load_station()
         self.presets = load_presets()
         self.models = load_hamlib_models()
@@ -1576,7 +1687,14 @@ class Launcher(Gtk.Window):
         """Each time the radio's sound card appears, make it the default audio device.
         Retried on later polls until PipeWire has picked the card up."""
         card = os.path.realpath("/proc/asound/rigaudio") if audio else None
+        choice = self._audio_choice()
+        if choice == "never":
+            return
         if card and card != self.default_audio_card and shutil.which("emcomm-audio-default"):
+            if choice == "while_open":
+                save_sound_before()
+                if self.audio["quiet"]:
+                    alert_sounds(False)  # so a notification ding isn't transmitted
             result = subprocess.run(["emcomm-audio-default"], capture_output=True, check=False)
             if result.returncode == 0:
                 self.default_audio_card = card
@@ -2290,6 +2408,10 @@ class Launcher(Gtk.Window):
             where = "Couldn't read the screen, so only colours and text size can change."
             mode.set_sensitive(False)
             rotate.set_sensitive(False)
+        if self.desktop and not self.session:
+            where = "Your desktop's own display settings set the resolution and rotation."
+            mode.set_sensitive(False)
+            rotate.set_sensitive(False)
         note = Gtk.Label(label=where + " A touchscreen turns with the screen. Large text needs a screen bigger "
                          "than 1024 × 600.", xalign=0, wrap=True, max_width_chars=50)
         note.get_style_context().add_class("muted")
@@ -2305,6 +2427,9 @@ class Launcher(Gtk.Window):
         if new_theme != self.theme:
             self._set_theme(new_theme)
         if new == old:
+            return
+        if self.desktop and not self.session:
+            self._apply_display(new)  # text size only
             return
         error = self._apply_display(new)
         if error:
@@ -2322,6 +2447,9 @@ class Launcher(Gtk.Window):
             with open(DISPLAY_PATH + ".tmp", "w", encoding="utf-8") as f:
                 json.dump(config, f)
             os.replace(DISPLAY_PATH + ".tmp", DISPLAY_PATH)
+            if self.desktop and not self.session:
+                self._set_text_scale(config["text_scale"])
+                return None
             result = subprocess.run([DISPLAY_CMD, "apply"], capture_output=True, text=True, timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             return str(exc)
@@ -2516,6 +2644,8 @@ class Launcher(Gtk.Window):
                     wmctrl("-i", "-a", hex(win["id"]))
                     return
             self.started[app.get("code")] = run_detached(app.get("run") or [app["command"]]).pid
+            if self.desktop and not self.session:
+                self.iconify()  # a desktop may open the app behind a full-screen window
             return
         if self._confirm(f"Install {app['name']}?",
                          "It's downloaded from the internet, which takes a few minutes."):
@@ -2544,7 +2674,21 @@ class Launcher(Gtk.Window):
                          "Downloads the latest Emcomm-CNC and installs any missing apps. Settings are kept. "
                          "The home screen restarts when it's done."):
             # The kiosk's autostart loop starts the new launcher after this one quits.
-            self._run_in_terminal("Updating the station", UPDATE_CMD, Gtk.main_quit)
+            self._run_in_terminal("Updating the station", UPDATE_CMD, self._restart)
+
+    def _restart(self):
+        """Start the newly installed launcher. The kiosk and the desktop session start it again
+        when this one quits; opened from a desktop's app menu, it starts itself."""
+        if self.desktop and not self.session:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        self.quit()
+
+    def quit(self, status=0):
+        """Leave the launcher, giving back the computer's own sound (Settings > Audio)."""
+        self.exit_status = status
+        if self.desktop and self._audio_choice() == "while_open":
+            restore_sound_before()
+        Gtk.main_quit()
 
     def _navbtn(self, label, handler, extra_class=None):
         btn = Gtk.Button(label=label)
@@ -2556,11 +2700,16 @@ class Launcher(Gtk.Window):
 
     def _power_dialog(self, *_):
         dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
-                                   text="Shut down the station?")
-        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Restart", 1, "Shut down", 2)
+                                   text="Leave Emcomm-CNC?" if self.desktop else "Shut down the station?")
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL)
+        if self.desktop:
+            dialog.add_buttons("Log out" if self.session else "Exit Emcomm-CNC", 3)
+        dialog.add_buttons("Restart", 1, "Shut down", 2)
         response = dialog.run()
         dialog.destroy()
-        if response == 1:
+        if response == 3:
+            self.quit(EXIT_LOG_OUT if self.session else 0)
+        elif response == 1:
             run_detached(["systemctl", "reboot"])
         elif response == 2:
             run_detached(["systemctl", "poweroff"])
@@ -2607,8 +2756,9 @@ class Launcher(Gtk.Window):
             ("KEY", "Accounts", "QRZ, HamQTH, aprs.fi, email", self._edit_accounts),
             ("BAK", "Backup", "Save to or restore from USB", self._backup_dialog),
             ("UPD", "Update station", "Latest Emcomm-CNC and apps", self._update_station),
-            ("DIA", "Diagnostics", "Check the radio's connections", show("diagnostics")),
-            ("PWR", "Power", "Restart or shut down", self._power_dialog),
+            ("AUD", "Audio", "Radio sound card, speaker and mic", show("audio")),
+            ("PWR", "Power", "Exit, restart or shut down" if self.desktop else "Restart or shut down",
+             self._power_dialog),
             ("ARR", "Home tiles", "Arrange and group the apps", lambda: self._arrange(True)),
         ]
         grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
@@ -2620,9 +2770,125 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._station_user_page(), "station-user")
         self.stack.add_named(self._station_radio_page(), "station-radio")
         self.stack.add_named(self._station_devices_page(), "station-devices")
+        self.stack.add_named(self._audio_page(), "audio")
         self.serial_ports, self.sound_cards = detect_devices()
         self._fill_settings()
         return page
+
+    # ---- audio ---------------------------------------------------------
+
+    def _audio_choice(self):
+        """When the radio is every app's speaker and microphone: always on a station."""
+        return self.audio["radio_default"] if self.desktop else "always"
+
+    def _audio_page(self):
+        """Settings > Audio: the radio's sound card, and (desktop) when it's every app's sound card."""
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Settings", lambda *_: self.stack.set_visible_child_name("settings")),
+                          False, False, 0)
+        title = Gtk.Label(label="Audio", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        header.pack_end(self._navbtn("Sound levels", lambda *_: run_detached(["pavucontrol"])), False, False, 0)
+        page.pack_start(header, False, False, 0)
+        # Scrolls if the text is large: the page can't be taller than the screen.
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroll.add(body)
+        page.pack_start(scroll, True, True, 0)
+
+        now = self._section("Radio sound card")
+        self.audio_radio_label = Gtk.Label(xalign=0, wrap=True)
+        self.audio_now_label = Gtk.Label(xalign=0, wrap=True)
+        self.audio_now_label.get_style_context().add_class("muted")
+        now.pack_start(self.audio_radio_label, False, False, 0)
+        now.pack_start(self.audio_now_label, False, False, 0)
+        body.pack_start(now, False, False, 0)
+
+        when = self._section("When the radio is every app's speaker and microphone")
+        if not self.desktop:
+            note = Gtk.Label(xalign=0, wrap=True, label=(
+                "Always, on this station. The radio apps (fldigi, WSJT-X, JS8Call, Direwolf, VARA) use the "
+                "computer's speaker and microphone, so with the radio as both they need no sound settings "
+                "of their own."))
+            when.pack_start(note, False, False, 0)
+        else:
+            intro = Gtk.Label(xalign=0, wrap=True, label=(
+                "The radio apps (fldigi, WSJT-X, JS8Call, Direwolf, VARA) use the computer's speaker and "
+                "microphone. Emcomm-CNC makes the radio's sound card both, so they all reach the radio "
+                "without setting each one up."))
+            intro.get_style_context().add_class("muted")
+            when.pack_start(intro, False, False, 0)
+            self.audio_buttons, group = {}, None
+            for value, label, detail in AUDIO_CHOICES:
+                btn = Gtk.RadioButton.new_with_label_from_widget(group, label)
+                group = group or btn
+                btn.get_child().get_style_context().add_class("tile-name")
+                btn.connect("toggled", lambda b, v=value: b.get_active() and self._set_audio_choice(v))
+                explain = Gtk.Label(label=detail, xalign=0, wrap=True, margin_start=30)
+                explain.get_style_context().add_class("muted")
+                when.pack_start(btn, False, False, 0)
+                when.pack_start(explain, False, False, 0)
+                self.audio_buttons[value] = btn
+            self.audio_quiet = Gtk.CheckButton(
+                label="Silence desktop alert sounds while the radio is the speaker, so they aren't transmitted")
+            self.audio_quiet.connect("toggled", lambda b: self._set_audio_quiet(b.get_active()))
+            when.pack_start(self.audio_quiet, False, False, 6)
+        body.pack_start(when, False, False, 0)
+        page.connect("map", lambda *_: self._audio_refresh())
+        return page
+
+    def _audio_refresh(self):
+        if self.desktop:
+            self._filling = True
+            self.audio_buttons[self.audio["radio_default"]].set_active(True)
+            self.audio_quiet.set_active(self.audio["quiet"])
+            self.audio_quiet.set_sensitive(self.audio["radio_default"] == "while_open")
+            self._filling = False
+        ok, muted = self.colours["ok"], self.colours["muted"]
+        if os.path.exists("/proc/asound/rigaudio"):
+            self.audio_radio_label.set_markup(f"<span foreground='{ok}'>●</span>  The radio's sound card is "
+                                              "plugged in.")
+        else:
+            self.audio_radio_label.set_markup(
+                f"<span foreground='{muted}'>○</span>  No radio sound card found. Plug in the radio's USB "
+                "audio (a Digirig, or the radio's own USB port) and pick it under Settings > Radio.")
+        names = sound_names()
+        sink, source = pactl("get-default-sink"), pactl("get-default-source")
+        if sink or source:
+            text = (f"Speaker now: {names.get(sink, sink or 'none')}.  "
+                    f"Microphone now: {names.get(source, source or 'none')}.")
+            if self.desktop and os.path.exists(AUDIO_BEFORE):
+                before = read_json(AUDIO_BEFORE, {})
+                text += (f" When you exit: {names.get(before.get('sink'), before.get('sink') or 'none')} and "
+                         f"{names.get(before.get('source'), before.get('source') or 'none')}.")
+        else:
+            text = "Couldn't read the sound settings (is PipeWire running?)."
+        self.audio_now_label.set_text(text)
+
+    def _set_audio_choice(self, value):
+        if self._filling or value == self.audio["radio_default"]:
+            return
+        self.audio["radio_default"] = value
+        write_json(AUDIO_PATH, self.audio)
+        if value == "never":
+            restore_sound_before()  # the computer's own speaker and microphone, now
+        elif value == "always":
+            restore_sound_before(devices=False)  # the radio stays; alert sounds come back
+        self.default_audio_card = None  # the next status check applies it
+        self._poll_status()
+        GLib.timeout_add(1500, lambda: self._audio_refresh() and False)
+        self._audio_refresh()
+
+    def _set_audio_quiet(self, quiet):
+        if self._filling:
+            return
+        self.audio["quiet"] = quiet
+        write_json(AUDIO_PATH, self.audio)
+        before = read_json(AUDIO_BEFORE, None)
+        if isinstance(before, dict) and before.get("alert_sounds") is not None:
+            alert_sounds(False if quiet else before["alert_sounds"])
 
     def _settings_tile(self, code, name, detail, handler):
         btn = Gtk.Button()
@@ -4702,12 +4968,17 @@ class Launcher(Gtk.Window):
 
 
 def main():
+    GLib.set_prgname("emcomm-cnc")  # matches the desktop's app menu entry (emcomm-cnc.desktop)
     win = Launcher(load_config())
-    win.connect("destroy", Gtk.main_quit)
+    win.connect("destroy", lambda *_: win.quit(win.exit_status))
+    # Logging out or a kill: still give the computer its own sound back.
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, lambda *_: win.quit() or False)
     if not os.environ.get("EMCOMM_LAUNCHER_WINDOWED"):
         win.fullscreen()
     win.show_all()
-    win.home_bar.show_all()
+    if win.home_bar.enabled:
+        win.home_bar.show_all()
     if win.station.get("callsign", "N0CALL") == "N0CALL":
         # First boot: ask for callsign and radio before anything else.
         win.stack.set_visible_child_name("station-user")
@@ -4715,6 +4986,7 @@ def main():
             "Welcome. Type your callsign and grid square and save, then set up the radio under "
             "Settings > Radio.", None) and False)
     Gtk.main()
+    sys.exit(win.exit_status)
 
 
 if __name__ == "__main__":
