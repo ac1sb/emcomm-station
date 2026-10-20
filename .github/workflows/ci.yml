@@ -28,7 +28,7 @@ jobs:
           roles/apps/files/emcomm-app-setup roles/apps/files/emcomm-webview roles/radio/files/emcomm-audio-default
           roles/apps/files/emcomm-map roles/apps/files/emcomm-map-prepare roles/launcher/files/emcomm-online
           roles/launcher/files/emcomm-ics roles/radio/files/emcomm-nwr roles/apps/files/emcomm-library
-          roles/launcher/files/emcomm-backup roles/radio/files/emcomm-recorder roles/kiosk/files/emcomm-display
+          roles/launcher/files/emcomm-backup roles/radio/files/emcomm-recorder roles/radio/files/emcomm-stream roles/kiosk/files/emcomm-display
       - name: Helper tests
         run: |
           python tests/test_apply_settings.py
@@ -40,3 +40,4 @@ jobs:
           python tests/test_backup.py
           python tests/test_recorder.py
           python tests/test_display.py
+          python tests/test_stream.py

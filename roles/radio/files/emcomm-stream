@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Stream the radio's receive audio to a Broadcastify feed (or any Icecast server).
+
+  emcomm-stream run      stream until stopped (SIGTERM), reconnecting if the link drops
+  emcomm-stream check    say whether the feed settings are complete
+
+The feed's settings come from ~/.config/emcomm/broadcastify.json, written by the
+launcher's Recorder page from what Broadcastify gives you when your feed is approved:
+  {"server": "audio9.broadcastify.com", "port": 80, "mount": "abcd1234", "password": "..."}
+Audio goes out as Broadcastify asks: MP3, 16 kbit/s, mono, 22.05 kHz. It's read
+through PipeWire, so the recorder and other apps can use the radio's audio too.
+"""
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import urllib.parse
+
+CONFIG = os.path.expanduser("~/.config/emcomm/broadcastify.json")
+STATUS = os.path.expanduser("~/.local/state/emcomm/stream.json")
+LIVE_AFTER = 8          # seconds ffmpeg has to keep going before the feed counts as live
+RETRY = (5, 10, 30, 60)  # seconds between reconnects, the last one repeated
+
+
+def load_config(path=None):
+    try:
+        with open(path or CONFIG, encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def problem(config):
+    """What's missing from the feed settings, or None if they're complete."""
+    for key, name in (("server", "server"), ("mount", "mount"), ("password", "password")):
+        if not str(config.get(key) or "").strip():
+            return f"The Broadcastify {name} isn't filled in."
+    try:
+        port = int(config.get("port") or 80)
+    except (TypeError, ValueError):
+        return "The Broadcastify port should be a number, usually 80."
+    if not 0 < port < 65536:
+        return "The Broadcastify port should be a number, usually 80."
+    return None
+
+
+def icecast_url(config):
+    server = re.sub(r"^\w+://", "", str(config["server"]).strip()).strip("/")
+    mount = str(config["mount"]).strip().strip("/")
+    password = urllib.parse.quote(str(config["password"]).strip(), safe="")
+    return f"icecast://source:{password}@{server}:{int(config.get('port') or 80)}/{mount}"
+
+
+def ffmpeg_args(config):
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-f", "pulse", "-i", "default",
+            "-ac", "1", "-ar", "22050", "-c:a", "libmp3lame", "-b:a", "16k",
+            "-content_type", "audio/mpeg", "-ice_name", str(config.get("name") or "Emcomm-CNC station"),
+            "-f", "mp3", icecast_url(config)]
+
+
+def explain(stderr):
+    """A short reason from ffmpeg's error output."""
+    text = stderr.lower()
+    if "401" in text or "unauthorized" in text:
+        return "Broadcastify refused the password or mount. Check them on the Recorder page."
+    if "403" in text or "forbidden" in text:
+        return "Broadcastify refused the feed (is another source already connected to it?)."
+    if "name or service not known" in text or "failed to resolve" in text:
+        return "Can't reach the Broadcastify server: no internet, or the server name is wrong."
+    if "connection refused" in text or "timed out" in text or "network is unreachable" in text:
+        return "Can't reach the Broadcastify server."
+    if "pulse" in text or "error opening input" in text:
+        return "No audio from the radio's sound card."
+    lines = [line for line in stderr.strip().splitlines() if line.strip()]
+    return lines[-1][:120] if lines else "The stream stopped."
+
+
+def write_status(**status):
+    os.makedirs(os.path.dirname(STATUS), exist_ok=True)
+    with open(STATUS + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(dict(status, pid=os.getpid(), time=int(time.time())), f)
+    os.replace(STATUS + ".tmp", STATUS)
+
+
+def run():
+    config = load_config()
+    missing = problem(config)
+    if missing:
+        write_status(live=False, error=missing)
+        return 1
+    stopping = []
+    proc = None
+
+    def stop(*_):
+        stopping.append(1)
+        if proc and proc.poll() is None:
+            proc.terminate()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    failures = 0
+    try:
+        while not stopping:
+            write_status(live=False, connecting=True)
+            started = time.time()
+            proc = subprocess.Popen(ffmpeg_args(config), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                    text=True)
+            live_marked = False
+            while proc.poll() is None and not stopping:
+                if not live_marked and time.time() - started >= LIVE_AFTER:
+                    write_status(live=True, since=int(started))
+                    live_marked = True
+                    failures = 0
+                time.sleep(0.5)
+            if stopping:
+                break
+            reason = explain(proc.stderr.read() if proc.stderr else "")
+            if "refused the password" in reason:
+                write_status(live=False, error=reason)
+                return 1  # retrying won't fix a wrong password
+            wait = RETRY[min(failures, len(RETRY) - 1)]
+            failures += 1
+            write_status(live=False, error=f"{reason.rstrip('.')}. Trying again in {wait} s.")
+            for _ in range(wait * 2):
+                if stopping:
+                    break
+                time.sleep(0.5)
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        if stopping:
+            try:
+                os.remove(STATUS)
+            except OSError:
+                pass
+    return 0
+
+
+def main(argv):
+    if argv == ["run"]:
+        return run()
+    if argv == ["check"]:
+        missing = problem(load_config())
+        print(missing or "ok")
+        return 1 if missing else 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -862,14 +862,51 @@ RECORDER_STATUS = os.path.expanduser("~/.local/state/emcomm/recorder.json")
 RECORDINGS = os.path.expanduser("~/Recordings")
 
 
-def recorder_status():
-    """The running recorder's state, or None if it isn't running."""
-    status = read_json(RECORDER_STATUS, None)
+# Streaming to Broadcastify: emcomm-stream, with the feed's details in STREAM_CONFIG.
+# RECORDER_SETTINGS says what to start with the station: {"at_start", "mode", "stream_at_start"}.
+STREAM_CMD = os.environ.get("EMCOMM_STREAM", "emcomm-stream")
+STREAM_STATUS = os.path.expanduser("~/.local/state/emcomm/stream.json")
+STREAM_CONFIG = os.path.expanduser("~/.config/emcomm/broadcastify.json")
+RECORDER_SETTINGS = os.path.expanduser("~/.config/emcomm/recorder.json")
+
+
+def running_status(path):
+    """The state a helper (recorder or stream) keeps in path, or None if it isn't running."""
+    status = read_json(path, None)
     try:
         os.kill(int(status["pid"]), 0)
     except (TypeError, KeyError, ValueError, OSError):
         return None
     return status
+
+
+def recorder_status():
+    """The running recorder's state, or None if it isn't running."""
+    return running_status(RECORDER_STATUS)
+
+
+def stream_status():
+    """The running Broadcastify stream's state, or None if it isn't running."""
+    return running_status(STREAM_STATUS)
+
+
+def stream_problem():
+    """What's missing from the Broadcastify feed settings, or None if they're complete."""
+    feed = read_json(STREAM_CONFIG, {})
+    if not isinstance(feed, dict):
+        return "not set up"
+    for key in ("server", "mount", "password"):
+        if not str(feed.get(key) or "").strip():
+            return f"no {key}"
+    return None
+
+
+def write_json(path, data, private=False):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+    os.replace(path + ".tmp", path)
 
 
 def recordings(limit=200):
@@ -889,6 +926,7 @@ def recordings(limit=200):
 # emcomm-ics turns a net into an ICS 309 and My frequencies into an ICS 205.
 NETS_DIR = os.path.expanduser("~/.local/share/emcomm/nets")
 ICS_CMD = os.environ.get("EMCOMM_ICS", "emcomm-ics")
+ICS213_BLANK = os.path.join(os.environ.get("EMCOMM_FORMS", "/usr/share/emcomm/forms"), "ics213.pdf")
 
 
 # ICS-213 messages: flmsg's files, shown on FEMA's form (emcomm-ics fills in the PDF).
@@ -967,6 +1005,11 @@ class HomeBar(Gtk.Window):
         self.clock = Gtk.Label()
         self.clock.get_style_context().add_class("homebar-clock")
         box.pack_end(self.clock, False, False, 0)
+        # Recording (and Broadcastify) at a glance, from any app; tap for the Recorder page.
+        self.rec = Gtk.Button(label="Rec")
+        self.rec.get_style_context().add_class("navbtn")
+        self.rec.connect("clicked", lambda *_: launcher.show_page("recorder"))
+        box.pack_end(self.rec, False, False, 0)
         self.add(box)
         GLib.timeout_add(1500, self.refresh_apps)
         screen = self.get_screen()
@@ -1092,13 +1135,18 @@ class Launcher(Gtk.Window):
         GLib.timeout_add_seconds(600, self._background_online)
         self.connect("key-press-event", self._on_key)
         self.home_bar = HomeBar(self)
+        GLib.timeout_add_seconds(8, self._recorder_autostart)
         # A keyboard left over from before the launcher restarted would not hide from here.
         subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "onboard"], capture_output=True, check=False)
         self._watch_text_entries()
 
     def go_home(self):
         """Bring the launcher back in front of any app, on its Home page."""
-        self.stack.set_visible_child_name("home")
+        self.show_page("home")
+
+    def show_page(self, name):
+        """Bring the launcher back in front of any app, on the page given."""
+        self.stack.set_visible_child_name(name)
         self.deiconify()
         self._set_fullscreen(not self._keyboard_shown())
         self.present_with_time(Gtk.get_current_event_time())
@@ -1274,10 +1322,25 @@ class Launcher(Gtk.Window):
 
     def _tick_clock(self):
         self.clock.set_text(time.strftime("%H:%M UTC", time.gmtime()))
+        rec = self._rec_markup()
+        self.rec_status.set_markup(rec)
         if getattr(self, "home_bar", None):
             now = time.strftime("%H:%M:%S UTC", time.gmtime())
             self.home_bar.clock.set_text(f"{self.station.get('callsign', '')}   {now}")
+            self.home_bar.rec.get_child().set_markup(rec)
         return True
+
+    def _rec_markup(self):
+        """● Rec in red while recording, ○ Rec when not; ● Live while streaming to Broadcastify."""
+        red, muted = self.colours["danger"], self.colours["muted"]
+        text = (f"<span foreground='{red}'>●</span>  Rec" if recorder_status()
+                else f"<span foreground='{muted}'>○  Rec</span>")
+        stream = stream_status()
+        if stream and stream.get("live"):
+            text += f"   <span foreground='{red}'>●</span>  Live"
+        elif stream:
+            text += f"   <span foreground='{muted}'>◌  Live</span>"
+        return text
 
     def _poll_status(self):
         def work():
@@ -1360,11 +1423,6 @@ class Launcher(Gtk.Window):
         self.net_connected = bool(net and net[1])
         self._show_gps(gps)
         self._check_radio_alerts()
-        running = recorder_status()
-        if running:
-            self.rec_status.set_markup(f"<span foreground='{self.colours['danger']}'>●</span>  Recording")
-        else:
-            self.rec_status.set_text("")
         self.net_status.set_visible(bool(net))
         self._refresh_tiles()
         return False
@@ -2448,11 +2506,18 @@ class Launcher(Gtk.Window):
             box.pack_start(note, False, False, 0)
             row.add(box)
             self.f213_list.add(row)
+        if not found:
+            hint = Gtk.Label(xalign=0, wrap=True, margin=12, label=(
+                "No ICS-213 messages yet.\n\nTap New message to write one in flmsg, then save it there. "
+                "Messages fldigi receives show here too.\n\nThis is the blank form; Print gives you paper copies."))
+            hint.get_style_context().add_class("muted")
+            row = Gtk.ListBoxRow(selectable=False, activatable=False)
+            row.add(hint)
+            self.f213_list.add(row)
         self.f213_list.show_all()
         if not found:
+            self.f213_status.set_text("")
             self._ics213_show(None)
-            self.f213_status.set_text("No messages yet. Tap New message to write one in flmsg; "
-                                      "messages fldigi receives show here too.")
             return
         rows = self.f213_list.get_children()
         pick = next((r for r in rows if r.message["path"] == keep), rows[0])
@@ -2465,31 +2530,31 @@ class Launcher(Gtk.Window):
             self._ics213_show(row.message["path"])
 
     def _ics213_show(self, path):
-        """Fill FEMA's form from the flmsg file and draw it."""
+        """Fill FEMA's form from the flmsg file and draw it; with no file, draw the blank form."""
         self.f213_path, self.f213_doc = path, None
+        pdf = ICS213_BLANK
         if path:
+            pdf = None
             try:
                 result = subprocess.run([ICS_CMD, "213", path], capture_output=True, text=True,
                                         timeout=30, check=False)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                result = None
-                self.f213_status.set_text(f"Couldn't fill in the form: {exc}")
-            if result is not None and result.returncode != 0:
-                self.f213_status.set_text(result.stderr.strip().splitlines()[-1] if result.stderr.strip()
-                                          else "Couldn't fill in the form.")
-            elif result is not None:
-                pdf = result.stdout.strip().splitlines()[-1]
-                self.f213_status.set_text(f"Saved as {pdf.replace(os.path.expanduser('~'), '~')}")
-                if Poppler is None:
-                    self.f213_status.set_text("Can't show the form: gir1.2-poppler-0.18 is missing. "
-                                              "Run Update station.")
+                if result.returncode == 0:
+                    pdf = result.stdout.strip().splitlines()[-1]
+                    self.f213_status.set_text(f"Saved as {pdf.replace(os.path.expanduser('~'), '~')}")
                 else:
-                    try:
-                        self.f213_doc = Poppler.Document.new_from_file(GLib.filename_to_uri(pdf, None), None)
-                    except GLib.Error as exc:
-                        self.f213_status.set_text(f"Couldn't open the form: {exc.message}")
-        for btn in (self.f213_print_btn, self.f213_open_btn):
-            btn.set_sensitive(self.f213_doc is not None)
+                    self.f213_status.set_text(result.stderr.strip().splitlines()[-1] if result.stderr.strip()
+                                              else "Couldn't fill in the form.")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self.f213_status.set_text(f"Couldn't fill in the form: {exc}")
+        if pdf and Poppler is None:
+            self.f213_status.set_text("Can't show the form: gir1.2-poppler-0.18 is missing. Run Update station.")
+        elif pdf:
+            try:
+                self.f213_doc = Poppler.Document.new_from_file(GLib.filename_to_uri(pdf, None), None)
+            except GLib.Error as exc:
+                self.f213_status.set_text(f"Couldn't open the form: {exc.message}")
+        self.f213_print_btn.set_sensitive(self.f213_doc is not None)
+        self.f213_open_btn.set_sensitive(self.f213_doc is not None and path is not None)
         self._ics213_fit()
         self.f213_form.queue_draw()
 
@@ -2581,6 +2646,32 @@ class Launcher(Gtk.Window):
         meter.pack_start(self.rec_level, True, True, 0)
         page.pack_start(meter, False, False, 0)
 
+        settings = read_json(RECORDER_SETTINGS, {})
+        options = Gtk.Box(spacing=12)
+        self.rec_at_start = Gtk.Switch(active=bool(settings.get("at_start")), valign=Gtk.Align.CENTER)
+        self.rec_at_start.connect("notify::active", lambda *_: self._recorder_save_settings())
+        options.pack_start(self.rec_at_start, False, False, 0)
+        options.pack_start(Gtk.Label(label="Start recording when the station starts", xalign=0), False, False, 0)
+        page.pack_start(options, False, False, 0)
+
+        stream = Gtk.Box(spacing=12)
+        stream.get_style_context().add_class("section")
+        name = Gtk.Label(label="Broadcastify", xalign=0)
+        name.get_style_context().add_class("tile-name")
+        stream.pack_start(name, False, False, 0)
+        self.stream_state = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.stream_state.get_style_context().add_class("muted")
+        stream.pack_start(self.stream_state, True, True, 0)
+        self.stream_at_start = Gtk.Switch(active=bool(settings.get("stream_at_start")), valign=Gtk.Align.CENTER,
+                                          tooltip_text="Go live when the station starts")
+        self.stream_at_start.connect("notify::active", lambda *_: self._recorder_save_settings())
+        stream.pack_end(self._navbtn("Feed settings", self._stream_dialog), False, False, 0)
+        self.stream_btn = self._navbtn("Go live", self._stream_toggle, "primary")
+        stream.pack_end(self.stream_btn, False, False, 0)
+        stream.pack_end(Gtk.Label(label="At start-up"), False, False, 0)
+        stream.pack_end(self.stream_at_start, False, False, 0)
+        page.pack_start(stream, False, False, 0)
+
         self.rec_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         scroller = Gtk.ScrolledWindow()
         scroller.add(self.rec_list)
@@ -2588,7 +2679,8 @@ class Launcher(Gtk.Window):
         hint = Gtk.Label(xalign=0, wrap=True, label=(
             "Records the radio's receive audio to ~/Recordings, named with the time and frequency. "
             "\"When there's a signal\" keeps only the parts with audio above the squelch, so hours of monitoring "
-            "take little space. Recordings play on headphones or a speaker, never through the radio."))
+            "take little space. Recordings play on headphones or a speaker, never through the radio. "
+            "Broadcastify streams the same receive audio to your feed while the internet is up."))
         hint.get_style_context().add_class("muted")
         page.pack_start(hint, False, False, 0)
 
@@ -2620,6 +2712,7 @@ class Launcher(Gtk.Window):
             text = "Stopped"
         if not getattr(self, "rec_message_until", 0) > time.time():
             self.rec_page_status.set_text(text)
+        self._stream_show()
         found = recordings()
         stamp = [(p, s) for p, s, _l in found[:50]]
         if stamp != self.rec_listed:
@@ -2659,10 +2752,33 @@ class Launcher(Gtk.Window):
         self.rec_page_status.set_text(text)
         self.rec_message_until = time.time() + 6
 
-    def _recorder_start(self, everything):
+    def _recorder_save_settings(self, mode=None):
+        settings = read_json(RECORDER_SETTINGS, {})
+        if not isinstance(settings, dict):
+            settings = {}
+        settings.update(at_start=self.rec_at_start.get_active(),
+                        stream_at_start=self.stream_at_start.get_active())
+        if mode:
+            settings["mode"] = mode
+        write_json(RECORDER_SETTINGS, settings)
+
+    def _recorder_autostart(self):
+        """Start recording and streaming as the Recorder page's switches ask, after a restart or power cut."""
+        settings = read_json(RECORDER_SETTINGS, {})
+        if not isinstance(settings, dict):
+            return False
+        if settings.get("at_start") and not recorder_status():
+            self._recorder_start(settings.get("mode") == "all", remember=False)
+        if settings.get("stream_at_start") and not stream_status() and stream_problem() is None:
+            self._stream_start()
+        return False
+
+    def _recorder_start(self, everything, remember=True):
         if not shutil.which(RECORDER_CMD):
             self._recorder_message("The recorder isn't installed; tap Update station in Settings.")
             return
+        if remember:
+            self._recorder_save_settings("all" if everything else "voice")
         try:
             os.remove(RECORDER_STATUS)  # a previous run's error
         except OSError:
@@ -2700,6 +2816,89 @@ class Launcher(Gtk.Window):
                 os.remove(path)
             except OSError as exc:
                 self._recorder_message(f"Couldn't delete it: {exc}")
+
+    def _stream_show(self):
+        status = stream_status()
+        last = None if status else read_json(STREAM_STATUS, None)
+        if status and status.get("live"):
+            since = time.strftime("%H:%MZ", time.gmtime(status.get("since") or time.time()))
+            text = f"Live since {since}"
+        elif status and status.get("error"):
+            text = status["error"]
+        elif status:
+            text = "Connecting…"
+        elif isinstance(last, dict) and last.get("error"):
+            text = last["error"]
+        elif stream_problem() is not None:
+            text = "Not set up: tap Feed settings and type in your feed's details."
+        else:
+            text = "Off"
+        self.stream_state.set_text(text)
+        self.stream_btn.set_label("Stop stream" if status else "Go live")
+
+    def _stream_start(self):
+        if not shutil.which(STREAM_CMD) or not shutil.which("ffmpeg"):
+            self._recorder_message("Streaming isn't installed; tap Update station in Settings.")
+            return
+        try:
+            os.remove(STREAM_STATUS)  # a previous run's error
+        except OSError:
+            pass
+        run_detached([STREAM_CMD, "run"])
+
+    def _stream_toggle(self, *_):
+        status = stream_status()
+        if status:
+            try:
+                os.kill(int(status["pid"]), signal.SIGTERM)
+            except OSError:
+                pass
+            return
+        if stream_problem() is not None and not self._stream_dialog():
+            return
+        self._stream_start()
+
+    def _stream_dialog(self, *_):
+        """The feed's details from Broadcastify. Returns True if they were saved."""
+        feed = read_json(STREAM_CONFIG, {})
+        if not isinstance(feed, dict):
+            feed = {}
+        dialog = Gtk.Dialog(title="Broadcastify feed", transient_for=self, modal=True)
+        dialog.set_default_size(720, -1)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        grid = Gtk.Grid(column_spacing=16, row_spacing=10, column_homogeneous=True)
+        widgets = {}
+        for i, (key, label, secret) in enumerate((("server", "Server, e.g. audio9.broadcastify.com", False),
+                                                  ("port", "Port", False), ("mount", "Mount", False),
+                                                  ("password", "Password", True))):
+            entry = Gtk.Entry(visibility=not secret)
+            entry.set_text(str(feed.get(key) or ("80" if key == "port" else "")))
+            widgets[key] = entry
+            grid.attach(self._field(label, entry), i % 2, i // 2, 1, 1)
+        box.pack_start(grid, False, False, 0)
+        hint = Gtk.Label(xalign=0, wrap=True, label=(
+            "Apply for a feed at broadcastify.com (Feed provider). Once it's approved, its technical details "
+            "page lists the server, port, mount and password. The stream sends MP3 at 16 kbit/s mono, "
+            "as Broadcastify asks."))
+        hint.set_max_width_chars(90)
+        hint.get_style_context().add_class("muted")
+        box.pack_start(hint, False, False, 0)
+        dialog.get_content_area().add(box)
+        dialog.show_all()
+        response = dialog.run()
+        values = {key: entry.get_text().strip() for key, entry in widgets.items()}
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return False
+        feed.update(values)
+        try:
+            feed["port"] = int(feed["port"] or 80)
+        except ValueError:
+            pass
+        write_json(STREAM_CONFIG, feed, private=True)  # the password stays readable only by the station user
+        self._stream_show()
+        return True
 
     # ---- wi-fi ---------------------------------------------------------
 

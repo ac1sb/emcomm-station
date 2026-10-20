@@ -87,12 +87,23 @@ environment.
   it; **Print** prints it (or saves a PDF), **Reply or edit in flmsg** opens it in
   flmsg to fill in the reply, and **New message** opens flmsg to write one. The
   filled-in form is also saved as a PDF in `~/ICS forms`.
-- **Recorder** (on the Logs page): records the radio's receive audio to
-  `~/Recordings`, each file named with the UTC time, frequency and mode. **Record
-  when there's a signal** keeps only the parts with audio, so a frequency can be
-  monitored for hours; **Record everything** records continuously in hourly
-  files. The top bar shows "Recording" while it runs. Recordings play on
-  headphones or a speaker, never through the radio, so they can't key it by VOX.
+- **Recorder** (the **Rec** button at the top of the screen, or on the Logs page):
+  records the radio's receive audio to `~/Recordings`, each file named with the
+  UTC time, frequency and mode. **Record when there's a signal** keeps only the
+  parts with audio, so a frequency can be monitored for hours; **Record
+  everything** records continuously in hourly files. Recording starts when you
+  tap one of those and runs until **Stop**; turn on **Start recording when the
+  station starts** to have it come back on by itself after a restart or power
+  cut. **Rec** turns red while it records, in the launcher's top bar and in the
+  Home bar above every app. Recordings play on headphones or a speaker, never
+  through the radio, so they can't key it by VOX.
+- **Broadcastify** (on the Recorder page): streams the same receive audio to a
+  Broadcastify feed. Apply for a feed at broadcastify.com; once it's approved,
+  type its server, port, mount and password into **Feed settings** and tap **Go
+  live**. It sends MP3 at 16 kbit/s mono as Broadcastify asks, reconnects by
+  itself if the internet drops, and **At start-up** brings it back after a
+  restart. **Live** shows next to **Rec** while it streams. The password stays
+  in `~/.config/emcomm/broadcastify.json`, readable only by the station user.
 - **Reference** (F5): the US band plan with a which-band-when guide, emergency and
   calling frequencies (IARU emergency centres of activity, Hurricane Watch Net,
   SATERN, 60 m channels, simplex calling, APRS), and JS8Call and FT8 dial
