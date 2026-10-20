@@ -130,6 +130,7 @@ dialog button box, dialog button label,
 messagedialog button box, messagedialog button label { background: transparent; }
 dialog check { background: $bg; border: 1px solid $input_line; }
 .topbar .navbtn { min-height: 40px; padding: 0 12px; }
+.home-nav .navbtn { min-height: 44px; font-size: 15px; padding: 0 14px; }
 .homebar { background: $bar; border-bottom: 1px solid $line; padding: 0 8px; }
 .homebar .navbtn { min-height: 38px; font-size: 16px; padding: 0 12px; }
 .homebar .navbtn.current { border-color: $accent_fill; color: $accent; }
@@ -1421,6 +1422,11 @@ class Launcher(Gtk.Window):
         keyboard.set_valign(Gtk.Align.CENTER)
         keyboard.set_can_focus(False)  # a touch helper; keyboard users don't need it
         keyboard.connect("clicked", self.toggle_keyboard)
+        power = Gtk.Button(label="⏻", tooltip_text="Restart or shut down")
+        power.get_style_context().add_class("navbtn")
+        power.set_valign(Gtk.Align.CENTER)
+        power.connect("clicked", self._power_dialog)
+        bar.pack_end(power, False, False, 0)
         bar.pack_end(keyboard, False, False, 0)
         self.clock = Gtk.Label()
         self.clock.get_style_context().add_class("mono")
@@ -1612,13 +1618,13 @@ class Launcher(Gtk.Window):
         page.pack_start(self.page_bar, False, False, 0)
         self._lay_out_tiles()
 
-        nav = self.home_nav = Gtk.Box(spacing=12, homogeneous=True)
-        nav.pack_start(self._navbtn("Diagnostics  F2", lambda *_: self.stack.set_visible_child_name("diagnostics")), True, True, 0)
-        nav.pack_start(self._navbtn("Settings  F3", lambda *_: self.stack.set_visible_child_name("settings")), True, True, 0)
-        nav.pack_start(self._navbtn("Logs  F4", lambda *_: self.stack.set_visible_child_name("logs")), True, True, 0)
-        nav.pack_start(self._navbtn("Reference  F5", lambda *_: self.stack.set_visible_child_name("reference")), True, True, 0)
-        nav.pack_start(self._navbtn("Online  F7", lambda *_: self.stack.set_visible_child_name("online")), True, True, 0)
-        nav.pack_start(self._navbtn("Power", self._power_dialog), True, True, 0)
+        # Page buttons at their own width, centred; Power is in the top bar.
+        nav = self.home_nav = Gtk.Box(spacing=10, halign=Gtk.Align.CENTER)
+        nav.get_style_context().add_class("home-nav")
+        for label, page_name in (("Diagnostics  F2", "diagnostics"), ("Settings  F3", "settings"),
+                                 ("Logs  F4", "logs"), ("Reference  F5", "reference"), ("Online  F7", "online")):
+            nav.pack_start(self._navbtn(label, lambda _b, n=page_name: self.stack.set_visible_child_name(n)),
+                           False, False, 0)
         page.pack_end(nav, False, False, 0)
         return page
 
