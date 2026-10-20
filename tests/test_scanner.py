@@ -17,6 +17,7 @@ import numpy as np
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HELPER = os.path.join(REPO, "roles/apps/files/emcomm-scanner")
 VERMONT = os.path.join(REPO, "roles/apps/files/scanner/Vermont emergency channels.csv")
+AIRBAND = os.path.join(REPO, "roles/apps/files/scanner/Airband channels.csv")
 
 
 def load_helper():
@@ -249,6 +250,74 @@ class Squelch(unittest.TestCase):
         self.assertAlmostEqual(freqs[spec.argmax()], 1000, delta=5)
         tone = spec[np.abs(freqs - 118.8) < 2].max()
         self.assertLess(tone, spec.max() / 30)
+
+
+def am_listen(on, snr_db=25, rate=sc.RATE, blocks=6):
+    """(median level, audio) from simulated AM IQ through the AM demodulator."""
+    rng = np.random.default_rng(11)
+    demod, start, levels, out = sc.AMDemod(rate), 0, [], []
+    n = int(sc.LISTEN * rate / sc.RATE)
+    for _ in range(blocks):
+        audio, _env, level = demod.process(sc.am_test_signal(n, start, on, rng, snr_db=snr_db, rate=rate))
+        start += n
+        levels.append(level)
+        out.append(audio)
+    return float(np.median(levels)), np.concatenate(out), demod.audio_rate
+
+
+class Airband(unittest.TestCase):
+    def test_airband_is_am(self):
+        channels = sc.load_channels(AIRBAND)
+        self.assertTrue(all(ch["mode"] == "AM" and not ch.get("unsupported") for ch in channels))
+        self.assertIn(121.5, [ch["mhz"] for ch in channels])
+        self.assertEqual(sc.default_mode(121.5), "AM")
+        self.assertEqual(sc.default_mode(155.475), "FM")
+        self.assertEqual(sc.manual_channel(119.5)["mode"], "AM")
+
+    def test_airband_joins_the_operators_list_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mine = os.path.join(tmp, "Scanner channels.csv")
+            with open(mine, "w") as f:
+                f.write("Frequency,Alpha Tag,Group\n155.4750,NATIONAL EMS,EMS\n121.5000,MY GUARD,Air\n")
+            old = sc.CHANNELS, sc.AIRBAND_LIST
+            sc.CHANNELS, sc.AIRBAND_LIST = mine, AIRBAND
+            try:
+                channels = sc.load_channels()
+                self.assertEqual(len(sc.load_channels(mine)), len(channels))  # the same path either way
+            finally:
+                sc.CHANNELS, sc.AIRBAND_LIST = old
+            guard = [ch for ch in channels if ch["mhz"] == 121.5]
+            self.assertEqual([ch["name"] for ch in guard], ["MY GUARD"])
+            self.assertEqual(guard[0]["mode"], "AM")  # no Mode column: the band decides
+            self.assertIn("Airband", {ch["group"] for ch in channels})
+            self.assertEqual(len(channels), 2 + len(sc.load_channels(AIRBAND)) - 1)
+
+    def test_am_squelch(self):
+        self.assertGreater(am_listen(False)[0], sc.SQUELCH_LEVELS[4])
+        self.assertLess(am_listen(True, snr_db=20)[0], sc.SQUELCH_LEVELS[6])
+        self.assertLess(am_listen(True, snr_db=-13)[0], sc.SQUELCH_LEVELS[2])
+
+    def test_am_squelch_ignores_a_busy_neighbour(self):
+        rng = np.random.default_rng(2)
+        n = sc.LISTEN
+        t = np.arange(n) / sc.RATE
+        neighbour = (sc.am_test_signal(n, 0, False, rng)
+                     + 3 * np.exp(2j * np.pi * (sc.OFFSET + 25000) * t)).astype(np.complex64)
+        self.assertGreater(sc.am_level(neighbour, sc.RATE), sc.SQUELCH_LEVELS[4])
+
+    def test_am_audio_is_the_voice(self):
+        for rate in (sc.RATE, 2000000):
+            _level, audio, audio_rate = am_listen(True, rate=rate)
+            audio = audio[int(audio_rate) // 4:]
+            spec = np.abs(np.fft.rfft(audio))
+            freqs = np.fft.rfftfreq(len(audio), 1 / audio_rate)
+            self.assertAlmostEqual(freqs[spec.argmax()], 1000, delta=5, msg=rate)
+            self.assertGreater(np.abs(audio).max(), 0.5, rate)
+
+    def test_the_scanner_picks_the_demodulator_by_mode(self):
+        demods = {"FM": sc.Demod(), "AM": sc.AMDemod()}
+        self.assertIs(sc.demod_for({"mode": "AM"}, demods), demods["AM"])
+        self.assertIs(sc.demod_for({"mode": "FM"}, demods), demods["FM"])
 
 
 class HangTime(unittest.TestCase):

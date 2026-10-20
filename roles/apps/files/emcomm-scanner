@@ -12,16 +12,21 @@ emergency channels; replace the file (or use "Load a list" in the window) with
 any CSV that has a Frequency column. Recognised columns, any order:
   Frequency (MHz), Alpha Tag or Name, Group or Tag, Agency or Description,
   County, Tone (e.g. "118.8 PL", "023 DPL", "CSQ"), Mode, Latitude, Longitude
+Mode is FM or AM; left empty, the aircraft band (108-137 MHz) is AM and the
+rest FM. The station's airband channels (Guard, search and rescue, air to air,
+nearby airports) are added to the list as an "Airband" group unless the list
+already has those frequencies; turn the group off to leave them out.
 Channels with a site location are filtered by distance from the station's grid
 square (Settings > User); channels without one (statewide) are always kept.
 
 Receivers: an RTL-SDR is read through librtlsdr at 240 kS/s; anything else
 SoapySDR knows (Airspy, Airspy HF+, HackRF, SDRplay, LimeSDR, bladeRF...) at
 its lowest usable rate. The receiver is tuned 60 kHz below the channel so its
-DC spike stays out of it, and narrow FM is demodulated here with numpy. The
-squelch is the classic FM noise squelch: with no carrier the demodulated audio
+DC spike stays out of it, and narrow FM and AM are demodulated here with numpy.
+The FM squelch is the classic noise squelch: with no carrier the demodulated audio
 is loud hiss above 6 kHz, and it goes quiet as a signal comes up, so it works
-the same whatever the antenna, gain or receiver. Tone squelch checks the CTCSS
+the same whatever the antenna, gain or receiver. AM has no such hiss, so its
+squelch compares the channel's power with the noise floor around it. Tone squelch checks the CTCSS
 (PL) tone before stopping on a channel; DPL (DCS) channels stop on any carrier.
 Audio plays through PipeWire (pacat).
 
@@ -54,6 +59,7 @@ HOME = os.path.expanduser("~")
 CHANNELS = os.environ.get("EMCOMM_SCANNER_LIST", os.path.join(HOME, "Scanner channels.csv"))
 DEFAULT_LIST = os.environ.get("EMCOMM_SCANNER_DEFAULT",
                               "/usr/share/emcomm/scanner/Vermont emergency channels.csv")
+AIRBAND_LIST = os.environ.get("EMCOMM_SCANNER_AIRBAND", "/usr/share/emcomm/scanner/Airband channels.csv")
 SETTINGS = os.path.join(HOME, ".config/emcomm/scanner.json")
 SDR_LOCK = os.path.join(HOME, ".local/state/emcomm/sdr.json")
 STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
@@ -128,8 +134,23 @@ def channel_key(ch):
     return f"{ch['mhz']:.4f} {ch['name']}"
 
 
-def load_channels(path=CHANNELS):
-    """The channels in a CSV list, in file order; rows without a usable frequency are skipped."""
+def default_mode(mhz):
+    """AM in the aircraft band, FM everywhere else the scanner goes."""
+    return "AM" if 108 <= mhz < 137 else "FM"
+
+
+def load_channels(path=None):
+    """The channels in a CSV list, in file order; rows without a usable frequency are skipped.
+    The operator's own list also gets the station's airband channels it doesn't already have."""
+    path = path or CHANNELS
+    channels = read_channels(path)
+    if path == CHANNELS and os.path.exists(AIRBAND_LIST):
+        have = {ch["mhz"] for ch in channels}
+        channels += [ch for ch in read_channels(AIRBAND_LIST) if ch["mhz"] not in have]
+    return channels
+
+
+def read_channels(path):
     with open(path, encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
     channels = []
@@ -147,7 +168,7 @@ def load_channels(path=CHANNELS):
         except ValueError:
             lat = lon = None
         tone_kind, tone = parse_tone(_col(row, "tone", "pl tone", "ctcss"))
-        mode = _col(row, "mode").upper() or "FM"
+        mode = _col(row, "mode").upper() or default_mode(mhz)
         ch = {"mhz": round(mhz, 5),
               "name": _col(row, "alpha tag", "name", "tag", "description")[:24] or f"{mhz:.4f}",
               "group": _col(row, "group", "tag", "category", "service type") or "Channels",
@@ -156,8 +177,8 @@ def load_channels(path=CHANNELS):
               "tone_text": _col(row, "tone", "pl tone", "ctcss"),
               "tone_kind": tone_kind, "tone": tone, "mode": mode,
               "lat": lat, "lon": lon}
-        if mode in ("AM", "P25", "DMR", "NXDN", "D-STAR", "DSTAR", "TETRA"):
-            ch["unsupported"] = mode  # listed, but the scanner only plays narrow FM
+        if mode in ("P25", "DMR", "NXDN", "D-STAR", "DSTAR", "TETRA"):
+            ch["unsupported"] = mode  # listed, but the scanner only plays analog FM and AM
         channels.append(ch)
     return channels
 
@@ -165,7 +186,7 @@ def load_channels(path=CHANNELS):
 def manual_channel(mhz, name=None):
     """A channel typed in on the Tune pad rather than taken from the list."""
     return {"mhz": round(mhz, 5), "name": name or "Manual", "group": "Manual", "agency": "",
-            "county": "", "tone_text": "", "tone_kind": None, "tone": None, "mode": "FM",
+            "county": "", "tone_text": "", "tone_kind": None, "tone": None, "mode": default_mode(mhz),
             "lat": None, "lon": None, "miles": None, "manual": True}
 
 
@@ -191,7 +212,7 @@ def append_channel(path, mhz, name, group="My channels"):
         with open(path, "w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(fields)
     wanted = {"frequency": f"{mhz:.4f}", "frequency output": f"{mhz:.4f}", "freq": f"{mhz:.4f}",
-              "mhz": f"{mhz:.4f}", "alpha tag": name, "name": name, "group": group, "mode": "FM"}
+              "mhz": f"{mhz:.4f}", "alpha tag": name, "name": name, "group": group, "mode": default_mode(mhz)}
     row, named = [], False
     for field in fields:
         key = field.strip().lower()
@@ -639,6 +660,39 @@ class Demod:
         return np.clip(voice / (2 * np.pi * DEVIATION / self.audio_rate), -1, 1)
 
 
+class AMDemod(Demod):
+    """AM (the aircraft band) from one channel of IQ: the envelope, scaled by the carrier,
+    plus how far the channel stands above the noise floor around it (as for FM: about 1
+    with nothing there, lower as a signal comes up)."""
+
+    def process(self, iq):
+        env = np.abs(self.channel(iq)).astype(np.float32)
+        joined = np.concatenate([self.audio_tail, env])
+        self.audio_tail = joined[-(len(self.audio_taps) - 1):]
+        voice = np.convolve(joined, self.audio_taps, mode="valid")
+        carrier = max(float(env.mean()), 1e-9) if len(env) else 1.0
+        return np.clip(voice / carrier, -1, 1), env, am_level(iq, self.rate)
+
+
+def am_level(iq, rate):
+    """Noise floor over the channel's power: about 1 with no carrier, falling as one comes up.
+    The floor is the median across 200 kHz around the tuned centre, so a few busy
+    neighbouring channels don't raise it."""
+    if len(iq) < 1024:
+        return 1.0
+    spec = np.abs(np.fft.fft(iq * np.hanning(len(iq)))) ** 2
+    freqs = np.fft.fftfreq(len(iq), 1 / rate)
+    chan = np.abs(freqs - OFFSET) <= 3000
+    ref = ((np.abs(freqs) <= min(100000, 0.4 * rate)) & (np.abs(freqs) >= 5000)
+           & (np.abs(freqs - OFFSET) > 12500))
+    floor = np.median(spec[ref]) / math.log(2)  # the median of noise power is ln 2 of its mean
+    return float(floor / max(spec[chan].mean(), 1e-30))
+
+
+def demod_for(ch, demods):
+    return demods["AM" if ch.get("mode") == "AM" else "FM"]
+
+
 def hiss(fm, audio_rate=AUDIO_RATE):
     """Discriminator power from 6 to 11 kHz, relative to what no signal gives (about 1)."""
     if len(fm) < 256:
@@ -778,7 +832,8 @@ class SoapySource:
 
 
 class FakeDongle:
-    """Noise everywhere, and a talking-ish FM signal on the test frequencies (EMCOMM_SCANNER_FAKE)."""
+    """Noise everywhere, and a talking-ish FM (or, in the aircraft band, AM) signal on the
+    test frequencies (EMCOMM_SCANNER_FAKE)."""
 
     def __init__(self, busy_mhz, tone=None):
         self.busy, self.tone, self.mhz, self.n = busy_mhz, tone, None, 0
@@ -790,10 +845,25 @@ class FakeDongle:
 
     def read(self, samples):
         time.sleep(samples / RATE)
+        if default_mode(self.mhz) == "AM":
+            return am_test_signal(samples, self.n, self.mhz in self.busy, self.rng, advance=self)
         return fm_test_signal(samples, self.n, self.mhz in self.busy, self.tone, self.rng, advance=self)
 
     def close(self):
         pass
+
+
+def am_test_signal(samples, start, on, rng, advance=None, snr_db=25, rate=RATE):
+    """IQ at rate: noise, plus (if on) an AM carrier OFFSET above centre, 80% modulated by a 1 kHz note.
+    snr_db is the carrier over the noise in 240 kHz, as for fm_test_signal."""
+    noise = (rng.standard_normal(samples) + 1j * rng.standard_normal(samples)) * 0.05 * math.sqrt(rate / RATE)
+    if advance is not None:
+        advance.n += samples
+    if not on:
+        return noise.astype(np.complex64)
+    t = (np.arange(samples) + start) / rate
+    amp = 0.05 * math.sqrt(2) * 10 ** (snr_db / 20) * (1 + 0.8 * np.sin(2 * np.pi * 1000 * t))
+    return (noise + amp * np.exp(2j * np.pi * OFFSET * t)).astype(np.complex64)
 
 
 def fm_test_signal(samples, start, on, tone, rng, advance=None, snr_db=25, rate=RATE):
@@ -903,7 +973,8 @@ class Scanner(threading.Thread):
             release_sdr()
             self.on_state({"state": "error", "text": str(err)})
             return
-        demod = self.demod = Demod(self.dongle.rate)
+        demods = {"FM": Demod(self.dongle.rate), "AM": AMDemod(self.dongle.rate)}
+        self.demod = demods["FM"]  # both give audio at the same rate
         position = 0
         try:
             while not self.stopping:
@@ -917,7 +988,7 @@ class Scanner(threading.Thread):
                     continue
                 position %= len(targets)
                 ch = targets[position]
-                if self._visit(ch, demod, settings, held is not None):
+                if self._visit(ch, demod_for(ch, demods), settings, held is not None):
                     position += 1 if held is None else 0
                 else:
                     position += 1
@@ -1522,7 +1593,7 @@ def window_main():
             ch = self.rows[self.store[path][7]]
             key = channel_key(ch)
             if ch.get("unsupported"):
-                self._say(f"{ch['name']} is {ch['unsupported']}; the scanner plays analog FM only.", True)
+                self._say(f"{ch['name']} is {ch['unsupported']}; the scanner plays analog FM and AM only.", True)
                 return
             locked = self.settings["lockouts"]
             if key in locked:
@@ -1549,7 +1620,7 @@ def window_main():
                 return  # the Scan tick box
             ch = self.rows[self.store[path][7]]
             if ch.get("unsupported"):
-                self._say(f"{ch['name']} is {ch['unsupported']}; the scanner plays analog FM only.", True)
+                self._say(f"{ch['name']} is {ch['unsupported']}; the scanner plays analog FM and AM only.", True)
                 return
             self.held = ch
             if self.scanner:
@@ -1611,7 +1682,8 @@ def window_main():
             box.pack_start(name, False, False, 0)
             hint = Gtk.Label(xalign=0, wrap=True, max_width_chars=40)
             hint.get_style_context().add_class("muted")
-            hint.set_text("Any frequency your receiver reaches (an RTL-SDR: 24 to 1766 MHz), narrow FM. "
+            hint.set_text("Any frequency your receiver reaches (an RTL-SDR: 24 to 1766 MHz): FM, "
+                          "or AM in the aircraft band (108-137 MHz). "
                           "For HF and SSB use Gqrx. The − and + beside the frequency step 12.5 kHz at a time.")
             box.pack_start(hint, False, False, 0)
             dialog.get_content_area().add(box)

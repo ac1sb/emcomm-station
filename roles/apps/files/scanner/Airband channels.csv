@@ -1,0 +1,11 @@
+Group,Alpha Tag,Agency,County,Frequency,Mode,Latitude,Longitude,Located by
+Airband,GUARD 121.5,Aircraft emergency,Nationwide,121.5000,AM,,,FAA: international aircraft emergency frequency
+Airband,SAR ON-SCENE,Search and rescue,Nationwide,123.1000,AM,,,FAA: search and rescue on-scene
+Airband,MULTICOM,SAR / fire / air ops,Nationwide,122.9000,AM,,,FAA: MULTICOM
+Airband,AIR TO AIR,Fixed-wing air to air,Nationwide,122.7500,AM,,,FAA: air-to-air (fixed wing)
+Airband,HELO AIR TO AIR,Helicopter air to air,Nationwide,123.0250,AM,,,FAA: air-to-air (helicopters)
+Airband,CTAF DDH RUT,Bennington / Rutland airports,Bennington,122.8000,AM,42.8913,-73.2463,FAA Chart Supplement via SkyVector (DDH and RUT share 122.8)
+Airband,ALBANY APPROACH,Albany Approach (DDH area),Regional,132.8250,AM,,,FAA Chart Supplement via SkyVector (KDDH)
+Airband,BOSTON CENTER,Boston Center (RUT area),Regional,135.7000,AM,,,FAA Chart Supplement via SkyVector (KRUT)
+Airband,ALBANY TOWER,Albany International,Albany NY,119.5000,AM,42.7492,-73.8020,FAA Chart Supplement via SkyVector (KALB)
+Airband,ALBANY GROUND,Albany International,Albany NY,121.7000,AM,42.7492,-73.8020,FAA Chart Supplement via SkyVector (KALB)
