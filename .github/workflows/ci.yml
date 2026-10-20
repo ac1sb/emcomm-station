@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install checkers
-        run: pip install ansible-core ansible-lint shellcheck-py pyyaml pypdf
+        run: pip install ansible-core ansible-lint shellcheck-py pyyaml pypdf numpy
       - name: Playbook syntax
         run: ansible-playbook site.yml --syntax-check
       - name: Ansible lint
@@ -29,6 +29,7 @@ jobs:
           roles/apps/files/emcomm-map roles/apps/files/emcomm-map-prepare roles/launcher/files/emcomm-online
           roles/launcher/files/emcomm-ics roles/radio/files/emcomm-nwr roles/apps/files/emcomm-library
           roles/launcher/files/emcomm-backup roles/radio/files/emcomm-recorder roles/radio/files/emcomm-stream roles/kiosk/files/emcomm-display
+          roles/apps/files/emcomm-scanner
       - name: Helper tests
         run: |
           python tests/test_apply_settings.py
@@ -41,3 +42,4 @@ jobs:
           python tests/test_recorder.py
           python tests/test_display.py
           python tests/test_stream.py
+          python tests/test_scanner.py

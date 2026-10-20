@@ -263,6 +263,39 @@ def detect_devices():
     return ports, cards
 
 
+RTL_USB_IDS = {("0bda", "2838"), ("0bda", "2832")}
+SDR_LOCK = os.path.expanduser("~/.local/state/emcomm/sdr.json")
+
+
+def rtl_dongles(sysfs="/sys/bus/usb/devices"):
+    """Labels for the RTL-SDR dongles plugged in, in the order librtlsdr numbers them (roughly)."""
+    found = []
+    for base in sorted(glob.glob(os.path.join(sysfs, "*"))):
+        def attr(name, base=base):
+            try:
+                with open(os.path.join(base, name), encoding="utf-8", errors="replace") as f:
+                    return f.read().strip()
+            except OSError:
+                return ""
+        if (attr("idVendor"), attr("idProduct")) in RTL_USB_IDS:
+            name = " ".join(x for x in (attr("manufacturer"), attr("product")) if x) or "RTL2832U dongle"
+            serial = attr("serial")
+            found.append(f"{name}" + (f" · serial {serial}" if serial else ""))
+    return found
+
+
+def sdr_user():
+    """The app holding the RTL-SDR (Scanner, Gqrx), if it's running."""
+    lock = read_json(SDR_LOCK, {})
+    try:
+        os.kill(int(lock.get("pid")), 0)
+    except (TypeError, ValueError, ProcessLookupError):
+        return None
+    except OSError:
+        pass
+    return lock.get("app") or "another app"
+
+
 def rigctld_query(host, port, command, timeout=1.0):
     """Send one rigctld command and return the first reply line, or None."""
     try:
@@ -2123,11 +2156,23 @@ class Launcher(Gtk.Window):
         return page
 
     def _show_devices(self):
-        """What's plugged in now: USB serial ports, USB sound cards, paired Bluetooth radios."""
+        """What's plugged in now: USB serial ports, USB sound cards, RTL-SDR dongles, paired Bluetooth radios."""
         lines = ["USB serial ports (radio CAT/PTT, GPS, mesh radios):"]
         lines += [f"  {label}" for label, _m in self.serial_ports] or ["  none"]
         lines += ["", "USB sound cards:"]
         lines += [f"  {label}" for label, _m in self.sound_cards] or ["  none"]
+        dongles = rtl_dongles()
+        lines += ["", "RTL-SDR receivers (Scanner, Gqrx, weather radio alerts):"]
+        lines += [f"  {i + 1}. {label}" for i, label in enumerate(dongles)] or ["  none"]
+        if dongles:
+            user = sdr_user()
+            nwr = read_json(NWR_CONFIG, {}).get("freq")
+            if len(dongles) > 1 and nwr:
+                lines.append("  Weather radio alerts use the first; the Scanner and Gqrx use the second.")
+            elif user:
+                lines.append(f"  In use by the {user}" + ("; weather radio alerts are paused." if nwr else "."))
+            elif nwr:
+                lines.append("  Listening for weather radio alerts. Opening the Scanner or Gqrx pauses them.")
         if shutil.which("bluetoothctl"):
             try:
                 out = subprocess.run(["bluetoothctl", "devices", "Paired"], capture_output=True, text=True,
@@ -3588,7 +3633,8 @@ class Launcher(Gtk.Window):
             test = record.get("last_test")
             detail.append(f"{test['event']} heard {ago(test['time'])}" if test else "no weekly test heard yet")
         else:
-            colour, lead = self.colours["muted"], "Off"
+            paused = (record.get("error") or "").startswith("Paused")
+            colour, lead = self.colours["muted"], "Paused" if paused else "Off"
             detail = [record.get("error") or "Receives alerts with no internet, using an RTL-SDR dongle."]
         return self._info_row(lead, "NOAA Weather Radio", " · ".join(detail), [("Set up", self._edit_nwr)], colour)
 

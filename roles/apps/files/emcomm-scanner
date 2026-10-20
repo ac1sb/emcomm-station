@@ -1,0 +1,1090 @@
+#!/usr/bin/env python3
+"""Scan a channel list on an RTL-SDR dongle, like a police/fire scanner.
+
+  emcomm-scanner                 open the scanner window
+  emcomm-scanner --list [FILE]   print the channels it would scan, as JSON lines
+  emcomm-scanner --gqrx-bookmarks   print the channel list as Gqrx bookmarks
+
+The channel list is ~/Scanner channels.csv. The station ships Vermont's
+emergency channels; replace the file (or use "Load a list" in the window) with
+any CSV that has a Frequency column. Recognised columns, any order:
+  Frequency (MHz), Alpha Tag or Name, Group or Tag, Agency or Description,
+  County, Tone (e.g. "118.8 PL", "023 DPL", "CSQ"), Mode, Latitude, Longitude
+Channels with a site location are filtered by distance from the station's grid
+square (Settings > User); channels without one (statewide) are always kept.
+
+The dongle is read through librtlsdr at 240 kS/s, tuned 60 kHz below the
+channel so the dongle's DC spike stays out of it. Narrow FM is demodulated
+here with numpy. The squelch is the classic FM noise squelch: with no carrier
+the demodulated audio is loud hiss above 6 kHz, and it goes quiet as a signal
+comes up, so it works the same whatever the antenna or gain. Tone squelch
+checks the CTCSS (PL) tone before stopping on a channel; DPL (DCS) channels
+stop on any carrier. Audio plays through PipeWire (pacat), so the recorder and
+Broadcastify stream can't hear it, but anyone in the room can.
+
+The weather radio alert listener (emcomm-nwr) uses the first dongle. While the
+scanner holds that dongle it writes ~/.local/state/emcomm/sdr.json and the
+listener pauses; with two dongles plugged in the scanner uses the second.
+"""
+
+import csv
+import ctypes
+import ctypes.util
+import glob
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+try:
+    import numpy as np
+except ImportError:  # the window says so
+    np = None
+
+HOME = os.path.expanduser("~")
+CHANNELS = os.environ.get("EMCOMM_SCANNER_LIST", os.path.join(HOME, "Scanner channels.csv"))
+DEFAULT_LIST = os.environ.get("EMCOMM_SCANNER_DEFAULT",
+                              "/usr/share/emcomm/scanner/Vermont emergency channels.csv")
+SETTINGS = os.path.join(HOME, ".config/emcomm/scanner.json")
+SDR_LOCK = os.path.join(HOME, ".local/state/emcomm/sdr.json")
+STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
+NWR_CONFIG = os.path.join(HOME, ".config/emcomm/nwr.json")
+THEME_PATH = os.path.join(HOME, ".config/emcomm/theme")
+FAKE = os.environ.get("EMCOMM_SCANNER_FAKE")  # "MHz,MHz" with a test signal: run without a dongle
+
+RATE = 240000        # dongle sample rate
+OFFSET = 60000       # the channel sits this far above the tuned centre
+DECIM = 5            # 240 kHz -> 48 kHz after the channel filter
+AUDIO_RATE = RATE // DECIM
+SETTLE = 8192        # samples thrown away after retuning while the tuner settles
+LOOK = 12288         # samples looked at on each channel while scanning (51 ms)
+LISTEN = 24576       # samples per block while stopped on a channel (102 ms)
+HANG = 2.0           # seconds to stay on a channel after it goes quiet
+TONE_WAIT = 0.6      # seconds of audio searched for the channel's PL tone
+DEVIATION = 2500.0   # narrow FM peak deviation, Hz
+# Squelch 1 (open) .. 9 (tight): the hiss left above 6 kHz, as a share of no-signal hiss.
+# Level 4 opens about 1 dB above the noise in the channel; 9 needs a near full-quieting signal.
+SQUELCH_LEVELS = {1: 0.85, 2: 0.70, 3: 0.55, 4: 0.40, 5: 0.28, 6: 0.18, 7: 0.10, 8: 0.05, 9: 0.02}
+DISTANCES = [(10, "10 miles"), (25, "25 miles"), (50, "50 miles"), (100, "100 miles"), (0, "Everywhere")]
+CTCSS = [67.0, 69.3, 71.9, 74.4, 77.0, 79.7, 82.5, 85.4, 88.5, 91.5, 94.8, 97.4, 100.0, 103.5, 107.2,
+         110.9, 114.8, 118.8, 123.0, 127.3, 131.8, 136.5, 141.3, 146.2, 150.0, 151.4, 156.7, 159.8,
+         162.2, 165.5, 167.9, 171.3, 173.8, 177.3, 179.9, 183.5, 186.2, 189.9, 192.8, 196.6, 199.5,
+         203.5, 206.5, 210.7, 218.1, 225.7, 229.1, 233.6, 241.8, 250.3, 254.1]
+RTL_USB_IDS = {("0bda", "2838"), ("0bda", "2832")}
+DEFAULTS = {"groups_off": [], "miles": 25, "lockouts": [], "squelch": 4, "volume": 70,
+            "tone_squelch": True, "gain": 40, "ppm": 0}
+
+
+# ---- channel list -------------------------------------------------------
+
+def _col(row, *names):
+    for name in names:
+        for key, value in row.items():
+            if key and key.strip().lower() == name:
+                return (value or "").strip()
+    return ""
+
+
+def parse_tone(text):
+    """('pl', 118.8), ('dpl', '023') or (None, None) for none/CSQ/anything else."""
+    text = (text or "").strip().upper()
+    m = re.fullmatch(r"(\d{2,3}(?:\.\d)?)\s*(?:PL|HZ)?", text)
+    if m and 60 <= float(m.group(1)) <= 260 and ("." in m.group(1) or "PL" in text):
+        return "pl", float(m.group(1))
+    m = re.fullmatch(r"D?(\d{3})\s*[NI]?\s*(?:DPL|DCS)?", text)
+    if m and ("DPL" in text or "DCS" in text or text.startswith("D")):
+        return "dpl", m.group(1)
+    return None, None
+
+
+def channel_key(ch):
+    return f"{ch['mhz']:.4f} {ch['name']}"
+
+
+def load_channels(path=CHANNELS):
+    """The channels in a CSV list, in file order; rows without a usable frequency are skipped."""
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    channels = []
+    for row in rows:
+        try:
+            mhz = float(_col(row, "frequency", "frequency output", "freq", "mhz"))
+        except ValueError:
+            continue
+        if mhz > 10000:  # given in Hz
+            mhz /= 1e6
+        if not 24 <= mhz <= 1766:  # what an RTL-SDR tunes
+            continue
+        try:
+            lat, lon = float(_col(row, "latitude", "lat")), float(_col(row, "longitude", "lon"))
+        except ValueError:
+            lat = lon = None
+        tone_kind, tone = parse_tone(_col(row, "tone", "pl tone", "ctcss"))
+        mode = _col(row, "mode").upper() or "FM"
+        ch = {"mhz": round(mhz, 5),
+              "name": _col(row, "alpha tag", "name", "tag", "description")[:24] or f"{mhz:.4f}",
+              "group": _col(row, "group", "tag", "category", "service type") or "Channels",
+              "agency": _col(row, "agency", "description", "department"),
+              "county": _col(row, "county"),
+              "tone_text": _col(row, "tone", "pl tone", "ctcss"),
+              "tone_kind": tone_kind, "tone": tone, "mode": mode,
+              "lat": lat, "lon": lon}
+        if mode in ("AM", "P25", "DMR", "NXDN", "D-STAR", "DSTAR", "TETRA"):
+            ch["unsupported"] = mode  # listed, but the scanner only plays narrow FM
+        channels.append(ch)
+    return channels
+
+
+def ensure_list():
+    """Give the operator the shipped list the first time."""
+    if not os.path.exists(CHANNELS) and os.path.exists(DEFAULT_LIST):
+        shutil.copyfile(DEFAULT_LIST, CHANNELS)
+
+
+def grid_to_latlon(grid):
+    grid = (grid or "").strip()
+    if not re.fullmatch(r"[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?", grid):
+        return None
+    lon = (ord(grid[0].upper()) - 65) * 20 - 180 + int(grid[2]) * 2
+    lat = (ord(grid[1].upper()) - 65) * 10 - 90 + int(grid[3])
+    if len(grid) == 6:
+        lon += (ord(grid[4].lower()) - 97) * 5 / 60 + 2.5 / 60
+        lat += (ord(grid[5].lower()) - 97) * 2.5 / 60 + 1.25 / 60
+    else:
+        lon, lat = lon + 1, lat + 0.5
+    return lat, lon
+
+
+def miles_between(a, b):
+    lat1, lon1, lat2, lon2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 3958.8 * 2 * math.asin(math.sqrt(min(1.0, h)))
+
+
+def station_location():
+    try:
+        with open(STATION_PATH, encoding="utf-8") as f:
+            return grid_to_latlon(json.load(f).get("grid", ""))
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def add_distances(channels, here):
+    for ch in channels:
+        ch["miles"] = (round(miles_between(here, (ch["lat"], ch["lon"])), 1)
+                       if here and ch["lat"] is not None else None)
+
+
+def scan_list(channels, settings):
+    """The channels to scan: in a group that's on, near enough, not locked out, playable."""
+    off = set(settings.get("groups_off") or [])
+    locked = set(settings.get("lockouts") or [])
+    miles = settings.get("miles") or 0
+    return [ch for ch in channels
+            if ch["group"] not in off and channel_key(ch) not in locked and not ch.get("unsupported")
+            and (not miles or ch.get("miles") is None or ch["miles"] <= miles)]
+
+
+def load_settings():
+    try:
+        with open(SETTINGS, encoding="utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        saved = {}
+    settings = dict(DEFAULTS)
+    if isinstance(saved, dict):
+        settings.update({k: v for k, v in saved.items() if k in DEFAULTS})
+    return settings
+
+
+def save_settings(settings):
+    os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+    with open(SETTINGS + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=1)
+    os.replace(SETTINGS + ".tmp", SETTINGS)
+
+
+# ---- sharing the dongle with the weather radio ---------------------------
+
+def usb_dongles():
+    """How many RTL-SDR dongles are plugged in, from sysfs."""
+    count = 0
+    for dev in os.listdir("/sys/bus/usb/devices") if os.path.isdir("/sys/bus/usb/devices") else []:
+        base = os.path.join("/sys/bus/usb/devices", dev)
+        try:
+            with open(os.path.join(base, "idVendor")) as v, open(os.path.join(base, "idProduct")) as p:
+                if (v.read().strip(), p.read().strip()) in RTL_USB_IDS:
+                    count += 1
+        except OSError:
+            pass
+    return count
+
+
+def nwr_in_use():
+    try:
+        with open(NWR_CONFIG, encoding="utf-8") as f:
+            return bool(json.load(f).get("freq"))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def claim_sdr(app):
+    os.makedirs(os.path.dirname(SDR_LOCK), exist_ok=True)
+    with open(SDR_LOCK, "w", encoding="utf-8") as f:
+        json.dump({"pid": os.getpid(), "app": app}, f)
+
+
+def release_sdr():
+    try:
+        with open(SDR_LOCK, encoding="utf-8") as f:
+            if json.load(f).get("pid") != os.getpid():
+                return
+        os.remove(SDR_LOCK)
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+# ---- signal processing ----------------------------------------------------
+
+def lowpass(cutoff, rate, taps):
+    n = np.arange(taps) - (taps - 1) / 2
+    h = np.sinc(2 * cutoff / rate * n) * np.hamming(taps)
+    return (h / h.sum()).astype(np.float32)
+
+
+def bandpass(low, high, rate, taps):
+    h = lowpass(high, rate, taps) - lowpass(low, rate, taps)
+    return h.astype(np.float32)
+
+
+class Demod:
+    """Narrow FM from one channel of 240 kS/s IQ: audio at 48 kHz, plus how much hiss is left."""
+
+    def __init__(self):
+        self.chan_taps = lowpass(7500, RATE, 97)
+        self.audio_taps = bandpass(300, 3400, AUDIO_RATE, 511)
+        self.reset()
+
+    def reset(self):
+        self.phase = 0
+        self.iq_tail = np.zeros(len(self.chan_taps) - 1, np.complex64)
+        self.audio_tail = np.zeros(len(self.audio_taps) - 1, np.float32)
+        self.last = np.complex64(1)
+        self.offset = 0  # keeps decimation in step across blocks
+
+    def channel(self, iq):
+        """Mix the channel down to 0 Hz, filter it and drop to 48 kS/s."""
+        n = np.arange(self.phase, self.phase + len(iq))
+        self.phase = (self.phase + len(iq)) % RATE
+        mixed = iq * np.exp(-2j * np.pi * OFFSET / RATE * n).astype(np.complex64)
+        joined = np.concatenate([self.iq_tail, mixed])
+        self.iq_tail = joined[-(len(self.chan_taps) - 1):]
+        filtered = np.convolve(joined, self.chan_taps, mode="valid")
+        out = filtered[self.offset::DECIM]
+        self.offset = (self.offset - len(filtered)) % DECIM
+        return out
+
+    def discriminate(self, base):
+        joined = np.concatenate([[self.last], base])
+        self.last = base[-1] if len(base) else self.last
+        return np.angle(joined[1:] * np.conj(joined[:-1])).astype(np.float32)
+
+    def process(self, iq):
+        """(audio -1..1 with the PL tone removed, raw discriminator output, hiss 0..~1)."""
+        fm = self.discriminate(self.channel(iq))
+        return self.audio(fm), fm, hiss(fm)
+
+    def audio(self, fm):
+        joined = np.concatenate([self.audio_tail, fm])
+        self.audio_tail = joined[-(len(self.audio_taps) - 1):]
+        voice = np.convolve(joined, self.audio_taps, mode="valid")
+        return np.clip(voice / (2 * np.pi * DEVIATION / AUDIO_RATE), -1, 1)
+
+
+def hiss(fm):
+    """Discriminator power from 6 to 11 kHz, relative to what no signal gives (about 1)."""
+    if len(fm) < 256:
+        return 1.0
+    spec = np.abs(np.fft.rfft(fm * np.hanning(len(fm)))) ** 2
+    freqs = np.fft.rfftfreq(len(fm), 1 / AUDIO_RATE)
+    band = spec[(freqs >= 6000) & (freqs <= 11000)].mean()
+    # Uniform phase noise has variance pi^2/3 spread evenly over 0..24 kHz; after the
+    # 7.5 kHz channel filter the 6-11 kHz band keeps about a fifth of that (measured).
+    flat = (np.pi ** 2 / 3) * len(fm) * (np.hanning(len(fm)) ** 2).mean() * 0.205
+    return float(band / flat)
+
+
+def has_tone(fm, tone):
+    """Whether the discriminator output carries the CTCSS tone (within 1%)."""
+    if len(fm) < AUDIO_RATE // 4:
+        return False
+    spec = np.abs(np.fft.rfft(fm * np.hanning(len(fm)))) ** 2
+    freqs = np.fft.rfftfreq(len(fm), 1 / AUDIO_RATE)
+    sub = (freqs >= 60) & (freqs <= 260)
+    near = sub & (np.abs(freqs - tone) <= max(1.5, tone * 0.01))
+    if not near.any():
+        return False
+    peak = spec[sub].max()
+    return bool(spec[near].max() >= peak * 0.7 and spec[near].max() > 20 * np.median(spec[sub]))
+
+
+# ---- the dongle -------------------------------------------------------------
+
+class Dongle:
+    def __init__(self, index, gain_db, ppm):
+        name = ctypes.util.find_library("rtlsdr")
+        try:
+            lib = ctypes.CDLL(name or "librtlsdr.so.2")
+        except OSError:
+            lib = ctypes.CDLL("librtlsdr.so.0")
+        vp, u32, i32 = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int
+        for fn, args in (("rtlsdr_open", [ctypes.POINTER(vp), u32]), ("rtlsdr_close", [vp]),
+                         ("rtlsdr_set_sample_rate", [vp, u32]), ("rtlsdr_set_center_freq", [vp, u32]),
+                         ("rtlsdr_set_freq_correction", [vp, i32]), ("rtlsdr_set_tuner_gain_mode", [vp, i32]),
+                         ("rtlsdr_get_tuner_gains", [vp, ctypes.POINTER(i32)]),
+                         ("rtlsdr_set_tuner_gain", [vp, i32]), ("rtlsdr_reset_buffer", [vp]),
+                         ("rtlsdr_read_sync", [vp, vp, i32, ctypes.POINTER(i32)])):
+            getattr(lib, fn).argtypes = args
+            getattr(lib, fn).restype = i32
+        self.lib, self.dev = lib, vp()
+        if lib.rtlsdr_open(ctypes.byref(self.dev), index) != 0:
+            raise OSError("busy")
+        lib.rtlsdr_set_sample_rate(self.dev, RATE)
+        if ppm:
+            lib.rtlsdr_set_freq_correction(self.dev, int(ppm))
+        if gain_db in (None, "auto"):
+            lib.rtlsdr_set_tuner_gain_mode(self.dev, 0)
+        else:
+            lib.rtlsdr_set_tuner_gain_mode(self.dev, 1)
+            count = lib.rtlsdr_get_tuner_gains(self.dev, None)
+            gains = (ctypes.c_int * max(count, 1))()
+            lib.rtlsdr_get_tuner_gains(self.dev, gains)
+            if count > 0:
+                lib.rtlsdr_set_tuner_gain(self.dev, min(gains[:count], key=lambda g: abs(g - gain_db * 10)))
+        lib.rtlsdr_reset_buffer(self.dev)
+        self.buf = ctypes.create_string_buffer(LISTEN * 2)
+
+    @staticmethod
+    def count():
+        name = ctypes.util.find_library("rtlsdr")
+        try:
+            lib = ctypes.CDLL(name or "librtlsdr.so.2")
+        except OSError:
+            try:
+                lib = ctypes.CDLL("librtlsdr.so.0")
+            except OSError:
+                return -1
+        return lib.rtlsdr_get_device_count()
+
+    def tune(self, mhz):
+        self.lib.rtlsdr_set_center_freq(self.dev, int(round(mhz * 1e6)) - OFFSET)
+
+    def read(self, samples):
+        got = ctypes.c_int(0)
+        if self.lib.rtlsdr_read_sync(self.dev, self.buf, samples * 2, ctypes.byref(got)) != 0 or got.value <= 0:
+            raise OSError("The RTL-SDR stopped answering (unplugged?).")
+        raw = np.frombuffer(self.buf.raw[:got.value], dtype=np.uint8).astype(np.float32)
+        return ((raw[0::2] - 127.4) + 1j * (raw[1::2] - 127.4)).astype(np.complex64) / 128
+
+    def close(self):
+        self.lib.rtlsdr_close(self.dev)
+
+
+class FakeDongle:
+    """Noise everywhere, and a talking-ish FM signal on the test frequencies (EMCOMM_SCANNER_FAKE)."""
+
+    def __init__(self, busy_mhz, tone=None):
+        self.busy, self.tone, self.mhz, self.n = busy_mhz, tone, None, 0
+        self.rng = np.random.default_rng(1)
+
+    def tune(self, mhz):
+        self.mhz = mhz
+
+    def read(self, samples):
+        time.sleep(samples / RATE)
+        return fm_test_signal(samples, self.n, self.mhz in self.busy, self.tone, self.rng, advance=self)
+
+    def close(self):
+        pass
+
+
+def fm_test_signal(samples, start, on, tone, rng, advance=None, snr_db=25):
+    """IQ at RATE: noise, plus (if on) a narrow FM carrier OFFSET above centre with a 1 kHz note and tone."""
+    noise = (rng.standard_normal(samples) + 1j * rng.standard_normal(samples)) * 0.05
+    if advance is not None:
+        advance.n += samples
+    if not on:
+        return noise.astype(np.complex64)
+    t = (np.arange(samples) + start) / RATE
+    message = 0.6 * np.sin(2 * np.pi * 1000 * t) * DEVIATION
+    if tone:
+        message = message + 0.15 * DEVIATION * np.sin(2 * np.pi * tone * t)
+    phase = 2 * np.pi * (OFFSET * t + np.cumsum(message) / RATE)
+    amp = 0.05 * math.sqrt(2) * 10 ** (snr_db / 20)
+    return (noise + amp * np.exp(1j * phase)).astype(np.complex64)
+
+
+# ---- the scanning loop ---------------------------------------------------------
+
+class Scanner(threading.Thread):
+    """Steps through the scan list; stops on a channel with a signal (and its PL tone)."""
+
+    def __init__(self, on_state):
+        super().__init__(daemon=True)
+        self.on_state = on_state
+        self.lock = threading.Lock()
+        self.channels, self.settings = [], load_settings()
+        self.hold = None       # channel held by the operator
+        self.skip_now = False
+        self.stopping = False
+        self.dongle = None
+        self.audio = None
+        self.wake = threading.Event()
+
+    def configure(self, channels, settings):
+        with self.lock:
+            self.channels, self.settings = list(channels), dict(settings)
+
+    def set_hold(self, ch):
+        """Stay on one channel (None: back to scanning). Leaves the channel being listened to."""
+        with self.lock:
+            self.hold = ch
+        self.wake.set()
+
+    def skip(self):
+        self.skip_now = True
+
+    def stop(self):
+        self.stopping = True
+        self.wake.set()
+
+    def _open(self):
+        if FAKE:
+            busy = [float(x) for x in FAKE.split(",") if x.strip()]
+            self.dongle = FakeDongle(busy, tone=float(os.environ.get("EMCOMM_SCANNER_FAKE_TONE", "0")) or None)
+            return
+        count = Dongle.count()
+        if count < 0:
+            raise OSError("The RTL-SDR library isn't installed. Run Update station in Settings.")
+        if count == 0:
+            raise OSError("No RTL-SDR dongle found. Plug one in with a VHF/UHF antenna.")
+        index = 1 if count > 1 and nwr_in_use() else 0
+        if index == 0:
+            claim_sdr("Scanner")  # the weather radio listener lets go of the dongle
+        for _ in range(12):
+            try:
+                self.dongle = Dongle(index, self.settings.get("gain"), self.settings.get("ppm"))
+                return
+            except OSError:
+                time.sleep(0.5)
+        raise OSError("The RTL-SDR is busy in another app (Gqrx?). Close it and tap Scan.")
+
+    def _play(self, samples):
+        if self.audio is None or self.audio.poll() is not None:
+            try:
+                self.audio = subprocess.Popen(["pacat", "--playback", "--raw", "--format=s16le",
+                                               f"--rate={AUDIO_RATE}", "--channels=1", "--latency-msec=150",
+                                               "--client-name=Scanner"], stdin=subprocess.PIPE)
+            except OSError:
+                self.audio = None
+                return
+        volume = (self.settings.get("volume", 70) / 100) ** 2
+        try:
+            self.audio.stdin.write((np.clip(samples * volume, -1, 1) * 32000).astype("<i2").tobytes())
+            self.audio.stdin.flush()
+        except (BrokenPipeError, OSError):
+            self.audio = None
+
+    def run(self):
+        try:
+            self._open()
+        except OSError as err:
+            release_sdr()
+            self.on_state({"state": "error", "text": str(err)})
+            return
+        demod = Demod()
+        position = 0
+        try:
+            while not self.stopping:
+                self.wake.clear()
+                with self.lock:
+                    held, settings = self.hold, self.settings
+                    targets = [held] if held else scan_list(self.channels, settings)
+                if not targets:
+                    self.on_state({"state": "idle", "text": "Nothing to scan: turn on a group or widen the distance."})
+                    self.wake.wait(0.5)
+                    continue
+                position %= len(targets)
+                ch = targets[position]
+                if self._visit(ch, demod, settings, held is not None):
+                    position += 1 if held is None else 0
+                else:
+                    position += 1
+        except OSError as err:
+            self.on_state({"state": "error", "text": str(err)})
+        finally:
+            if self.dongle:
+                self.dongle.close()
+            release_sdr()
+            if self.audio and self.audio.poll() is None:
+                self.audio.terminate()
+
+    def _visit(self, ch, demod, settings, held):
+        """Look at one channel; stay while it's active. True if it was active."""
+        threshold = SQUELCH_LEVELS.get(int(settings.get("squelch", 4)), 0.38)
+        self.dongle.tune(ch["mhz"])
+        self.dongle.read(SETTLE)
+        demod.reset()
+        _audio, fm, noise = demod.process(self.dongle.read(LOOK))
+        if not held:
+            self.on_state({"state": "scanning", "channel": ch, "level": noise})
+        if noise > threshold:
+            if held:
+                self.on_state({"state": "holding", "channel": ch, "level": noise, "open": False})
+            return False
+        # Something's there. With tone squelch, it must carry this channel's PL tone.
+        want_tone = settings.get("tone_squelch") and ch.get("tone_kind") == "pl"
+        heard = [fm]
+        quiet_since, started, toned = None, time.time(), not want_tone
+        while not self.stopping and not self.wake.is_set():
+            if self.skip_now:
+                self.skip_now = False
+                return True
+            audio, fm, noise = demod.process(self.dongle.read(LISTEN))
+            if not toned:
+                heard.append(fm)
+                joined = np.concatenate(heard)
+                if has_tone(joined, ch["tone"]):
+                    toned = True
+                elif len(joined) >= TONE_WAIT * AUDIO_RATE:
+                    if held:
+                        heard = heard[-2:]
+                        self.on_state({"state": "holding", "channel": ch, "level": noise, "open": False,
+                                       "other": True})
+                        continue
+                    return False  # someone else on the frequency
+                if not toned:
+                    continue
+            is_open = noise <= threshold * 1.25  # a little hysteresis
+            if is_open:
+                quiet_since = None
+                self._play(audio)
+            elif quiet_since is None:
+                quiet_since = time.time()
+            self.on_state({"state": "holding" if held else "listening", "channel": ch, "level": noise,
+                           "open": is_open, "since": started})
+            if quiet_since and time.time() - quiet_since > HANG:
+                return True
+            settings = self.settings  # squelch and volume changes apply straight away
+            threshold = SQUELCH_LEVELS.get(int(settings.get("squelch", 4)), 0.38)
+        return True
+
+
+# ---- window ------------------------------------------------------------------
+
+THEMES = {
+    "dark": dict(bg="#101214", surface="#1A1D21", hover="#22262B", line="#2A2F35", input_line="#3A4048",
+                 text="#E8E6E1", muted="#9AA0A6", accent="#F2A33A", accent_fill="#F2A33A", on_accent="#101214",
+                 ok="#4FC3B8", danger_text="#F4B4AF"),
+    "light": dict(bg="#F4F2EE", surface="#FFFFFF", hover="#EFECE6", line="#D6D2CA", input_line="#BDB8AE",
+                  text="#1D1F22", muted="#5F6368", accent="#A85F00", accent_fill="#F2A33A", on_accent="#101214",
+                  ok="#00796B", danger_text="#B71C1C"),
+}
+CSS = """
+window, .page {{ background: {bg}; color: {text}; font-family: 'IBM Plex Sans', sans-serif; }}
+.panel {{ background: {surface}; border: 1px solid {line}; border-radius: 12px; padding: 12px 16px; }}
+.big {{ font-size: 30px; font-weight: 600; }}
+.freq {{ font-family: 'IBM Plex Mono', monospace; font-size: 26px; font-weight: 600; color: {accent}; }}
+.muted {{ color: {muted}; }}
+.state {{ font-family: 'IBM Plex Mono', monospace; font-size: 15px; font-weight: 600; color: {muted}; }}
+.state.live {{ color: {ok}; }}
+.error {{ color: {danger_text}; }}
+button {{ background: {surface}; background-image: none; box-shadow: none; text-shadow: none; color: {text};
+          border: 1px solid {line}; border-radius: 10px; min-height: 48px; font-size: 16px; padding: 0 14px; }}
+button:hover {{ background: {hover}; }}
+button.on, button.primary {{ background: {accent_fill}; color: {on_accent}; border: none; font-weight: 600; }}
+button.on label, button.primary label {{ color: {on_accent}; }}
+checkbutton {{ font-size: 16px; padding: 6px 0; }}
+checkbutton check {{ min-width: 22px; min-height: 22px; }}
+treeview {{ font-size: 15px; background: {surface}; color: {text}; }}
+treeview:selected {{ background: {hover}; color: {text}; }}
+treeview header button {{ min-height: 30px; font-size: 13px; color: {muted}; border-radius: 0; }}
+combobox button {{ min-height: 40px; }}
+scale trough {{ min-height: 8px; }}
+levelbar trough {{ background: {bg}; border: 1px solid {line}; border-radius: 4px; min-height: 12px; }}
+levelbar block.filled {{ background: {ok}; border: none; border-radius: 4px; }}
+levelbar block.empty {{ background: transparent; border: none; }}
+.section-title {{ font-size: 12px; font-weight: 600; color: {muted}; letter-spacing: 1px; }}
+"""
+
+
+def window_main():
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import GLib, Gtk, Gdk
+
+    def theme():
+        try:
+            with open(THEME_PATH, encoding="utf-8") as f:
+                return THEMES.get(f.read().strip(), THEMES["dark"])
+        except OSError:
+            return THEMES["dark"]
+
+    class Window(Gtk.Window):
+        def __init__(self):
+            super().__init__(title="Scanner")
+            self.set_wmclass("emcomm-scanner", "Scanner")
+            self.set_default_size(1024, 552)
+            provider = Gtk.CssProvider()
+            provider.load_from_data(CSS.format(**theme()).encode())
+            Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
+                                                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            self.settings = load_settings()
+            self.scanner = None
+            self.state = {}
+            self.held = None
+            self.filling = False
+            self.connect("destroy", self._quit)
+
+            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=12)
+            page.get_style_context().add_class("page")
+            self.add(page)
+
+            # What's on now.
+            now = Gtk.Box(spacing=16)
+            now.get_style_context().add_class("panel")
+            left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            self.state_label = Gtk.Label(xalign=0)
+            self.state_label.get_style_context().add_class("state")
+            self.name_label = Gtk.Label(xalign=0, ellipsize=3)
+            self.name_label.get_style_context().add_class("big")
+            self.detail_label = Gtk.Label(xalign=0, ellipsize=3)
+            self.detail_label.get_style_context().add_class("muted")
+            for w in (self.state_label, self.name_label, self.detail_label):
+                left.pack_start(w, False, False, 0)
+            now.pack_start(left, True, True, 0)
+            right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER)
+            self.freq_label = Gtk.Label(xalign=1)
+            self.freq_label.get_style_context().add_class("freq")
+            self.level = Gtk.LevelBar(min_value=0, max_value=1, width_request=220)
+            right.pack_start(self.freq_label, False, False, 0)
+            right.pack_start(self.level, False, False, 0)
+            now.pack_start(right, False, False, 0)
+            page.pack_start(now, False, False, 0)
+
+            # Controls.
+            bar = Gtk.Box(spacing=8)
+            self.scan_btn = self._button("Scan", self._scan_clicked)
+            self.hold_btn = self._button("Hold", self._hold_clicked)
+            bar.pack_start(self.scan_btn, False, False, 0)
+            bar.pack_start(self.hold_btn, False, False, 0)
+            bar.pack_start(self._button("Skip", lambda *_: self.scanner and self.scanner.skip()), False, False, 0)
+            bar.pack_start(self._button("Lock out", self._lock_out), False, False, 0)
+            bar.pack_start(Gtk.Label(label="Squelch", margin_start=10), False, False, 0)
+            self.squelch = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 9, 1)
+            self.squelch.set_size_request(130, -1)
+            self.squelch.set_value(self.settings["squelch"])
+            self.squelch.connect("value-changed", self._changed)
+            bar.pack_start(self.squelch, False, False, 0)
+            bar.pack_start(Gtk.Label(label="Volume"), False, False, 0)
+            self.volume = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 5)
+            self.volume.set_draw_value(False)
+            self.volume.set_size_request(130, -1)
+            self.volume.set_value(self.settings["volume"])
+            self.volume.connect("value-changed", self._changed)
+            bar.pack_start(self.volume, False, False, 0)
+            self.tone = Gtk.CheckButton(label="Tone squelch")
+            self.tone.set_active(self.settings["tone_squelch"])
+            self.tone.set_tooltip_text("Only stop for the channel's own PL tone, not other users of the frequency")
+            self.tone.connect("toggled", self._changed)
+            bar.pack_end(self.tone, False, False, 0)
+            page.pack_start(bar, False, False, 0)
+
+            body = Gtk.Box(spacing=10)
+            page.pack_start(body, True, True, 0)
+
+            # Groups and distance.
+            side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, width_request=250)
+            side.get_style_context().add_class("panel")
+            title = Gtk.Label(label="GROUPS", xalign=0)
+            title.get_style_context().add_class("section-title")
+            side.pack_start(title, False, False, 0)
+            self.group_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            groups_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+            groups_scroll.add(self.group_box)
+            side.pack_start(groups_scroll, True, True, 0)
+            title = Gtk.Label(label="WITHIN", xalign=0)
+            title.get_style_context().add_class("section-title")
+            side.pack_start(title, False, False, 0)
+            self.distance = Gtk.ComboBoxText()
+            for miles, label in DISTANCES:
+                self.distance.append(str(miles), label)
+            self.distance.set_active_id(str(self.settings["miles"]))
+            if self.distance.get_active_id() is None:
+                self.distance.set_active_id("25")
+            self.distance.connect("changed", self._changed)
+            side.pack_start(self.distance, False, False, 0)
+            self.where_label = Gtk.Label(xalign=0, wrap=True)
+            self.where_label.get_style_context().add_class("muted")
+            side.pack_start(self.where_label, False, False, 0)
+            row = Gtk.Box(spacing=6)
+            row.pack_start(self._button("Load a list", self._load_list), True, True, 0)
+            row.pack_start(self._button("Dongle", self._dongle_dialog), True, True, 0)
+            side.pack_end(row, False, False, 0)
+            body.pack_start(side, False, False, 0)
+
+            # Channels.
+            self.store = Gtk.ListStore(bool, str, str, str, str, str, str, int)
+            self.view = Gtk.TreeView(model=self.store)
+            toggle = Gtk.CellRendererToggle()
+            toggle.connect("toggled", self._toggle_channel)
+            self.view.append_column(Gtk.TreeViewColumn("Scan", toggle, active=0))
+            for i, (name, width) in enumerate((("Channel", 170), ("MHz", 90), ("Agency", 200), ("Tone", 80),
+                                               ("Miles", 60)), start=1):
+                cell = Gtk.CellRendererText(ellipsize=3)
+                col = Gtk.TreeViewColumn(name, cell, text=i, foreground=6)
+                col.set_fixed_width(width)
+                col.set_resizable(True)
+                col.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+                self.view.append_column(col)
+            self.view.set_activate_on_single_click(True)
+            self.view.connect("row-activated", self._row_activated)
+            scroll = Gtk.ScrolledWindow()
+            scroll.add(self.view)
+            frame = Gtk.Box()
+            frame.get_style_context().add_class("panel")
+            frame.pack_start(scroll, True, True, 0)
+            body.pack_start(frame, True, True, 0)
+
+            self.message = Gtk.Label(xalign=0, wrap=True)
+            page.pack_start(self.message, False, False, 0)
+
+            self._load()
+            self.show_all()
+            self.maximize()
+            GLib.timeout_add(150, self._show_state)
+            if np is None:
+                self._say("The scanner needs numpy (python3-numpy). Run Update station in Settings.", True)
+            else:
+                self._start()
+
+        def _button(self, label, handler):
+            btn = Gtk.Button(label=label)
+            btn.connect("clicked", handler)
+            return btn
+
+        def _say(self, text, error=False):
+            self.message.set_text(text or "")
+            ctx = self.message.get_style_context()
+            (ctx.add_class if error else ctx.remove_class)("error")
+
+        # -- channel list --
+
+        def _load(self):
+            ensure_list()
+            try:
+                self.channels = load_channels()
+            except OSError:
+                self.channels = []
+                self._say(f"No channel list yet. Put a CSV with a Frequency column at ~/{os.path.basename(CHANNELS)} "
+                          "or tap Load a list.", True)
+            self.here = station_location()
+            add_distances(self.channels, self.here)
+            self.where_label.set_text("of this station's grid square" if self.here else
+                                      "Set the station's grid square in Settings > User to filter by distance.")
+            for child in self.group_box.get_children():
+                child.destroy()
+            groups = []
+            for ch in self.channels:
+                if ch["group"] not in groups:
+                    groups.append(ch["group"])
+            self.group_checks = {}
+            for group in groups:
+                count = sum(1 for ch in self.channels if ch["group"] == group)
+                check = Gtk.CheckButton(label=f"{group}  ({count})")
+                check.set_active(group not in self.settings["groups_off"])
+                check.connect("toggled", self._changed)
+                self.group_box.pack_start(check, False, False, 0)
+                self.group_checks[group] = check
+            self.group_box.show_all()
+            self._fill()
+
+        def _fill(self):
+            self.filling = True
+            self.store.clear()
+            scanning = {channel_key(ch) for ch in scan_list(self.channels, self.settings)}
+            locked = set(self.settings["lockouts"])
+            colours = theme()
+            self.rows = []
+            for ch in self.channels:
+                if ch["group"] in self.settings["groups_off"]:
+                    continue
+                miles = self.settings["miles"]
+                if miles and ch.get("miles") is not None and ch["miles"] > miles:
+                    continue
+                key = channel_key(ch)
+                self.rows.append(ch)
+                dim = key in locked or ch.get("unsupported")
+                tone = ch["tone_text"] if ch["tone_kind"] else ""
+                self.store.append([key in scanning, ch["name"], f"{ch['mhz']:.4f}",
+                                   ch.get("unsupported") or ch["agency"], tone,
+                                   "" if ch.get("miles") is None else f"{ch['miles']:.0f}",
+                                   colours["muted"] if dim else colours["text"], len(self.rows) - 1])
+            self.filling = False
+            count = len(scanning)
+            self.count_text = f"{count} channel{'s' if count != 1 else ''}"
+
+        def _changed(self, *_):
+            if self.filling:
+                return
+            self.settings.update(
+                squelch=int(self.squelch.get_value()), volume=int(self.volume.get_value()),
+                tone_squelch=self.tone.get_active(), miles=int(self.distance.get_active_id() or 0),
+                groups_off=[g for g, c in self.group_checks.items() if not c.get_active()])
+            save_settings(self.settings)
+            self._fill()
+            if self.scanner:
+                self.scanner.configure(self.channels, self.settings)
+
+        def _toggle_channel(self, _cell, path):
+            ch = self.rows[self.store[path][7]]
+            key = channel_key(ch)
+            if ch.get("unsupported"):
+                self._say(f"{ch['name']} is {ch['unsupported']}; the scanner plays analog FM only.", True)
+                return
+            locked = self.settings["lockouts"]
+            if key in locked:
+                locked.remove(key)
+            else:
+                locked.append(key)
+            self._changed()
+
+        def _lock_out(self, *_):
+            ch = self.state.get("channel")
+            if not ch:
+                return
+            if channel_key(ch) not in self.settings["lockouts"]:
+                self.settings["lockouts"].append(channel_key(ch))
+            if self.held and channel_key(self.held) == channel_key(ch):
+                self._scan_clicked()
+            self._changed()
+            if self.scanner:
+                self.scanner.skip()
+            self._say(f"Locked out {ch['name']}. Tick it in the list to scan it again.")
+
+        def _row_activated(self, view, path, col):
+            if col == view.get_column(0):
+                return  # the Scan tick box
+            ch = self.rows[self.store[path][7]]
+            if ch.get("unsupported"):
+                self._say(f"{ch['name']} is {ch['unsupported']}; the scanner plays analog FM only.", True)
+                return
+            self.held = ch
+            if self.scanner:
+                self.scanner.set_hold(ch)
+            self._show_buttons()
+
+        def _scan_clicked(self, *_):
+            self.held = None
+            if self.scanner and self.scanner.is_alive():
+                self.scanner.set_hold(None)
+            else:
+                self._start()
+            self._show_buttons()
+
+        def _hold_clicked(self, *_):
+            ch = self.state.get("channel")
+            if ch and not self.held:
+                self.held = ch
+                if self.scanner:
+                    self.scanner.set_hold(ch)
+            elif self.held:
+                self._scan_clicked()
+            self._show_buttons()
+
+        def _show_buttons(self):
+            for btn, on in ((self.scan_btn, not self.held), (self.hold_btn, bool(self.held))):
+                (btn.get_style_context().add_class if on else btn.get_style_context().remove_class)("on")
+
+        def _start(self):
+            self._say("")
+            self.scanner = Scanner(self._got_state)
+            self.scanner.configure(self.channels, self.settings)
+            self.scanner.set_hold(self.held)
+            self.scanner.start()
+            self._show_buttons()
+
+        def _got_state(self, state):
+            self.state = state  # read by the GTK timer; the scanner thread never touches widgets
+
+        def _show_state(self):
+            s = self.state
+            ch = s.get("channel")
+            kind = s.get("state")
+            if kind == "error":
+                self.state_label.set_text("STOPPED")
+                self.name_label.set_text("No receiver")
+                self.detail_label.set_text("")
+                self.freq_label.set_text("")
+                self._say(s.get("text", ""), True)
+                self.state = {"state": "stopped"}
+            elif kind == "idle":
+                self.state_label.set_text("IDLE")
+                self.name_label.set_text(s.get("text", ""))
+            elif ch:
+                live = kind in ("listening", "holding") and s.get("open")
+                label = {"scanning": f"SCANNING  {self.count_text}", "listening": "ACTIVE",
+                         "holding": "HOLD" + ("  · another user, wrong tone" if s.get("other") else "")}[kind]
+                self.state_label.set_text(label)
+                ctx = self.state_label.get_style_context()
+                (ctx.add_class if live else ctx.remove_class)("live")
+                self.name_label.set_text(ch["name"])
+                bits = [ch["agency"], ch["county"] if ch["county"] not in ch["agency"] else "",
+                        ch["tone_text"] if ch["tone_kind"] else "",
+                        "" if ch.get("miles") is None else f"{ch['miles']:.0f} mi"]
+                self.detail_label.set_text("  ·  ".join(b for b in bits if b))
+                self.freq_label.set_text(f"{ch['mhz']:.4f}")
+                self.level.set_value(max(0.0, min(1.0, 1 - s.get("level", 1))))
+            return True
+
+        def _load_list(self, *_):
+            dialog = Gtk.FileChooserDialog(title="Choose a channel list (CSV)", transient_for=self,
+                                           action=Gtk.FileChooserAction.OPEN)
+            dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Use this list", Gtk.ResponseType.OK)
+            filt = Gtk.FileFilter()
+            filt.set_name("CSV lists")
+            filt.add_pattern("*.csv")
+            filt.add_pattern("*.CSV")
+            dialog.add_filter(filt)
+            for folder in ("/media", HOME):
+                if os.path.isdir(folder):
+                    dialog.add_shortcut_folder(folder)
+            sticks = [d for d in glob.glob("/media/*/*") + glob.glob("/media/*") if os.path.ismount(d)]
+            dialog.set_current_folder(sticks[0] if sticks else HOME)
+            path = dialog.get_filename() if dialog.run() == Gtk.ResponseType.OK else None
+            dialog.destroy()
+            if not path:
+                return
+            try:
+                found = load_channels(path)
+            except (OSError, UnicodeDecodeError, csv.Error) as err:
+                self._say(f"Couldn't read that file: {err}", True)
+                return
+            if not found:
+                self._say("That file has no channels: it needs a Frequency column in MHz.", True)
+                return
+            if os.path.exists(CHANNELS):
+                shutil.copyfile(CHANNELS, CHANNELS + ".old")
+            shutil.copyfile(path, CHANNELS)
+            self.settings["groups_off"], self.settings["lockouts"] = [], []
+            save_settings(self.settings)
+            self._load()
+            if self.scanner:
+                self.scanner.configure(self.channels, self.settings)
+            self._say(f"Loaded {len(found)} channels. The previous list is kept as "
+                      f"~/{os.path.basename(CHANNELS)}.old")
+
+        def _dongle_dialog(self, *_):
+            dialog = Gtk.Dialog(title="RTL-SDR dongle", transient_for=self, modal=True)
+            dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
+            grid = Gtk.Grid(row_spacing=10, column_spacing=12, margin=16)
+            gain = Gtk.ComboBoxText()
+            gain.append("auto", "Automatic")
+            for db in (20, 30, 35, 40, 45, 49):
+                gain.append(str(db), f"{db} dB")
+            gain.set_active_id(str(self.settings["gain"]))
+            if gain.get_active_id() is None:
+                gain.set_active_id("40")
+            ppm = Gtk.SpinButton.new_with_range(-100, 100, 1)
+            ppm.set_value(self.settings["ppm"])
+            grid.attach(Gtk.Label(label="Gain", xalign=0), 0, 0, 1, 1)
+            grid.attach(gain, 1, 0, 1, 1)
+            grid.attach(Gtk.Label(label="Frequency correction (ppm)", xalign=0), 0, 1, 1, 1)
+            grid.attach(ppm, 1, 1, 1, 1)
+            note = Gtk.Label(xalign=0, wrap=True, max_width_chars=50, label=(
+                "Lower the gain if strong local stations show up on the wrong channels. "
+                "Most dongles need 0 to 60 ppm; a TCXO dongle needs 0. "
+                f"Dongles plugged in: {usb_dongles()}."))
+            note.get_style_context().add_class("muted")
+            grid.attach(note, 0, 2, 2, 1)
+            dialog.get_content_area().add(grid)
+            dialog.show_all()
+            if dialog.run() == Gtk.ResponseType.OK:
+                value = gain.get_active_id()
+                self.settings["gain"] = "auto" if value == "auto" else int(value)
+                self.settings["ppm"] = int(ppm.get_value())
+                save_settings(self.settings)
+                self._restart()
+            dialog.destroy()
+
+        def _restart(self):
+            if self.scanner:
+                self.scanner.stop()
+                self.scanner.join(timeout=3)
+            self._start()
+
+        def _quit(self, *_):
+            if self.scanner:
+                self.scanner.stop()
+                self.scanner.join(timeout=3)
+            release_sdr()
+            Gtk.main_quit()
+
+    Window()
+    Gtk.main()
+    return 0
+
+
+GQRX_COLOURS = ["#e5534b", "#4fc3b8", "#f2a33a", "#6ea8fe", "#c792ea", "#a5d6a7", "#ffab91", "#c0c0c0"]
+
+
+def gqrx_bookmarks(channels):
+    """The channel list as a Gqrx bookmarks.csv, one tag per group."""
+    def tag(group):
+        return re.sub(r"[;,]", " ", group).strip() or "Channels"
+    groups = []
+    for ch in channels:
+        if tag(ch["group"]) not in groups:
+            groups.append(tag(ch["group"]))
+    lines = ["# Written by Emcomm-CNC from ~/Scanner channels.csv; edit that list instead.",
+             "# Tag name".ljust(20) + "; " + " color"]
+    lines += [g + "; " + GQRX_COLOURS[i % len(GQRX_COLOURS)] for i, g in enumerate(groups)]
+    lines += ["", "# Frequency".ljust(12) + "; " + "Name".ljust(25) + "; " + "Modulation".ljust(20) + "; "
+              + "Bandwidth".rjust(10) + "; " + "Tags"]
+    for ch in channels:
+        name = re.sub(r"[;,]", " ", ch["name"])
+        mode = "AM" if ch["mode"] == "AM" else "Narrow FM"
+        lines.append(str(int(round(ch["mhz"] * 1e6))).rjust(12) + "; " + name.ljust(25) + "; " + mode.ljust(20)
+                     + "; " + "10000".rjust(10) + "; " + tag(ch["group"]))
+    return "\n".join(lines) + "\n"
+
+
+def main(argv):
+    if argv == ["--gqrx-bookmarks"]:
+        ensure_list()
+        sys.stdout.write(gqrx_bookmarks(load_channels()))
+        return 0
+    if argv[:1] == ["--list"]:
+        path = argv[1] if len(argv) > 1 else CHANNELS
+        if len(argv) == 1:
+            ensure_list()
+        channels = load_channels(path)
+        add_distances(channels, station_location())
+        settings = load_settings()
+        keep = {channel_key(ch) for ch in scan_list(channels, settings)}
+        for ch in channels:
+            print(json.dumps(dict(ch, scan=channel_key(ch) in keep)))
+        return 0
+    if argv:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    return window_main()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

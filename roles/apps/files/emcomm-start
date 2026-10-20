@@ -1,7 +1,7 @@
 #!/bin/bash
 # Start a radio app from a launcher tile, with its settings filled in from the
 # station settings first.
-# Usage: emcomm-start js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore
+# Usage: emcomm-start js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore|sdr
 set -u
 
 STATE="$HOME/.local/state/emcomm"
@@ -21,6 +21,18 @@ node_ports() {
     [[ "$rig" == *" $(readlink -f "$dev") "* ]] && continue
     echo "$dev"
   done
+}
+
+# RTL-SDR dongles plugged in (RTL2832U with the usual USB IDs).
+rtl_dongles() {
+  local dev n=0
+  for dev in /sys/bus/usb/devices/*; do
+    [ -f "$dev/idVendor" ] || continue
+    case "$(cat "$dev/idVendor"):$(cat "$dev/idProduct")" in
+      0bda:2838|0bda:2832) n=$((n + 1)) ;;
+    esac
+  done
+  echo "$n"
 }
 
 BT_SEARCH="Search for a Bluetooth radio"
@@ -166,8 +178,37 @@ case "${1:-}" in
     if [ "${node%% *}" = ble ]; then exec meshcore-cli -a "${node#* }"; fi
     exec meshcore-cli -s "${node#* }"
     ;;
+  sdr)
+    # Gqrx on the RTL-SDR, with the scanner's channel list as bookmarks. The
+    # weather radio listener uses the first dongle; it lets go of it while
+    # sdr.json names a running app. With two dongles Gqrx takes the second.
+    index=0
+    if [ "$(rtl_dongles)" -gt 1 ] && grep -q '"freq": *[0-9]' "$HOME/.config/emcomm/nwr.json" 2>/dev/null; then
+      index=1
+    fi
+    conf="$HOME/.config/gqrx/default.conf"
+    mkdir -p "$HOME/.config/gqrx"
+    if [ ! -f "$conf" ]; then
+      printf '[General]\nconfigversion=4\ncrashed=false\n\n[input]\ndevice="rtl=%s"\nsample_rate=1800000\nfrequency=162550000\n' \
+        "$index" > "$conf"
+    else
+      sed -i "s/^device=\"rtl=[0-9]*\"/device=\"rtl=$index\"/" "$conf"
+    fi
+    marks="$HOME/.config/gqrx/bookmarks.csv"
+    if [ ! -f "$marks" ] || head -1 "$marks" | grep -q "Emcomm-CNC"; then
+      emcomm-scanner --gqrx-bookmarks > "$marks.tmp" 2>/dev/null && mv "$marks.tmp" "$marks"
+      rm -f "$marks.tmp"
+    fi
+    if [ "$index" = 0 ]; then
+      printf '{"pid": %s, "app": "Gqrx"}\n' "$$" > "$STATE/sdr.json"
+      trap 'rm -f "$STATE/sdr.json"' EXIT
+      sleep 3  # the weather radio listener checks every 2 seconds
+    fi
+    gqrx
+    exit 0
+    ;;
   *)
-    echo "usage: $0 js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore" >&2
+    echo "usage: $0 js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore|sdr" >&2
     exit 2
     ;;
 esac

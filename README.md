@@ -237,6 +237,29 @@ environment.
   CHIRP is built from its source on GitHub, the same code as its daily builds
   (set `apps_chirp_version` in `roles/apps/defaults/main.yml` to a commit or tag
   to stay on one). Its download site turns away scripts, so it isn't used.
+- **Scanner** (tile, RTL-SDR): plug in an RTL-SDR dongle with a VHF/UHF antenna
+  and tap Scanner. It scans `~/Scanner channels.csv`, which starts as Vermont's
+  emergency channels (law enforcement, fire/EMS, interop/EOC, 347 channels), and
+  stops on any channel with a signal. Tick or untick groups on the left, and pick
+  how far away to listen (10, 25, 50, 100 miles or everywhere) from the grid
+  square in Settings > User; statewide channels with no site are always kept.
+  **Hold** stays on the channel, tapping a channel in the list holds there,
+  **Skip** moves on, **Lock out** (or untick a channel) leaves it out of the scan.
+  **Tone squelch** only stops when the channel's own PL tone is there, so other
+  users of the frequency are skipped (DPL channels stop on any signal). Squelch 1
+  opens on almost anything, 9 needs a strong signal; 4 suits most antennas.
+  **Load a list** takes any CSV with a Frequency column (MHz), for example a
+  RadioReference export, from a USB stick; Alpha Tag, Group, Agency, County,
+  Tone, Mode, Latitude and Longitude columns are used when present. Analog FM
+  only: P25, DMR and other digital channels are listed but not scanned.
+  **Dongle** sets the gain and frequency correction (ppm). Audio plays on the
+  station's speaker.
+- **Gqrx** (tile, RTL-SDR): a waterfall receiver for tuning anywhere from 24 MHz to
+  1.7 GHz, with the scanner's channel list as its bookmarks (one tag per group).
+  The weather radio alert listener uses the RTL-SDR too: while the Scanner or
+  Gqrx has the dongle, alerts pause (the Online page says so) and resume when it
+  closes. With two dongles plugged in, the alerts keep the first and the Scanner
+  and Gqrx use the second. Settings > Devices lists the dongles plugged in.
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 

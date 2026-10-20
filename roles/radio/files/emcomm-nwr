@@ -11,6 +11,8 @@ shape as the internet weather alerts, so the launcher shows both together.
 Settings are in ~/.config/emcomm/nwr.json, written by the launcher:
   {"freq": 162.55, "codes": ["025017"], "ppm": 0}
 codes are 6-digit SAME location codes; none means keep every alert heard.
+While the Scanner or Gqrx holds the dongle (~/.local/state/emcomm/sdr.json names
+it and its process), the listener lets go and waits.
 """
 
 import calendar
@@ -25,6 +27,7 @@ import time
 CONFIG = os.path.expanduser("~/.config/emcomm/nwr.json")
 CACHE = os.path.join(os.environ.get("EMCOMM_ONLINE_CACHE", os.path.expanduser("~/.cache/emcomm/online")),
                      "nwr.json")
+SDR_LOCK = os.path.expanduser("~/.local/state/emcomm/sdr.json")  # written by the Scanner and Gqrx tiles
 CHANNELS = (162.400, 162.425, 162.450, 162.475, 162.500, 162.525, 162.550)
 HEADER_RE = re.compile(r"^EAS: ZCZC-([A-Z]{3})-([A-Z]{3})-((?:\d{6}-?)+)\+(\d{4})-(\d{7})-([^-]{1,8})-?")
 TESTS = {"RWT", "RMT", "DMO", "NPT"}
@@ -157,6 +160,19 @@ def load_config():
     return (float(freq) if freq in CHANNELS else None), codes, ppm
 
 
+def sdr_claimed():
+    """The app holding the RTL-SDR for now (Scanner, Gqrx), if it's still running."""
+    try:
+        with open(SDR_LOCK, encoding="utf-8") as f:
+            lock = json.load(f)
+        os.kill(int(lock["pid"]), 0)
+    except PermissionError:  # running as someone else: still running
+        pass
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return str(lock.get("app") or "another app")
+
+
 def set_status(error=None, listening=None):
     record = load_record()
     record["tried"] = int(time.time())
@@ -171,6 +187,11 @@ def run():
         if not freq:
             set_status("Weather radio isn't set up: pick your NOAA Weather Radio channel on the Online page.")
             time.sleep(10)
+            continue
+        claimed = sdr_claimed()
+        if claimed:
+            set_status(f"Paused while the {claimed} uses the RTL-SDR. Alerts resume when it closes.")
+            time.sleep(2)
             continue
         stamp = os.path.getmtime(CONFIG)
         rtl = subprocess.Popen(["rtl_fm", "-f", f"{freq}M", "-M", "fm", "-s", "22050", "-E", "dc",
@@ -190,10 +211,10 @@ def run():
 
         threading.Thread(target=read, daemon=True).start()
         while rtl.poll() is None:
-            if not os.path.exists(CONFIG) or os.path.getmtime(CONFIG) != stamp:
+            if not os.path.exists(CONFIG) or os.path.getmtime(CONFIG) != stamp or sdr_claimed():
                 break
             time.sleep(2)
-        failed = rtl.poll() is not None
+        failed = rtl.poll() is not None and not sdr_claimed()
         for proc in (rtl, mm):
             if proc.poll() is None:
                 proc.terminate()

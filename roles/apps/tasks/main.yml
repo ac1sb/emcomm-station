@@ -201,6 +201,36 @@
       when: apps_natural_earth is changed or not apps_basemap.stat.exists
       changed_when: true
 
+# RTL-SDR receivers. The Scanner is the station's own (numpy narrow-FM demod on
+# librtlsdr, audio through PipeWire); Gqrx is for tuning around freely. Both
+# install together and share ~/Scanner channels.csv (Gqrx gets it as bookmarks).
+- name: Install the RTL-SDR scanner and Gqrx
+  tags: [scanner, sdr]
+  block:
+    - name: Install the RTL-SDR library, numpy, the audio player and Gqrx
+      ansible.builtin.apt:
+        name: [rtl-sdr, python3-numpy, python3-gi, pulseaudio-utils, gqrx-sdr]
+        install_recommends: false
+
+    - name: Create the scanner's list folder
+      ansible.builtin.file:
+        path: /usr/share/emcomm/scanner
+        state: directory
+        mode: "0755"
+
+    - name: Install the starting channel list (Vermont emergency channels)
+      ansible.builtin.copy:
+        src: scanner/
+        dest: /usr/share/emcomm/scanner/
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Install the scanner
+      ansible.builtin.copy:
+        src: emcomm-scanner
+        dest: /usr/local/bin/emcomm-scanner
+        mode: "0755"
+
 - name: Install the web browser
   tags: [browser]
   block:
