@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Screen resolution, rotation and text size for the station's screen.
+
+  emcomm-display apply   set the screen from ~/.config/emcomm/display.json
+                         (Openbox runs this at start, and the launcher after a change)
+  emcomm-display show    print the screen, its resolutions and the saved settings as JSON
+
+The settings file, written by the launcher's Display dialog:
+  {"mode": "auto" or "1280x800", "rotate": "normal", "text_scale": 1.0}
+rotate is normal, left, right or inverted. A touchscreen is turned with the
+screen, so a tap still lands under the finger. text_scale sets the X font DPI
+(96 times the scale), which Qt, GTK and Chromium apps follow; the launcher
+scales its own text too.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+
+CONFIG = os.path.expanduser("~/.config/emcomm/display.json")
+ROTATIONS = ("normal", "left", "right", "inverted")
+TEXT_SCALES = (1.0, 1.25, 1.5)
+DEFAULTS = {"mode": "auto", "rotate": "normal", "text_scale": 1.0}
+OUTPUT_RE = re.compile(r"^(\S+) connected( primary)?(?: (\d+)x(\d+)\+\d+\+\d+)?(?: (left|right|inverted))?")
+MODE_RE = re.compile(r"^\s+(\d+x\d+)\S*\s+(.*)$")
+
+
+def load_config(path=CONFIG):
+    try:
+        with open(path, encoding="utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        saved = {}
+    config = dict(DEFAULTS)
+    if isinstance(saved.get("mode"), str) and (saved["mode"] == "auto" or re.fullmatch(r"\d+x\d+", saved["mode"])):
+        config["mode"] = saved["mode"]
+    if saved.get("rotate") in ROTATIONS:
+        config["rotate"] = saved["rotate"]
+    if saved.get("text_scale") in TEXT_SCALES:
+        config["text_scale"] = float(saved["text_scale"])
+    return config
+
+
+def save_config(config, path=CONFIG):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(config, f)
+    os.replace(path + ".tmp", path)
+
+
+def parse_outputs(text):
+    """Connected outputs from `xrandr --query`, primary first:
+    [{"name", "primary", "on", "current", "rotate", "modes", "preferred"}]."""
+    outputs, current = [], None
+    for line in text.splitlines():
+        m = OUTPUT_RE.match(line)
+        if m:
+            name, primary, width, height, rotate = m.groups()
+            current = {"name": name, "primary": bool(primary), "on": bool(width),
+                       "current": f"{width}x{height}" if width else None, "rotate": rotate or "normal",
+                       "modes": [], "preferred": None}
+            outputs.append(current)
+            continue
+        if not line.startswith((" ", "\t")):
+            current = None  # a disconnected output, or the Screen line
+            continue
+        m = MODE_RE.match(line)
+        if current is not None and m:
+            mode, rates = m.groups()
+            if mode not in current["modes"]:
+                current["modes"].append(mode)
+            if "+" in rates:
+                current["preferred"] = current["preferred"] or mode
+            if "*" in rates and current["rotate"] in ("left", "right"):
+                current["current"] = mode  # xrandr gives the turned size on the output line
+    outputs.sort(key=lambda o: (not o["primary"], not o["on"]))
+    return outputs
+
+
+def touch_devices(text):
+    """Names of direct-touch devices (touchscreens) from `xinput list --long`."""
+    names, name = [], None
+    for line in text.splitlines():
+        m = re.match(r"^\W*(\S.*?)\s+id=\d+\s+\[slave\s+pointer", line)
+        if m:
+            name = m.group(1)
+        elif re.search(r"\bid=\d+\s+\[", line):
+            name = None
+        elif name and "Touch mode: direct" in line and name not in names:
+            names.append(name)
+    return names
+
+
+def xrandr_args(output, config):
+    mode = config["mode"]
+    args = ["xrandr", "--output", output["name"]]
+    args += ["--mode", mode] if mode in output["modes"] else ["--auto"]
+    return args + ["--rotate", config["rotate"]]
+
+
+def run(args):
+    return subprocess.run(args, capture_output=True, text=True, timeout=20, check=False)
+
+
+def apply(config):
+    """Set the screen. Returns an error message, or None."""
+    query = run(["xrandr", "--query"])
+    if query.returncode != 0:
+        return "Couldn't read the screen: " + (query.stderr.strip() or "xrandr failed")
+    outputs = parse_outputs(query.stdout)
+    error = None
+    if outputs:
+        result = run(xrandr_args(outputs[0], config))
+        if result.returncode != 0:
+            error = result.stderr.strip() or "xrandr failed"
+        try:
+            for device in touch_devices(run(["xinput", "list", "--long"]).stdout):
+                run(["xinput", "map-to-output", device, outputs[0]["name"]])
+        except OSError:
+            pass  # xinput not installed: no touchscreen to turn
+    dpi = round(96 * config["text_scale"])
+    try:
+        subprocess.run(["xrdb", "-merge"], input=f"Xft.dpi: {dpi}\n", text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return error
+
+
+def main(argv):
+    if argv == ["apply"]:
+        error = apply(load_config())
+        if error:
+            print(error, file=sys.stderr)
+            return 1
+        return 0
+    if argv == ["show"]:
+        query = run(["xrandr", "--query"])
+        print(json.dumps({"outputs": parse_outputs(query.stdout), "config": load_config()}))
+        return 0 if query.returncode == 0 else 1
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

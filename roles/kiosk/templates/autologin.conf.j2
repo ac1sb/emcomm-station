@@ -1,4 +1,5 @@
 # Managed by the emcomm-station playbook.
+# Log the station user in with nothing printed, straight into the kiosk.
 [Service]
 ExecStart=
-ExecStart=-/sbin/agetty --autologin {{ station_user }} --noclear %I $TERM
+ExecStart=-/sbin/agetty --autologin {{ station_user }} --skip-login --nonewline --noissue --noclear %I $TERM

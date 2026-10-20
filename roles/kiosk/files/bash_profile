@@ -2,6 +2,7 @@
 [ -f ~/.bashrc ] && . ~/.bashrc
 
 # Start the kiosk on the local console only; SSH logins get a normal shell.
+# X's messages go to a file, not over the boot screen.
 if [ -z "${DISPLAY:-}" ] && [ "$(tty)" = /dev/tty1 ]; then
-  exec startx
+  exec startx >"$HOME/.xsession-errors" 2>&1
 fi

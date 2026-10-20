@@ -7,11 +7,16 @@
       - xserver-xorg-video-all
       - xinit
       - x11-xserver-utils
+      - x11-utils  # xprop: keeps apps below the launcher's Home bar
+      - xinput  # turns a touchscreen with the screen
       - openbox
       - unclutter
       - xterm
       - pavucontrol
       - fonts-dejavu-core
+      - dbus-user-session
+      - onboard  # on-screen keyboard
+      - gsettings-desktop-schemas  # Onboard won't start without them
     install_recommends: false
 
 # IBM Plex is the launcher's preferred font, but not every Debian release ships
@@ -59,10 +64,104 @@
     group: "{{ station_user }}"
     mode: "0755"
 
-- name: Openbox autostart (screen always on, launcher)
+- name: Start with the system's Openbox settings
+  ansible.builtin.copy:
+    src: /etc/xdg/openbox/rc.xml
+    dest: "/home/{{ station_user }}/.config/openbox/rc.xml"
+    remote_src: true
+    force: false
+    owner: "{{ station_user }}"
+    group: "{{ station_user }}"
+    mode: "0644"
+
+# Apps open maximized, below the launcher's Home bar; the on-screen keyboard
+# keeps its own size.
+- name: Open apps maximized
+  ansible.builtin.blockinfile:
+    path: "/home/{{ station_user }}/.config/openbox/rc.xml"
+    insertbefore: "^</applications>"
+    marker: "<!-- {mark} emcomm-station: managed by the playbook -->"
+    block: |
+      <application type="normal">
+        <maximized>yes</maximized>
+      </application>
+      <application class="Onboard">
+        <maximized>no</maximized>
+      </application>
+  notify: Reconfigure Openbox
+
+- name: Install the display helper (resolution, rotation, text size)
+  ansible.builtin.copy:
+    src: emcomm-display
+    dest: /usr/local/bin/emcomm-display
+    mode: "0755"
+
+- name: Create the on-screen keyboard's settings directory
+  ansible.builtin.file:
+    path: /etc/onboard
+    state: directory
+    mode: "0755"
+
+- name: On-screen keyboard defaults (docked at the bottom, above the launcher)
+  ansible.builtin.copy:
+    src: onboard-defaults.conf
+    dest: /etc/onboard/onboard-defaults.conf
+    mode: "0644"
+
+- name: Openbox autostart (screen settings, screen always on, launcher)
   ansible.builtin.copy:
     src: autostart
     dest: "/home/{{ station_user }}/.config/openbox/autostart"
     owner: "{{ station_user }}"
     group: "{{ station_user }}"
     mode: "0755"
+
+# ---- quiet boot: a spinner instead of scrolling text, then the launcher ----
+
+- name: Install the boot splash
+  ansible.builtin.apt:
+    name: [plymouth, plymouth-themes]
+    install_recommends: false
+
+- name: Read the boot splash theme
+  ansible.builtin.command: plymouth-set-default-theme
+  register: kiosk_splash_theme
+  changed_when: false
+
+- name: Use the spinner boot splash
+  ansible.builtin.command: plymouth-set-default-theme spinner
+  when: kiosk_splash_theme.stdout | trim != "spinner"
+  changed_when: true
+  notify: Update initramfs
+
+- name: Check for GRUB
+  ansible.builtin.stat:
+    path: /etc/default/grub
+  register: kiosk_grub
+
+- name: Create the GRUB settings directory
+  ansible.builtin.file:
+    path: /etc/default/grub.d
+    state: directory
+    mode: "0755"
+  when: kiosk_grub.stat.exists
+
+# Added to the kernel options already there. The GRUB menu still shows, so
+# "Advanced options" > recovery mode stays reachable.
+- name: Quiet kernel messages and show the splash
+  ansible.builtin.copy:
+    dest: /etc/default/grub.d/emcomm-quiet-boot.cfg
+    content: |
+      # Managed by the emcomm-station playbook: a quiet boot with a splash.
+      GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT quiet splash loglevel=3 rd.udev.log_level=3 vt.global_cursor_default=0"
+    mode: "0644"
+  when: kiosk_grub.stat.exists
+  notify: Update GRUB
+
+- name: No "Last login" or message of the day on the station's screen
+  ansible.builtin.copy:
+    content: ""
+    dest: "/home/{{ station_user }}/.hushlogin"
+    owner: "{{ station_user }}"
+    group: "{{ station_user }}"
+    mode: "0644"
