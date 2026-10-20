@@ -46,3 +46,4 @@
   vars:
     launcher_config:
       apps: "{{ launcher_apps }}"
+      folders: "{{ launcher_folders }}"

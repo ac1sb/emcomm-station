@@ -58,9 +58,15 @@ environment.
   swipe sideways, tap ◀ ▶ under the tiles or press Page Up/Down to change page.
   While arranging, pick a tile, go to another page and tap a tile or an empty
   place to move it there; **Remove page** folds the page shown into the one
-  before it. The order and pages are kept in `~/.config/emcomm/tiles.json`
-  (and in USB backups), and the 1–9 keys open the first nine tiles of the page
-  shown. **Display** in Settings sets the colours (dark, or light for
+  before it. Folders hold related apps under one tile: **Email** (Winlink mail,
+  VARA HF, VARA FM) and **Mesh & APRS** (Meshtastic, MeshCore, APRS) come as
+  standard. Tap a folder to open it; Esc or ‹ Home closes it. While arranging,
+  tap an app then a folder to put it in, **New folder** makes one (holding the
+  app picked, if any), and a picked folder can be opened (to reorder or **Take
+  out of folder** what's inside), renamed or removed (its apps go back on Home
+  where it was). The order, pages and folders are kept in
+  `~/.config/emcomm/tiles.json` (and in USB backups), and the 1–9 keys open the
+  first nine tiles of the page or folder shown. **Display** in Settings sets the colours (dark, or light for
   daylight), the screen resolution (Automatic picks the screen's own), the text
   size (Normal, Large or Extra large, for bigger screens; other apps follow it
   too) and the rotation, for a screen mounted on its side or upside down. A
