@@ -90,16 +90,17 @@ class AppSetupTest(unittest.TestCase):
         path = self.run_helper("flmsg")
         prefs = self.read(path)
         self.assertTrue(path.endswith(".nbems/flmsg.prefs"))
-        for line in ("[.]", "utc:2", "dtformat:0", "dt_fname:4", "mycall:AC1SB"):
+        for line in ("[.]", "utc:2", "dtformat:0", "dt_fname:4", "UI_default:1", "UI_expert:1", "mycall:AC1SB"):
             self.assertIn(line + "\n", prefs)
         # flmsg's own settings stay; the operator's callsign wins; the time settings come back.
         with open(path, "w") as f:
-            f.write("; FLTK preferences file format 1.0\n\n[.]\n\nmainx:50\nutc:0\nmycall:W1AW\n")
+            f.write("; FLTK preferences file format 1.0\n\n[.]\n\nmainx:50\nutc:0\nUI_expert:0\nmycall:W1AW\n")
         self.run_helper("flmsg")
         prefs = self.read(path)
         self.assertIn("mainx:50\n", prefs)
         self.assertIn("utc:2\n", prefs)
         self.assertNotIn("utc:0", prefs)
+        self.assertIn("UI_expert:1\n", prefs)  # the Simple window has no forms to offer
         self.assertIn("mycall:W1AW\n", prefs)
         self.assertNotIn("AC1SB", prefs)
         self.assertEqual(prefs.count("utc:"), 1)

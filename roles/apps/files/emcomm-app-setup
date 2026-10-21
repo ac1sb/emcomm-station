@@ -7,8 +7,9 @@
                              first run only: APRS through Direwolf's AGW port
   emcomm-app-setup js8call   first run only: callsign, grid and rig control
   emcomm-app-setup wsjtx     first run only: callsign, grid and rig control
-  emcomm-app-setup flmsg     dates and times in UTC (2026-10-21, 1356Z), and the
-                             callsign if flmsg has none yet
+  emcomm-app-setup flmsg     dates and times in UTC (2026-10-21, 1356Z), the full
+                             window with flmsg's own forms, and the callsign if
+                             flmsg has none yet
 
 Every app reaches the radio through rigctld on 127.0.0.1:4532, which already
 handles PTT the way Settings says, so each app is told to key the radio by CAT
@@ -180,14 +181,17 @@ def setup_qt_ini(station, name):
 def setup_flmsg(station):
     """flmsg keeps its settings in ~/.nbems/flmsg.prefs (FLTK preferences: "key:value"
     lines). utc 2 writes times as HHMMZ in UTC, dtformat 0 dates as YYYY-MM-DD, and
-    dt_fname 4 stamps file names with UTC (Z). Every other setting is left alone."""
+    dt_fname 4 stamps file names with UTC (Z). UI_expert opens flmsg on its own forms
+    (ICS-213 and the rest): its "Simple" window lists only HTML templates the station
+    doesn't have, so New Message there shows an empty list. UI_default skips the
+    first-run question that leads to it. Every other setting is left alone."""
     path = os.path.join(HOME, ".nbems/flmsg.prefs")
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.read().splitlines()
     except OSError:
         lines = ["; FLTK preferences file format 1.0", "; vendor: w1hkj.com", "; application: flmsg", "", "[.]", ""]
-    wanted = {"utc": "2", "dtformat": "0", "dt_fname": "4"}
+    wanted = {"utc": "2", "dtformat": "0", "dt_fname": "4", "UI_default": "1", "UI_expert": "1"}
     if station.get("callsign"):
         wanted["mycall"] = station["callsign"]
     out = []
