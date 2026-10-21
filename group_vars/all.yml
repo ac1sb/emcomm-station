@@ -24,8 +24,8 @@ station_mode: kiosk
 #   command: the program that must be installed; until it is, the tile offers
 #            to install it (app: its tag in roles/apps).
 #   run:     what the tile starts.
-#   page:    instead of run, a part of the launcher the tile opens (nwr: weather radio setup,
-#            online: the Online page).
+#   page:    instead of run, a part of the launcher the tile opens (nwr: weather radio setup;
+#            online, reference, logs: those pages).
 #   ready:   a file that must exist too, else the tile offers to set it up (VARA).
 #   icon:    image name in /usr/share/emcomm/icons (.svg or .png). Long-press or
 #            right-click a tile to use your own picture instead.
@@ -51,18 +51,20 @@ launcher_apps:
     run: [emcomm-start, vara-fm]
   - { code: "213", icon: flmsg, name: Forms, detail: flmsg · ICS-213, command: flmsg, app: flmsg, run: [emcomm-start, flmsg] }
   - { code: FLD, icon: fldigi, name: fldigi, detail: Digital modes · flamp, command: fldigi, app: fldigi, run: [emcomm-start, fldigi] }
-  - { code: PKT, icon: packet, name: Packet, detail: Direwolf · AX.25, command: direwolf, app: packet, run: [emcomm-start, packet] }
-  - { code: ARD, icon: ardop, name: ARDOP, detail: Open HF modem, command: ardopcf, app: ardop, run: [emcomm-start, ardop] }
+  - { code: PKT, icon: packet, name: Packet, detail: Winlink packet, command: direwolf, app: packet, run: [emcomm-start, packet] }
+  - { code: ARD, icon: ardop, name: ARDOP, detail: Winlink HF modem, command: ardopcf, app: ardop, run: [emcomm-start, ardop] }
   - { code: APR, icon: aprs, name: APRS, detail: Xastir · map and messages, command: xastir, app: aprs, run: [emcomm-start, aprs] }
   - { code: MSH, icon: meshtastic, name: Meshtastic, detail: Mesh text over LoRa, command: contact, app: meshtastic, run: [emcomm-start, meshtastic] }
   - { code: MCR, icon: meshcore, name: MeshCore, detail: Mesh text over LoRa, command: meshcore-cli, app: meshcore, run: [emcomm-start, meshcore] }
-  - { code: NWR, icon: weather-radio, name: NOAA alerts, detail: Weather radio · your counties, command: emcomm-nwr, page: nwr }
-  - { code: ONL, icon: online, name: Online, detail: Weather · bands · lookups, command: emcomm-online, page: online }
+  - { code: NWR, icon: weather-radio, name: NOAA radio, detail: Alerts · no internet, command: emcomm-nwr, page: nwr }
+  - { code: ONL, icon: online, name: Online, detail: Needs the internet, command: emcomm-online, page: online }
   - { code: MAP, icon: map, name: Map, detail: Gateways · stations heard, command: emcomm-map, app: map, run: [emcomm-map] }
   - { code: CHP, icon: chirp, name: CHIRP, detail: Program handhelds · mobiles, command: chirp, app: chirp, run: [chirp] }
   - { code: SCN, icon: scanner, name: Scanner, detail: SDR · police fire EMS, command: emcomm-scanner, app: scanner, run: [emcomm-scanner] }
   - { code: SDR, icon: sdr, name: Gqrx, detail: Any SDR · HF to UHF, command: gqrx, app: sdr, run: [emcomm-start, sdr] }
   - { code: LIB, icon: library, name: Library, detail: Offline books · first aid, command: emcomm-library, app: library, run: [emcomm-library] }
+  - { code: REF, icon: reference, name: Reference, detail: Frequency lists, command: emcomm-launcher, page: reference }
+  - { code: LOG, icon: logs, name: Logs, detail: Contacts · notes, command: emcomm-launcher, page: logs }
   - code: WEB
     icon: browser
     name: Browser
@@ -77,5 +79,5 @@ launcher_apps:
 # Home folders in the standard order, each where its first app would be. Tiles can be
 # moved in and out, and folders added, renamed or removed, with Arrange tiles on the station.
 launcher_folders:
-  - { name: Email, apps: [WL, VHF, VFM] }
+  - { name: Email, apps: [WL, VHF, VFM, ARD, PKT] }
   - { name: Mesh & APRS, apps: [MSH, MCR, APR] }

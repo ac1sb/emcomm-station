@@ -24,8 +24,8 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 - **Settings screen:** a page of large tiles: User (callsign, grid and time zone), Radio,
   Devices (GPS, and what's plugged in), Display, Wi-Fi, Accounts,
   Backup, Update station, Audio (the radio's sound card, and in desktop mode when
-  it's the computer's default), Power and Home tiles (Diagnostics is on Home's
-  buttons and F2). User opens
+  it's the computer's default), Power and Home tiles (Settings and Diagnostics are in
+  the top bar's ⏻ menu, and F3 and F2). User opens
   automatically on first boot. The time zone (Settings > User) sets the local time
   shown next to UTC in the top bar; while the computer is on UTC, only UTC shows
   (in desktop mode the computer's own time zone is used). Any radio Hamlib supports can be picked by
@@ -116,7 +116,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   from the stick, which is the way to carry big ones such as all of Wikipedia
   (get them from library.kiwix.org on another computer). **Open library** shows
   every book in a window with search.
-- **Logs:** JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
+- **Logs** (tile, F4): JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
   place, plus a box to note a voice or other contact. Notes get the UTC time,
   frequency and mode from the radio.
 - **Net control** (F8, or the button on Logs): name the net and tap **Start net**.
@@ -158,7 +158,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   itself if the internet drops, and **At start-up** brings it back after a
   restart. **Live** shows next to **Rec** while it streams. The password stays
   in `~/.config/emcomm/broadcastify.json`, readable only by the station user.
-- **Reference** (F5): the US band plan with a which-band-when guide, emergency and
+- **Reference** (tile, F5): the US band plan with a which-band-when guide, emergency and
   calling frequencies (IARU emergency centres of activity, Hurricane Watch Net,
   SATERN, 60 m channels, simplex calling, APRS), and JS8Call and FT8 dial
   frequencies. **Tune** puts the radio on that frequency and mode. **Add
@@ -231,7 +231,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
     XML Logbook Data subscribers.
 - **NOAA Weather Radio alerts, no internet needed:** plug in an RTL-SDR dongle
   (any RTL2832U stick, about $30) with an antenna for 162 MHz, then tap the
-  **NOAA alerts** tile on Home (or **Set up** next to NOAA Weather Radio on the
+  **NOAA radio** tile on Home (or **Set up** next to NOAA Weather Radio on the
   Online page's Weather alerts), pick your
   nearest transmitter's channel (weather.gov/nwr lists them), then pick a state
   and county and tap **Add county** for each county you want alerts for. Every
@@ -424,11 +424,11 @@ Settings > Update station gets the latest Emcomm-CNC, as on the station.
 
 - **From the app menu:** open **Emcomm-CNC**. It fills the screen; when you start
   an app from a tile, the launcher steps aside so the app is in front. To leave,
-  tap **Power** and choose **Exit Emcomm-CNC**.
+  tap **⏻ > Power…** and choose **Exit Emcomm-CNC**.
 - **As its own session:** on the login screen, pick **Emcomm-CNC** before typing
   your password (on Ubuntu, click your name, then the gear button at the bottom
   right). You get the full station: the Home bar across the top, apps opening
-  full screen below it. **Power > Log out** returns to the login screen.
+  full screen below it. **⏻ > Power… > Log out** returns to the login screen.
 
 On Ubuntu's normal session (Wayland), the launcher can't bring an app that's
 already open to the front, and Settings > Display only changes the colours and

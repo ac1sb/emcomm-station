@@ -159,6 +159,7 @@ textview.formfield { border: 1px solid #3B82F6; font-family: 'IBM Plex Sans', sa
 combobox button, .picklist { padding: 0 10px; }
 .picklist-pop list, .picklist-pop row { background: $surface; color: $text; }
 .picklist-pop row { font-size: 16px; min-height: 40px; }
+.station-menu { background: $surface; border: 1px solid $line; }
 .picklist-pop row:selected { background: $accent_fill; color: $on_accent; }
 entry, combobox button, .picklist { background: $bg; color: $text; border: 1px solid $input_line; border-radius: 8px;
                          min-height: 44px; font-size: 16px; background-image: none; box-shadow: none; }
@@ -1937,10 +1938,11 @@ class Launcher(Gtk.Window):
         keyboard.set_valign(Gtk.Align.CENTER)
         keyboard.set_can_focus(False)  # a touch helper; keyboard users don't need it
         keyboard.connect("clicked", self.toggle_keyboard)
-        power = Gtk.Button(label="⏻", tooltip_text="Restart or shut down")
+        # ⏻ opens the station menu: Settings, Diagnostics, and restart or shut down.
+        power = Gtk.MenuButton(label="⏻  ▾", tooltip_text="Settings, Diagnostics, Power")
         power.get_style_context().add_class("navbtn")
         power.set_valign(Gtk.Align.CENTER)
-        power.connect("clicked", self._power_dialog)
+        power.set_popover(self._station_menu(power))
         bar.pack_end(power, False, False, 0)
         bar.pack_end(keyboard, False, False, 0)
         self.clock = Gtk.Label()
@@ -2169,15 +2171,29 @@ class Launcher(Gtk.Window):
         page.pack_start(self.page_bar, False, False, 0)
         self._lay_out_tiles()
 
-        # Page buttons at their own width, centred; Power is in the top bar.
-        nav = self.home_nav = Gtk.Box(spacing=10, halign=Gtk.Align.CENTER)
-        nav.get_style_context().add_class("home-nav")
-        for label, page_name in (("Diagnostics  F2", "diagnostics"), ("Settings  F3", "settings"),
-                                 ("Logs  F4", "logs"), ("Reference  F5", "reference")):
-            nav.pack_start(self._navbtn(label, lambda _b, n=page_name: self.stack.set_visible_child_name(n)),
-                           False, False, 0)
-        page.pack_end(nav, False, False, 0)
+        # Settings and Diagnostics are in the top bar's ⏻ menu; Logs and Reference are tiles.
         return page
+
+    def _station_menu(self, button):
+        """The ⏻ menu: Settings, Diagnostics, and Power (restart or shut down)."""
+        menu = Gtk.Popover(relative_to=button, position=Gtk.PositionType.BOTTOM)
+        menu.get_style_context().add_class("station-menu")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+
+        def go(handler):
+            menu.popdown()
+            handler()
+
+        for label, handler in (("Settings  F3", lambda: self.stack.set_visible_child_name("settings")),
+                               ("Diagnostics  F2", lambda: self.stack.set_visible_child_name("diagnostics")),
+                               ("Power…", self._power_dialog)):
+            item = self._navbtn(label, lambda _b, h=handler: go(h))
+            item.get_child().set_xalign(0)
+            item.set_size_request(240, -1)
+            box.pack_start(item, False, False, 0)
+        box.show_all()
+        menu.add(box)
+        return menu
 
     def _lay_out_tiles(self):
         """Put the tiles on Home pages in self.slots' order. Number keys 1-9 open the page's first nine."""
@@ -2299,8 +2315,6 @@ class Launcher(Gtk.Window):
         (ctx.add_class if on else ctx.remove_class)("arranging")
         # no_show_all keeps the bar hidden when the window first shows everything.
         self.arrange_bar.set_no_show_all(not on)
-        # The page buttons make room for the arrange bar: Done leaves arrange mode.
-        self.home_nav.set_visible(not on)
         if on:
             self.arrange_bar.show_all()
             self.stack.set_visible_child_name("home")
@@ -3136,8 +3150,7 @@ class Launcher(Gtk.Window):
             return
         app = btn.app
         if app.get("page"):  # a part of the launcher, not a separate app
-            {"nwr": self._edit_nwr,
-             "online": lambda: self.stack.set_visible_child_name("online")}.get(app["page"], lambda: None)()
+            {"nwr": self._edit_nwr}.get(app["page"], lambda: self.stack.set_visible_child_name(app["page"]))()
             return
         if btn.app_state != "missing":
             # Already open: bring it to the front rather than start a second copy.
