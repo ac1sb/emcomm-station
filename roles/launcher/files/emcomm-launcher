@@ -10,6 +10,7 @@ through emcomm-apply-settings. The app list comes from
 import csv
 import datetime
 import glob
+import io
 import json
 import math
 import os
@@ -1058,48 +1059,57 @@ def import_freqs(path):
     """Rows for My frequencies from a CSV file, whatever its layout (IMPORT_COLUMNS).
     Frequencies in kHz or Hz are taken as such; a mode the station hasn't got becomes the
     usual one for the band. Raises ValueError for a file without a frequency column."""
-    with open(path, encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
-        names = {(name or "").strip().lower(): name for name in reader.fieldnames or []}
-        cols = {key: next((names[n] for n in wanted if n in names), None) for key, wanted in IMPORT_COLUMNS.items()}
-        if not cols["mhz"]:
-            raise ValueError("no frequency column (MHz, Frequency or Freq)")
-        rows = []
-        for r in reader:
-            mhz = to_float(r.get(cols["mhz"]))
-            if mhz is None or mhz <= 0:
-                continue
-            while mhz >= 1000:  # kHz, or Hz
-                mhz /= 1000
-            mode = (r.get(cols["mode"]) or "").strip().upper() if cols["mode"] else ""
-            mode = IMPORT_MODES.get(mode, mode)
-            if mode not in MODES:
-                mode = "FM" if mhz >= 30 else "LSB" if mhz < 10 else "USB"
-            offset = to_float(r.get(cols["offset"])) if cols["offset"] else None
-            if cols["duplex"]:  # CHIRP: the sign lives in Duplex, and blank means simplex
-                duplex = (r.get(cols["duplex"]) or "").strip()
-                if duplex == "-" and offset:
-                    offset = -abs(offset)
-                elif duplex == "+" and offset:
-                    offset = abs(offset)
-                else:
-                    offset = None
-            if offset is not None and (offset == 0 or abs(offset) > 50):
+    with open(path, "rb") as f:
+        data = f.read()
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:  # saved by Excel on Windows
+        text = data.decode("cp1252", errors="replace")
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    names = {(name or "").strip().lower(): name for name in reader.fieldnames or []}
+    cols = {key: next((names[n] for n in wanted if n in names), None) for key, wanted in IMPORT_COLUMNS.items()}
+    if not cols["mhz"]:
+        raise ValueError("no frequency column (MHz, Frequency or Freq)")
+    rows = []
+    for r in reader:
+        mhz = to_float(r.get(cols["mhz"]))
+        if mhz is None or mhz <= 0:
+            continue
+        while mhz >= 1000 and not 1240 <= mhz <= 1300:  # kHz, or Hz; 1240-1300 is 23 cm in MHz
+            mhz /= 1000
+        mode = (r.get(cols["mode"]) or "").strip().upper() if cols["mode"] else ""
+        mode = IMPORT_MODES.get(mode, mode)
+        if mode not in MODES:
+            mode = "FM" if mhz >= 30 else "LSB" if mhz < 10 else "USB"
+        offset = to_float(r.get(cols["offset"])) if cols["offset"] else None
+        if cols["duplex"]:  # CHIRP: the sign lives in Duplex, and blank means simplex
+            duplex = (r.get(cols["duplex"]) or "").strip()
+            if duplex == "-" and offset:
+                offset = -abs(offset)
+            elif duplex == "+" and offset:
+                offset = abs(offset)
+            else:
                 offset = None
+        if offset is not None and (offset == 0 or abs(offset) > 50):
+            offset = None
+        tone = None
+        if "rtonefreq" in names and "tone" in names:
+            # CHIRP: Tone says which tone is used. "Tone" (and Cross) sends rToneFreq;
+            # "TSQL" sends and listens for cToneFreq; "TSQL-R" sends none.
+            kind = (r.get(names["tone"]) or "").strip().upper()
+            if kind in ("TONE", "CROSS"):
+                tone = to_float(r.get(names["rtonefreq"]))
+            elif kind == "TSQL":
+                tone = to_float(r.get(names.get("ctonefreq", names["rtonefreq"])))
+        elif cols["tone"]:
+            m = re.search(r"\d+(\.\d+)?", r.get(cols["tone"]) or "")
+            tone = float(m.group()) if m else None
+        if tone and not 60 <= tone <= 260:
             tone = None
-            if "rtonefreq" in names and "tone" in names:
-                # CHIRP: Tone says whether a tone is used ("Tone", "TSQL"); rToneFreq holds it.
-                if (r.get(names["tone"]) or "").strip().upper() in ("TONE", "TSQL", "TSQL-R", "CROSS"):
-                    tone = to_float(r.get(names["rtonefreq"]))
-            elif cols["tone"]:
-                m = re.search(r"\d+(\.\d+)?", r.get(cols["tone"]) or "")
-                tone = float(m.group()) if m else None
-            if tone and not 60 <= tone <= 260:
-                tone = None
-            name = " ".join((r.get(cols["name"]) or "").split()) if cols["name"] else ""
-            note = " ".join((r.get(cols["note"]) or "").split()) if cols["note"] else ""
-            rows.append({"MHz": round(mhz, 6), "Mode": mode, "Name": name or f"{mhz:g} MHz", "Note": note,
-                         "Offset": offset, "Tone": tone})
+        name = " ".join((r.get(cols["name"]) or "").split()) if cols["name"] else ""
+        note = " ".join((r.get(cols["note"]) or "").split()) if cols["note"] else ""
+        rows.append({"MHz": round(mhz, 6), "Mode": mode, "Name": name or f"{mhz:g} MHz", "Note": note,
+                     "Offset": offset, "Tone": tone})
     return rows
 
 
@@ -1163,7 +1173,7 @@ def freq_detail(row):
 def write_freqs(path, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + ".tmp", "w", encoding="utf-8", newline="") as f:
-        out = csv.DictWriter(f, FREQ_FIELDS)
+        out = csv.DictWriter(f, FREQ_FIELDS, extrasaction="ignore")  # a gateway row also has its distance
         out.writeheader()
         for row in rows:
             out.writerow({**row, "MHz": f"{row['MHz']:.6f}".rstrip("0").rstrip("."),
@@ -1175,8 +1185,10 @@ def write_freqs(path, rows):
 
 
 def export_chirp(rows, path=CHIRP_EXPORT):
-    """Write the FM channels for CHIRP, numbered from 1 in list order."""
-    channels = [r for r in rows if r["Mode"] in ("FM", "PKTFM")]
+    """Write the FM channels for CHIRP, numbered from 1 in list order. Rows noted "Receive only"
+    (weather radio, GMRS, MURS) are left out: a channel programmed from here could transmit."""
+    channels = [r for r in rows if r["Mode"] in ("FM", "PKTFM")
+                and not (r.get("Note") or "").lower().startswith("receive only")]
     try:
         with open(path, "w", encoding="utf-8", newline="") as f:
             out = csv.DictWriter(f, CHIRP_FIELDS)
@@ -6467,8 +6479,11 @@ class Launcher(Gtk.Window):
 
     def _save_to_mine(self, row):
         """Put a row from a standard list (or a gateway) on My frequencies."""
+        note = re.sub(r" · (open now|opens \d{4}Z)$", "", row.get("Note") or "")
+        row = {"MHz": row["MHz"], "Mode": row["Mode"], "Name": row["Name"], "Note": note,
+               "Offset": row.get("Offset"), "Tone": row.get("Tone")}
         mine = read_freqs(MY_FREQS)
-        merged, added, _skipped = merge_freqs(mine, [{**row, "Note": row.get("Note", "")}])
+        merged, added, _skipped = merge_freqs(mine, [row])
         if not added:
             self.ref_status.set_text(f"{row['Name']} is on My frequencies already.")
             return

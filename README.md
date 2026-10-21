@@ -350,7 +350,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 - **CHIRP:** for programming a handheld or mobile over its programming cable (the
   FT-710 and FT-891 don't need it). The station keeps
   `~/My frequencies for CHIRP.csv` up to date with the FM channels from My
-  frequencies, offset and tone included. In CHIRP, download from the radio first,
+  frequencies, offset and tone included (rows noted "Receive only" are left out). In CHIRP, download from the radio first,
   then use File > Import to add that file's channels, and upload to the radio.
   CHIRP is built from its source on GitHub, the same code as its daily builds
   (set `apps_chirp_version` in `roles/apps/defaults/main.yml` to a commit or tag

@@ -291,8 +291,9 @@ def main():
             pump(0.3)
         header = win.stack.get_child_by_name("reference").get_children()[0]
         room = win.get_allocated_width() - 40
-        check(header.get_preferred_width()[1] <= room,
-              f"Reference header fits ({header.get_preferred_width()[1]} of {room}) on {win.ref_sections.get(section, 'start')}")
+        # The minimum: the status line is cut with "…" rather than widening the window.
+        check(header.get_preferred_width()[0] <= room,
+              f"Reference header fits ({header.get_preferred_width()[0]} of {room}) on {win.ref_sections.get(section, 'start')}")
     titles = list(win.ref_sections.values())
     check("Other services (listen)" in titles and "Emergency and calling" in titles, f"sections {titles}")
     check(win.ref_hint.get_text().split(" at ")[0] in ("Day", "Night", "Dusk or dawn"), f"hint: {win.ref_hint.get_text()[:60]}")
@@ -351,6 +352,29 @@ def main():
           f"RepeaterBook import {rows}")
     merged, added, skipped = L.merge_freqs(L.read_freqs(L.MY_FREQS), rows + L.import_freqs(chirp))
     check((added, skipped, len(merged)) == (2, 2, 4), f"merge added {added} skipped {skipped} (146.94 and 146.52 were there)")
+    # 23 cm stays in MHz, 160 m in kHz comes down; CHIRP's TSQL tone is cToneFreq; a Windows-saved file
+    odd = os.path.join(home, "odd.csv")
+    with open(odd, "wb") as f:
+        f.write("Location,Name,Frequency,Duplex,Offset,Tone,rToneFreq,cToneFreq,Mode,Comment\n"
+                "0,W1GHZ,1293.100000,-,12.000000,TSQL,88.5,123.0,FM,Montr\u00e9al\n"
+                "1,TOPBAND,1850,,,,88.5,88.5,LSB,\n".encode("cp1252"))
+    rows = L.import_freqs(odd)
+    check([(r["MHz"], r["Offset"], r["Tone"], r["Note"]) for r in rows] == [(1293.1, -12.0, 123.0, "Montr\u00e9al"),
+                                                                           (1.85, None, None, "")],
+          f"23 cm, kHz, TSQL, cp1252 {[(r['MHz'], r['Offset'], r['Tone'], r['Note']) for r in rows]}")
+    # Save to mine from the gateway finder: just the list's columns, and no "open now" kept
+    gateway = {"MHz": 145.05, "Mode": "FM", "Name": "W1GW  ·  Packet", "Note": "Rutland · hours 00-23 UTC · open now",
+               "miles": 12.0}
+    win._save_to_mine(gateway)
+    saved = [r for r in L.read_freqs(L.MY_FREQS) if r["MHz"] == 145.05]
+    check(saved and saved[0]["Note"] == "Rutland · hours 00-23 UTC", f"gateway saved: {saved}")
+    # receive-only rows stay out of CHIRP's copy (it could transmit on them)
+    chirp_out = os.path.join(home, "chirp-out.csv")
+    L.export_chirp([{"MHz": 162.55, "Mode": "FM", "Name": "WX1", "Note": "Receive only", "Offset": None, "Tone": None},
+                    {"MHz": 146.52, "Mode": "FM", "Name": "Calling", "Note": "", "Offset": None, "Tone": None}], chirp_out)
+    with open(chirp_out, encoding="utf-8") as f:
+        out = f.read()
+    check("146.52" in out and "162.55" not in out, "CHIRP copy leaves out receive-only rows")
     try:
         L.import_freqs(os.path.join(home, "ICS forms", "ICS-309 2025-10-19 1800Z County ARES.html"))
         check(False, "a file with no frequency column is refused")
