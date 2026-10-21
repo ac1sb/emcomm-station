@@ -6243,14 +6243,8 @@ class Launcher(Gtk.Window):
         header.pack_end(self.ref_add, False, False, 0)
         self.ref_load = self._navbtn("Load a list", lambda *_: self._load_frequencies())
         header.pack_end(self.ref_load, False, False, 0)
-        self.ref_gw_update = self._navbtn("Update list", self._update_gateway_list)
+        self.ref_gw_update = self._navbtn("Update", self._update_gateway_list)
         header.pack_end(self.ref_gw_update, False, False, 0)
-        self.ref_gw_mode = PickList()
-        for key, label in GATEWAY_MODES.items():
-            self.ref_gw_mode.append(key, label)
-        self.ref_gw_mode.set_active_id("all")
-        self.ref_gw_mode.connect("changed", lambda *_: self._show_reference())
-        header.pack_end(self.ref_gw_mode, False, False, 0)
         page.pack_start(header, False, False, 0)
 
         # Which band now: day or night at the station, and the Online page's band conditions.
@@ -6266,6 +6260,12 @@ class Launcher(Gtk.Window):
         self.ref_band = PickList()
         self.ref_band.connect("changed", lambda *_: not self._ref_filling and self._render_ref_list())
         self.ref_filter.pack_start(self.ref_band, False, False, 0)
+        self.ref_gw_mode = PickList()  # gateways only: by mode
+        for key, label in GATEWAY_MODES.items():
+            self.ref_gw_mode.append(key, label)
+        self.ref_gw_mode.set_active_id("all")
+        self.ref_gw_mode.connect("changed", lambda *_: self._show_reference())
+        self.ref_filter.pack_start(self.ref_gw_mode, False, False, 0)
         page.pack_start(self.ref_filter, False, False, 0)
 
         self.ref_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)

@@ -285,6 +285,14 @@ def main():
     # ---- Reference: the lists, the search and band filter, the row the radio is on ----
     win.stack.set_visible_child_name("reference")
     pump(1)
+    for section in list(win.ref_sections) + [None]:
+        if section:
+            win.ref_combo.set_active_id(section)
+            pump(0.3)
+        header = win.stack.get_child_by_name("reference").get_children()[0]
+        room = win.get_allocated_width() - 40
+        check(header.get_preferred_width()[1] <= room,
+              f"Reference header fits ({header.get_preferred_width()[1]} of {room}) on {win.ref_sections.get(section, 'start')}")
     titles = list(win.ref_sections.values())
     check("Other services (listen)" in titles and "Emergency and calling" in titles, f"sections {titles}")
     check(win.ref_hint.get_text().split(" at ")[0] in ("Day", "Night", "Dusk or dawn"), f"hint: {win.ref_hint.get_text()[:60]}")
@@ -317,7 +325,9 @@ def main():
     win.ref_combo.set_active_id(L.MY_FREQS)
     pump(0.5)
     mine_buttons = [b.get_label() for b in ref_rows()[0].get_child().get_children() if isinstance(b, Gtk.Button)] if ref_rows() else []
-    check(len(ref_rows()) == 1 and sorted(mine_buttons) == ["Edit", "Tune"], f"My frequencies: {len(ref_rows())} rows, {mine_buttons}")
+    # 146.940 was there from the start (the ICS-205 needs a list); 146.520 was just saved.
+    check([c.get_child().mhz for c in ref_rows()] == [146.94, 146.52] and sorted(mine_buttons) == ["Edit", "Tune"],
+          f"My frequencies: {[c.get_child().mhz for c in ref_rows()]}, {mine_buttons}")
     tune = [b for b in ref_rows()[0].get_child().get_children() if isinstance(b, Gtk.Button) and b.get_label() == "Tune"][0]
     tune.clicked()
     pump(3)
@@ -340,7 +350,7 @@ def main():
           == [(3.945, "LSB", None, None, "3.945 MHz", "Net"), (448.325, "FM", -5.0, 123.0, "KC1ABC", "Rutland")],
           f"RepeaterBook import {rows}")
     merged, added, skipped = L.merge_freqs(L.read_freqs(L.MY_FREQS), rows + L.import_freqs(chirp))
-    check((added, skipped, len(merged)) == (3, 1, 4), f"merge added {added} skipped {skipped}")
+    check((added, skipped, len(merged)) == (2, 2, 4), f"merge added {added} skipped {skipped} (146.94 and 146.52 were there)")
     try:
         L.import_freqs(os.path.join(home, "ICS forms", "ICS-309 2025-10-19 1800Z County ARES.html"))
         check(False, "a file with no frequency column is refused")
