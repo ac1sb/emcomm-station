@@ -282,6 +282,116 @@ def main():
     pump(0.5)
     check(win.stack.get_visible_child_name() == "logs", "Logs page")
 
+    # ---- Reference: the lists, the search and band filter, the row the radio is on ----
+    win.stack.set_visible_child_name("reference")
+    pump(1)
+    for section in list(win.ref_sections) + [None]:
+        if section:
+            win.ref_combo.set_active_id(section)
+            pump(0.3)
+        header = win.stack.get_child_by_name("reference").get_children()[0]
+        room = win.get_allocated_width() - 40
+        # The minimum: the status line is cut with "…" rather than widening the window.
+        check(header.get_preferred_width()[0] <= room,
+              f"Reference header fits ({header.get_preferred_width()[0]} of {room}) on {win.ref_sections.get(section, 'start')}")
+    titles = list(win.ref_sections.values())
+    check("Other services (listen)" in titles and "Emergency and calling" in titles, f"sections {titles}")
+    check(win.ref_hint.get_text().split(" at ")[0] in ("Day", "Night", "Dusk or dawn"), f"hint: {win.ref_hint.get_text()[:60]}")
+    emergency = next(p for p, t in win.ref_sections.items() if t == "Emergency and calling")
+    win.ref_combo.set_active_id(emergency)
+    pump(0.5)
+    ref_rows = lambda: [c for c in win.ref_list.get_children() if hasattr(c.get_child(), "mhz")]
+    check(len(ref_rows()) == 22, f"emergency list rows {len(ref_rows())}")
+    win.ref_search.set_text("hurricane")
+    pump(0.5)
+    check(len(ref_rows()) == 2, f"search narrows to {len(ref_rows())}")
+    win.ref_search.set_text("")
+    win.ref_band.set_active_id("2 m")
+    pump(0.5)
+    check([c.get_child().mhz for c in ref_rows()] == [144.2, 146.52, 144.39], f"band filter {[c.get_child().mhz for c in ref_rows()]}")
+    win.ref_band.set_active_id("all")
+    pump(0.3)
+    win.rig_hz = 146_520_000
+    win._reference_mark_current()
+    lit = [c.get_child().mhz for c in ref_rows() if c.get_child().get_style_context().has_class("current")]
+    check(lit == [146.52], f"radio's row highlighted {lit}")
+    row = next(c.get_child() for c in ref_rows() if c.get_child().mhz == 146.52)
+    save = [b for b in row.get_children() if isinstance(b, Gtk.Button) and b.get_label() == "Save to mine"][0]
+    save.clicked()
+    pump(0.5)
+    check(win.ref_status.get_text().startswith("Saved "), f"save to mine: {win.ref_status.get_text()[:50]}")
+    save.clicked()
+    pump(0.3)
+    check("already" in win.ref_status.get_text(), "saving twice is noticed")
+    win.ref_combo.set_active_id(L.MY_FREQS)
+    pump(0.5)
+    mine_buttons = [b.get_label() for b in ref_rows()[0].get_child().get_children() if isinstance(b, Gtk.Button)] if ref_rows() else []
+    # 146.940 was there from the start (the ICS-205 needs a list); 146.520 was just saved.
+    check([c.get_child().mhz for c in ref_rows()] == [146.94, 146.52] and sorted(mine_buttons) == ["Edit", "Tune"],
+          f"My frequencies: {[c.get_child().mhz for c in ref_rows()]}, {mine_buttons}")
+    tune = [b for b in ref_rows()[0].get_child().get_children() if isinstance(b, Gtk.Button) and b.get_label() == "Tune"][0]
+    tune.clicked()
+    pump(3)
+    check("didn't take" in win.ref_status.get_text(), f"tune without a rig: {win.ref_status.get_text()[:50]}")
+    # importing a CHIRP export and a RepeaterBook-style download
+    chirp = os.path.join(home, "chirp.csv")
+    with open(chirp, "w", encoding="utf-8") as f:
+        f.write("Location,Name,Frequency,Duplex,Offset,Tone,rToneFreq,cToneFreq,DtcsCode,DtcsPolarity,Mode,TStep,Skip,Comment\n"
+                "0,W1XYZ,146.940000,-,0.600000,Tone,100.0,100.0,023,NN,FM,5.00,,Command\n"
+                "1,SIMPLEX,146.520000,,0.600000,,88.5,88.5,023,NN,NFM,5.00,,\n"
+                "2,BAD,,,,,,,,,,,,\n")
+    rows = L.import_freqs(chirp)
+    check([(r["MHz"], r["Offset"], r["Tone"], r["Mode"]) for r in rows] == [(146.94, -0.6, 100.0, "FM"), (146.52, None, None, "FM")],
+          f"CHIRP import {[(r['MHz'], r['Offset'], r['Tone']) for r in rows]}")
+    rb = os.path.join(home, "repeaterbook.csv")
+    with open(rb, "w", encoding="utf-8") as f:
+        f.write("Frequency,Offset,Uplink Tone,Call Sign,Nearest City,Mode\n3945,,,,Net,LSB\n448.325,-5,123.0 PL,KC1ABC,Rutland,FM\n")
+    rows = L.import_freqs(rb)
+    check([(r["MHz"], r["Mode"], r["Offset"], r["Tone"], r["Name"], r["Note"]) for r in rows]
+          == [(3.945, "LSB", None, None, "3.945 MHz", "Net"), (448.325, "FM", -5.0, 123.0, "KC1ABC", "Rutland")],
+          f"RepeaterBook import {rows}")
+    merged, added, skipped = L.merge_freqs(L.read_freqs(L.MY_FREQS), rows + L.import_freqs(chirp))
+    check((added, skipped, len(merged)) == (2, 2, 4), f"merge added {added} skipped {skipped} (146.94 and 146.52 were there)")
+    # 23 cm stays in MHz, 160 m in kHz comes down; CHIRP's TSQL tone is cToneFreq; a Windows-saved file
+    odd = os.path.join(home, "odd.csv")
+    with open(odd, "wb") as f:
+        f.write("Location,Name,Frequency,Duplex,Offset,Tone,rToneFreq,cToneFreq,Mode,Comment\n"
+                "0,W1GHZ,1293.100000,-,12.000000,TSQL,88.5,123.0,FM,Montr\u00e9al\n"
+                "1,TOPBAND,1850,,,,88.5,88.5,LSB,\n".encode("cp1252"))
+    rows = L.import_freqs(odd)
+    check([(r["MHz"], r["Offset"], r["Tone"], r["Note"]) for r in rows] == [(1293.1, -12.0, 123.0, "Montr\u00e9al"),
+                                                                           (1.85, None, None, "")],
+          f"23 cm, kHz, TSQL, cp1252 {[(r['MHz'], r['Offset'], r['Tone'], r['Note']) for r in rows]}")
+    # Save to mine from the gateway finder: just the list's columns, and no "open now" kept
+    gateway = {"MHz": 145.05, "Mode": "FM", "Name": "W1GW  ·  Packet", "Note": "Rutland · hours 00-23 UTC · open now",
+               "miles": 12.0}
+    win._save_to_mine(gateway)
+    saved = [r for r in L.read_freqs(L.MY_FREQS) if r["MHz"] == 145.05]
+    check(saved and saved[0]["Note"] == "Rutland · hours 00-23 UTC", f"gateway saved: {saved}")
+    # receive-only rows stay out of CHIRP's copy (it could transmit on them)
+    chirp_out = os.path.join(home, "chirp-out.csv")
+    L.export_chirp([{"MHz": 162.55, "Mode": "FM", "Name": "WX1", "Note": "Receive only", "Offset": None, "Tone": None},
+                    {"MHz": 146.52, "Mode": "FM", "Name": "Calling", "Note": "", "Offset": None, "Tone": None}], chirp_out)
+    with open(chirp_out, encoding="utf-8") as f:
+        out = f.read()
+    check("146.52" in out and "162.55" not in out, "CHIRP copy leaves out receive-only rows")
+    try:
+        L.import_freqs(os.path.join(home, "ICS forms", "ICS-309 2025-10-19 1800Z County ARES.html"))
+        check(False, "a file with no frequency column is refused")
+    except ValueError:
+        check(True, "a file with no frequency column is refused")
+    # the sun, and the which-band hint
+    noon = L.sun_elevation(43.0, -73.0, 1750525200)  # 2025-06-21 17:00Z: 1 pm in Vermont, sun about 70 degrees up
+    evening = L.sun_elevation(43.0, -73.0, 1750550400)  # 00:00Z: 8 pm, half an hour before sunset
+    night = L.sun_elevation(43.0, -73.0, 1750572000)  # 06:00Z: 2 am
+    check(60 < noon < 75 and 0 < evening < 10 and night < -15, f"sun elevation {noon:.0f} / {evening:.0f} / {night:.0f}")
+    check(L.band_hint("FN31", when=1750510800).startswith("Day at FN31: nearby 40 m"), L.band_hint("FN31", when=1750510800))
+    check(L.band_hint("FN31", when=1750572000).startswith("Night at FN31"), L.band_hint("FN31", when=1750572000))
+    check("Online: 80m-40m Good" in L.band_hint("FN31", when=1750510800, conditions={"80m-40m": {"day": "Good"}}), "hint with conditions")
+    check(L.band_hint("") .startswith("Set your grid"), "hint without a grid")
+    check((L.gateway_open("00-23"), L.gateway_open("?"), L.gateway_open("22-04", now=1750510800)) == ("open now", "", "opens 2200Z"),
+          "gateway hours")
+
     win.destroy()
     pump(0.2)
     tmp.cleanup()

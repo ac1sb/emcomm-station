@@ -10,6 +10,7 @@ through emcomm-apply-settings. The app list comes from
 import csv
 import datetime
 import glob
+import io
 import json
 import math
 import os
@@ -172,7 +173,9 @@ levelbar block.empty { background: transparent; border: none; }
 .error { color: $danger_text; }
 .ok { color: $ok; }
 .freq { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: $accent; }
-.freq-row { padding: 6px 4px; border-bottom: 1px solid $line; }
+.freq-row { padding: 6px 4px; border-bottom: 1px solid $line; border-left: 4px solid transparent; }
+.freq-row.current { background: alpha($accent_fill, 0.16); border-left-color: $accent_fill; }
+.ref-hint { font-size: 15px; }
 list, list row { background: $surface; color: $text; }
 list row:selected { background: $hover; box-shadow: inset 4px 0 $accent_fill; }
 dialog, dialog box, dialog label,
@@ -977,11 +980,147 @@ def nearest_gateways(grid, want="all", limit=60):
             fm = "FM" in modes.upper() or "PACKET" in modes.upper()
             # Pat lists the centre frequency; HF modes are dialled 1.5 kHz lower.
             dial = freq if fm else freq - 1500
+            hours = ch.get("OperatingHours") or "?"
+            state = gateway_open(hours)
             rows.append({"MHz": dial / 1e6, "Mode": "FM" if fm else "PKTUSB",
                          "Name": f"{gw.get('Callsign', '')}  ·  {modes}",
-                         "Note": f"{where} · hours {ch.get('OperatingHours') or '?'} UTC", "miles": miles})
+                         "Note": f"{where} · hours {hours} UTC" + (f" · {state}" if state else ""), "miles": miles})
     rows.sort(key=lambda r: (r["miles"], r["MHz"]))
     return rows[:limit]
+
+
+def gateway_open(hours, now=None):
+    """'open now' or 'opens 1400Z' from a gateway's hours ('00-23', UTC); '' if they're not that shape."""
+    m = re.fullmatch(r"(\d{1,2})-(\d{1,2})", (hours or "").strip())
+    if not m:
+        return ""
+    start, end = int(m.group(1)), int(m.group(2))
+    hour = time.gmtime(now or time.time()).tm_hour
+    inside = start <= hour <= end if start <= end else (hour >= start or hour <= end)
+    return "open now" if inside else f"opens {start:02d}00Z"
+
+
+def sun_elevation(lat, lon, when=None):
+    """The sun's height above the horizon in degrees at (lat, lon), now or at `when`
+    (seconds since 1970): NOAA's approximation, good to a fraction of a degree."""
+    t = time.gmtime(when if when is not None else time.time())
+    day = t.tm_yday - 1 + (t.tm_hour + t.tm_min / 60) / 24
+    gamma = 2 * math.pi / 365 * day
+    eqtime = 229.18 * (0.000075 + 0.001868 * math.cos(gamma) - 0.032077 * math.sin(gamma)
+                       - 0.014615 * math.cos(2 * gamma) - 0.040849 * math.sin(2 * gamma))
+    decl = (0.006918 - 0.399912 * math.cos(gamma) + 0.070257 * math.sin(gamma) - 0.006758 * math.cos(2 * gamma)
+            + 0.000907 * math.sin(2 * gamma) - 0.002697 * math.cos(3 * gamma) + 0.00148 * math.sin(3 * gamma))
+    minutes = t.tm_hour * 60 + t.tm_min + t.tm_sec / 60
+    solar = (minutes + eqtime + 4 * lon) % 1440
+    hour_angle = math.radians(solar / 4 - 180)
+    lat_r = math.radians(lat)
+    cos_zenith = math.sin(lat_r) * math.sin(decl) + math.cos(lat_r) * math.cos(decl) * math.cos(hour_angle)
+    return math.degrees(math.asin(max(-1.0, min(1.0, cos_zenith))))
+
+
+def band_hint(grid, when=None, conditions=None):
+    """One line for the Reference page: day or night at the station and the HF bands to try
+    nearby and far, plus the internet's band conditions (the Online page's) when saved."""
+    here = grid_to_latlon(grid)
+    if not here:
+        return "Set your grid square in Settings for a which-band-now hint."
+    elevation = sun_elevation(here[0], here[1], when)
+    if elevation > 6:
+        part, near, far = "Day", "40 m (80 m or 60 m very close in)", "20 m, then 17 and 15 m"
+    elif elevation < -6:
+        part, near, far = "Night", "80 m (160 m late)", "40 m, 30 m for digital"
+    else:
+        part, near, far = "Dusk or dawn", "40 m and 80 m", "40 m and 20 m: the grey line carries far"
+    text = f"{part} at {grid.strip().upper()[:4]}: nearby {near}; far {far}."
+    key = "day" if elevation > 0 else "night"
+    found = [f"{name} {states[key]}" for name, states in (conditions or {}).items()
+             if isinstance(states, dict) and states.get(key)]
+    if found:
+        text += " Online: " + ", ".join(found) + "."
+    return text
+
+
+# Columns a frequency list may come with: the station's own layout, CHIRP's export, and
+# RepeaterBook or RadioReference downloads. Whichever of these names a file has, by name.
+IMPORT_COLUMNS = {
+    "mhz": ("mhz", "frequency", "freq", "output", "frequency output", "rx freq"),
+    "name": ("name", "alpha tag", "callsign", "call", "channel name", "call sign"),
+    "note": ("note", "comment", "notes", "location", "description", "nearest city", "agency"),
+    "mode": ("mode",),
+    "offset": ("offset",),
+    "duplex": ("duplex",),
+    "tone": ("tone", "ctcss", "rtonefreq", "uplink tone", "tone up", "pl", "ctcss up"),
+}
+IMPORT_MODES = {"NFM": "FM", "WFM": "FM", "FMN": "FM", "DIG": "PKTUSB", "DATA": "PKTUSB", "USB-D": "PKTUSB",
+                "DV": "FM", "DMR": "FM", "P25": "FM", "NXDN": "FM", "YSF": "FM", "DSTAR": "FM", "D-STAR": "FM"}
+
+
+def import_freqs(path):
+    """Rows for My frequencies from a CSV file, whatever its layout (IMPORT_COLUMNS).
+    Frequencies in kHz or Hz are taken as such; a mode the station hasn't got becomes the
+    usual one for the band. Raises ValueError for a file without a frequency column."""
+    with open(path, "rb") as f:
+        data = f.read()
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:  # saved by Excel on Windows
+        text = data.decode("cp1252", errors="replace")
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    names = {(name or "").strip().lower(): name for name in reader.fieldnames or []}
+    cols = {key: next((names[n] for n in wanted if n in names), None) for key, wanted in IMPORT_COLUMNS.items()}
+    if not cols["mhz"]:
+        raise ValueError("no frequency column (MHz, Frequency or Freq)")
+    rows = []
+    for r in reader:
+        mhz = to_float(r.get(cols["mhz"]))
+        if mhz is None or mhz <= 0:
+            continue
+        while mhz >= 1000 and not 1240 <= mhz <= 1300:  # kHz, or Hz; 1240-1300 is 23 cm in MHz
+            mhz /= 1000
+        mode = (r.get(cols["mode"]) or "").strip().upper() if cols["mode"] else ""
+        mode = IMPORT_MODES.get(mode, mode)
+        if mode not in MODES:
+            mode = "FM" if mhz >= 30 else "LSB" if mhz < 10 else "USB"
+        offset = to_float(r.get(cols["offset"])) if cols["offset"] else None
+        if cols["duplex"]:  # CHIRP: the sign lives in Duplex, and blank means simplex
+            duplex = (r.get(cols["duplex"]) or "").strip()
+            if duplex == "-" and offset:
+                offset = -abs(offset)
+            elif duplex == "+" and offset:
+                offset = abs(offset)
+            else:
+                offset = None
+        if offset is not None and (offset == 0 or abs(offset) > 50):
+            offset = None
+        tone = None
+        if "rtonefreq" in names and "tone" in names:
+            # CHIRP: Tone says which tone is used. "Tone" (and Cross) sends rToneFreq;
+            # "TSQL" sends and listens for cToneFreq; "TSQL-R" sends none.
+            kind = (r.get(names["tone"]) or "").strip().upper()
+            if kind in ("TONE", "CROSS"):
+                tone = to_float(r.get(names["rtonefreq"]))
+            elif kind == "TSQL":
+                tone = to_float(r.get(names.get("ctonefreq", names["rtonefreq"])))
+        elif cols["tone"]:
+            m = re.search(r"\d+(\.\d+)?", r.get(cols["tone"]) or "")
+            tone = float(m.group()) if m else None
+        if tone and not 60 <= tone <= 260:
+            tone = None
+        name = " ".join((r.get(cols["name"]) or "").split()) if cols["name"] else ""
+        note = " ".join((r.get(cols["note"]) or "").split()) if cols["note"] else ""
+        rows.append({"MHz": round(mhz, 6), "Mode": mode, "Name": name or f"{mhz:g} MHz", "Note": note,
+                     "Offset": offset, "Tone": tone})
+    return rows
+
+
+def merge_freqs(mine, new):
+    """(the list with the new rows added, how many added, how many were there already):
+    a row is already there when the frequency (to 1 kHz) and offset match."""
+    def key(row):
+        return round(row["MHz"] * 1000), round((row.get("Offset") or 0) * 1000)
+    have = {key(row) for row in mine}
+    added = [row for row in new if key(row) not in have and not have.add(key(row))]
+    return mine + added, len(added), len(new) - len(added)
 
 
 def reference_sections():
@@ -1034,7 +1173,7 @@ def freq_detail(row):
 def write_freqs(path, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + ".tmp", "w", encoding="utf-8", newline="") as f:
-        out = csv.DictWriter(f, FREQ_FIELDS)
+        out = csv.DictWriter(f, FREQ_FIELDS, extrasaction="ignore")  # a gateway row also has its distance
         out.writeheader()
         for row in rows:
             out.writerow({**row, "MHz": f"{row['MHz']:.6f}".rstrip("0").rstrip("."),
@@ -1046,8 +1185,10 @@ def write_freqs(path, rows):
 
 
 def export_chirp(rows, path=CHIRP_EXPORT):
-    """Write the FM channels for CHIRP, numbered from 1 in list order."""
-    channels = [r for r in rows if r["Mode"] in ("FM", "PKTFM")]
+    """Write the FM channels for CHIRP, numbered from 1 in list order. Rows noted "Receive only"
+    (weather radio, GMRS, MURS) are left out: a channel programmed from here could transmit."""
+    channels = [r for r in rows if r["Mode"] in ("FM", "PKTFM")
+                and not (r.get("Note") or "").lower().startswith("receive only")]
     try:
         with open(path, "w", encoding="utf-8", newline="") as f:
             out = csv.DictWriter(f, CHIRP_FIELDS)
@@ -1758,6 +1899,7 @@ class Launcher(Gtk.Window):
         self.choices = {}
         self._filling = False
         self.default_audio_card = None
+        self.rig_hz = None  # where the radio is, from the last status check
         self._poll_lock = threading.Lock()  # one status check at a time
         self._audio_lock = threading.Lock()  # the default-audio choice and the check that applies it
         self.net_connected = False
@@ -2030,7 +2172,9 @@ class Launcher(Gtk.Window):
 
         def work():
             try:
-                freq = format_freq(rigctld_query(*RIGCTLD, "f"))
+                hz = rigctld_query(*RIGCTLD, "f")
+                freq = format_freq(hz)
+                self.rig_hz = int(hz) if hz and hz.isdigit() else None
                 audio = os.path.exists("/proc/asound/rigaudio")
                 self._default_audio_to_radio(audio)
                 net = self._network_summary()
@@ -2121,6 +2265,8 @@ class Launcher(Gtk.Window):
         self._check_radio_alerts()
         self.net_status.set_visible(bool(net))
         self._refresh_tiles()
+        if self.stack.get_visible_child_name() == "reference":
+            self._reference_mark_current()
         return False
 
     # ---- home ----------------------------------------------------------
@@ -6105,29 +6251,63 @@ class Launcher(Gtk.Window):
         self.ref_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         self.ref_status.get_style_context().add_class("muted")
         header.pack_start(self.ref_status, True, True, 0)
-        self.ref_add = self._navbtn("Add frequency", self._add_frequency, "primary")
+        self.ref_add = self._navbtn("Add frequency", lambda *_: self._frequency_dialog(), "primary")
         header.pack_end(self.ref_add, False, False, 0)
-        self.ref_gw_update = self._navbtn("Update list", self._update_gateway_list)
+        self.ref_load = self._navbtn("Load a list", lambda *_: self._load_frequencies())
+        header.pack_end(self.ref_load, False, False, 0)
+        self.ref_gw_update = self._navbtn("Update", self._update_gateway_list)
         header.pack_end(self.ref_gw_update, False, False, 0)
-        self.ref_gw_mode = PickList()
+        page.pack_start(header, False, False, 0)
+
+        # Which band now: day or night at the station, and the Online page's band conditions.
+        self.ref_hint = Gtk.Label(xalign=0, wrap=True)
+        self.ref_hint.get_style_context().add_class("ref-hint")
+        page.pack_start(self.ref_hint, False, False, 0)
+
+        # Narrow a list by words (name, note, mode, frequency) and by band.
+        self.ref_filter = Gtk.Box(spacing=12)
+        self.ref_search = Gtk.SearchEntry(placeholder_text="Search this list: name, note, mode or MHz")
+        self.ref_search.connect("search-changed", lambda *_: self._render_ref_list())
+        self.ref_filter.pack_start(self.ref_search, True, True, 0)
+        self.ref_band = PickList()
+        self.ref_band.connect("changed", lambda *_: not self._ref_filling and self._render_ref_list())
+        self.ref_filter.pack_start(self.ref_band, False, False, 0)
+        self.ref_gw_mode = PickList()  # gateways only: by mode
         for key, label in GATEWAY_MODES.items():
             self.ref_gw_mode.append(key, label)
         self.ref_gw_mode.set_active_id("all")
         self.ref_gw_mode.connect("changed", lambda *_: self._show_reference())
-        header.pack_end(self.ref_gw_mode, False, False, 0)
-        page.pack_start(header, False, False, 0)
+        self.ref_filter.pack_start(self.ref_gw_mode, False, False, 0)
+        page.pack_start(self.ref_filter, False, False, 0)
 
         self.ref_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        # The band plan is a table laid out with spaces: no wrapping, so its columns stay put.
         self.ref_text = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
-                                     left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD)
+                                     left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.NONE)
         self.ref_stack = Gtk.Stack()
         for name, child in (("list", self.ref_list), ("text", self.ref_text)):
             scroller = Gtk.ScrolledWindow()
             scroller.add(child)
             self.ref_stack.add_named(scroller, name)
         page.pack_start(self.ref_stack, True, True, 0)
-        page.connect("map", lambda *_: self._load_reference_sections())
+        self.ref_rows, self.ref_mine, self._ref_filling = [], False, False
+        page.connect("map", lambda *_: (self._load_reference_sections(), self._reference_hint(page)))
         return page
+
+    def _reference_hint(self, page):
+        """Keep the which-band-now line current while the page shows."""
+        def tick():
+            if not page.get_mapped():
+                self.ref_hint_ticking = False
+                return False
+            self.ref_hint.set_text(band_hint(self.station.get("grid", ""),
+                                             conditions=(online_record("bands").get("data") or {}).get("bands")))
+            return True
+
+        tick()
+        if not getattr(self, "ref_hint_ticking", False):
+            self.ref_hint_ticking = True
+            GLib.timeout_add_seconds(60, tick)
 
     def _load_reference_sections(self, select=None):
         current = select or self.ref_combo.get_active_id()
@@ -6147,13 +6327,16 @@ class Launcher(Gtk.Window):
             return
         self.ref_status.set_text("")
         gateways = path == GATEWAYS
+        text_page = path.endswith(".txt")
         self.ref_gw_mode.set_visible(gateways)
         self.ref_gw_update.set_visible(gateways)
-        self.ref_add.set_visible(not gateways)
+        self.ref_add.set_visible(not gateways and not text_page)
+        self.ref_load.set_visible(path == MY_FREQS)
+        self.ref_filter.set_visible(not text_page)
         if gateways:
             self._show_gateways()
             return
-        if path.endswith(".txt"):
+        if text_page:
             try:
                 with open(path, encoding="utf-8") as f:
                     text = f.read()
@@ -6168,16 +6351,59 @@ class Launcher(Gtk.Window):
             # Keeps CHIRP's copy current, also when the list was copied in from a USB stick.
             export_chirp(rows)
         if not rows:
-            self.ref_status.set_text("Nothing here yet. Tune the radio and tap Add frequency." if mine else "")
+            self.ref_status.set_text("Nothing here yet. Tune the radio and tap Add frequency, or Load a list "
+                                     "from a USB stick." if mine else "")
         self._fill_ref_list(rows, my_index=mine)
 
     def _fill_ref_list(self, rows, my_index=False):
+        """Show these rows (My frequencies get Edit; the rest Save to mine), through the search box
+        and the band drop-down, which lists the bands the rows cover."""
+        self.ref_rows, self.ref_mine = rows, my_index
+        self._ref_filling = True
+        chosen = self.ref_band.get_active_id() or "all"
+        self.ref_band.remove_all()
+        self.ref_band.append("all", "All bands")
+        bands = {band_name(r["MHz"]) for r in rows}
+        for name, _low, _high in BANDS:
+            if name in bands:
+                self.ref_band.append(name, name)
+        self.ref_band.set_active_id(chosen if chosen in bands else "all")
+        self._ref_filling = False
+        self._render_ref_list()
+
+    def _render_ref_list(self):
+        words = self.ref_search.get_text().lower().split()
+        band = self.ref_band.get_active_id() or "all"
         for child in self.ref_list.get_children():
             self.ref_list.remove(child)
-        for index, row in enumerate(rows):
-            self.ref_list.add(self._freq_row(row, index if my_index else None))
+        shown = 0
+        for index, row in enumerate(self.ref_rows):
+            if band != "all" and band_name(row["MHz"]) != band:
+                continue
+            text = f"{row['MHz']:g} {row['Mode']} {row['Name']} {row['Note']} {band_name(row['MHz'])}".lower()
+            if any(word not in text for word in words):
+                continue
+            self.ref_list.add(self._freq_row(row, index if self.ref_mine else None))
+            shown += 1
+        if self.ref_rows and not shown:
+            hint = Gtk.Label(label="Nothing matches. Clear the search box or pick All bands.", xalign=0, margin=12)
+            hint.get_style_context().add_class("muted")
+            self.ref_list.add(hint)
         self.ref_list.show_all()
         self.ref_stack.set_visible_child_name("list")
+        self._reference_mark_current()
+
+    def _reference_mark_current(self):
+        """Highlight the row the radio is on (within 2 kHz: an SSB dial a little off still counts)."""
+        hz = self.rig_hz
+        for child in self.ref_list.get_children():
+            box = child.get_child() if isinstance(child, Gtk.ListBoxRow) else child
+            mhz = getattr(box, "mhz", None)
+            ctx = box.get_style_context()
+            if mhz is not None and hz is not None and abs(mhz * 1_000_000 - hz) <= 2000:
+                ctx.add_class("current")
+            else:
+                ctx.remove_class("current")
 
     def _show_gateways(self):
         rows = nearest_gateways(self.station.get("grid", ""), self.ref_gw_mode.get_active_id() or "all")
@@ -6225,6 +6451,7 @@ class Launcher(Gtk.Window):
     def _freq_row(self, row, my_index=None):
         box = Gtk.Box(spacing=16)
         box.get_style_context().add_class("freq-row")
+        box.mhz = row["MHz"]
         mhz = f"{row['MHz']:.4f}"
         freq = Gtk.Label(label=mhz[:-1] if mhz.endswith("0") else mhz, xalign=1, width_chars=9)
         freq.get_style_context().add_class("freq")
@@ -6244,32 +6471,66 @@ class Launcher(Gtk.Window):
             text.pack_start(note, False, False, 0)
         box.pack_start(text, True, True, 0)
         if my_index is not None:
-            box.pack_end(self._navbtn("Remove", lambda *_: self._remove_frequency(my_index)), False, False, 0)
+            box.pack_end(self._navbtn("Edit", lambda *_: self._frequency_dialog(index=my_index)), False, False, 0)
+        else:
+            box.pack_end(self._navbtn("Save to mine", lambda *_: self._save_to_mine(row)), False, False, 0)
         box.pack_end(self._navbtn("Tune", lambda *_: self._tune(row)), False, False, 0)
         return box
 
-    def _tune(self, row):
-        label = f"{row['MHz']:g} MHz {row['Mode']}".strip()
-        if row.get("Offset") is not None or row.get("Tone"):
-            missed = tune_split(row["MHz"], row.get("Offset"), row.get("Tone"))
-            if missed is None:
-                self.ref_status.set_text(f"The radio didn't take {row['MHz']:g} MHz FM; it may not cover that "
-                                         "band, or isn't connected.")
-            elif missed:
-                self.ref_status.set_text(f"Radio on {row['MHz']:g} MHz FM. Set the {' and '.join(missed)} on "
-                                         "the radio; it didn't take them from here.")
-            else:
-                self.ref_status.set_text(f"Radio on {row['MHz']:g} MHz FM, {freq_detail({**row, 'Note': ''})}")
+    def _save_to_mine(self, row):
+        """Put a row from a standard list (or a gateway) on My frequencies."""
+        note = re.sub(r" · (open now|opens \d{4}Z)$", "", row.get("Note") or "")
+        row = {"MHz": row["MHz"], "Mode": row["Mode"], "Name": row["Name"], "Note": note,
+               "Offset": row.get("Offset"), "Tone": row.get("Tone")}
+        mine = read_freqs(MY_FREQS)
+        merged, added, _skipped = merge_freqs(mine, [row])
+        if not added:
+            self.ref_status.set_text(f"{row['Name']} is on My frequencies already.")
             return
-        if tune_radio(row["MHz"], row["Mode"]):
-            self.ref_status.set_text(f"Radio on {label}")
-        else:
-            self.ref_status.set_text(f"The radio didn't take {label}; check it's connected and on the right band.")
+        write_freqs(MY_FREQS, merged)
+        self.ref_status.set_text(f"Saved {row['Name']} to My frequencies.")
 
-    def _add_frequency(self, *_):
-        dialog = Gtk.Dialog(title="Add frequency", transient_for=self, modal=True)
+    def _tune(self, row):
+        """Tune the radio to a row, off the screen's thread: a wedged serial port mustn't freeze it.
+        A row without a repeater offset or tone turns those off, so what an earlier repeater
+        set doesn't stay on the radio."""
+        self.ref_status.set_text(f"Tuning to {row['MHz']:g} MHz…")
+
+        def work():
+            label = f"{row['MHz']:g} MHz {row['Mode']}".strip()
+            if row.get("Offset") is not None or row.get("Tone"):
+                missed = tune_split(row["MHz"], row.get("Offset"), row.get("Tone"))
+                if missed is None:
+                    text = (f"The radio didn't take {row['MHz']:g} MHz FM; it may not cover that band, "
+                            "or isn't connected.")
+                elif missed:
+                    text = (f"Radio on {row['MHz']:g} MHz FM. Set the {' and '.join(missed)} on the radio; "
+                            "it didn't take them from here.")
+                else:
+                    text = f"Radio on {row['MHz']:g} MHz FM, {freq_detail({**row, 'Note': ''})}"
+            elif tune_radio(row["MHz"], row["Mode"]):
+                if row["Mode"] in ("FM", "PKTFM"):
+                    rigctld_query(*RIGCTLD, "R 0")  # simplex: no offset left from a repeater
+                rigctld_query(*RIGCTLD, "U TONE 0")
+                text = f"Radio on {label}"
+            else:
+                text = f"The radio didn't take {label}; check it's connected and on the right band."
+            hz = rigctld_query(*RIGCTLD, "f")
+            self.rig_hz = int(hz) if hz and hz.isdigit() else self.rig_hz
+            GLib.idle_add(lambda: (self.ref_status.set_text(text), self._reference_mark_current()) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _frequency_dialog(self, index=None):
+        """Add a frequency to My frequencies, or (with an index) edit or remove one."""
+        rows = read_freqs(MY_FREQS)
+        editing = index is not None and index < len(rows)
+        current = rows[index] if editing else {}
+        dialog = Gtk.Dialog(title="Edit frequency" if editing else "Add frequency", transient_for=self, modal=True)
         dialog.set_default_size(560, -1)
-        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Add", Gtk.ResponseType.OK)
+        if editing:
+            dialog.add_buttons("Remove", 2)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save" if editing else "Add", Gtk.ResponseType.OK)
         grid = Gtk.Grid(column_spacing=12, row_spacing=12, margin=16)
         mhz = Gtk.Entry(placeholder_text="14.300", input_purpose=Gtk.InputPurpose.NUMBER)
         mode = PickList()
@@ -6279,12 +6540,20 @@ class Launcher(Gtk.Window):
         note = Gtk.Entry(placeholder_text="Sundays 19:00 local")
         offset = Gtk.Entry(placeholder_text="Repeaters only: -0.6, +5 or 0 for simplex")
         tone = Gtk.Entry(placeholder_text="Repeaters only: CTCSS tone, e.g. 100.0")
-        # Start from where the radio is now.
-        hz = rigctld_query(*RIGCTLD, "f")
-        if hz and hz.isdigit():
-            mhz.set_text(f"{int(hz) / 1_000_000:.6f}".rstrip("0").rstrip("."))
-        current_mode = rigctld_query(*RIGCTLD, "m")
-        mode.set_active_id(current_mode if current_mode in MODES else "USB")
+        if editing:
+            mhz.set_text(f"{current['MHz']:.6f}".rstrip("0").rstrip("."))
+            mode.set_active_id(current["Mode"] if current["Mode"] in MODES else "USB")
+            name.set_text(current["Name"])
+            note.set_text(current["Note"])
+            offset.set_text("" if current.get("Offset") is None else f"{current['Offset']:+g}")
+            tone.set_text(f"{current['Tone']:g}" if current.get("Tone") else "")
+        else:
+            # Start from where the radio is now.
+            hz = rigctld_query(*RIGCTLD, "f")
+            if hz and hz.isdigit():
+                mhz.set_text(f"{int(hz) / 1_000_000:.6f}".rstrip("0").rstrip("."))
+            current_mode = rigctld_query(*RIGCTLD, "m")
+            mode.set_active_id(current_mode if current_mode in MODES else "USB")
         for i, (label, widget) in enumerate((("MHz", mhz), ("Mode", mode), ("Name", name), ("Note", note),
                                              ("Offset MHz", offset), ("Tone Hz", tone))):
             grid.attach(Gtk.Label(label=label, xalign=0), 0, i, 1, 1)
@@ -6292,33 +6561,76 @@ class Launcher(Gtk.Window):
             grid.attach(widget, 1, i, 1, 1)
         dialog.get_content_area().add(grid)
         dialog.show_all()
-        while dialog.run() == Gtk.ResponseType.OK:
+        while True:
+            response = dialog.run()
+            if response == 2:
+                if self._confirm(f"Remove {current['Name']}?", "It comes off My frequencies."):
+                    del rows[index]
+                    write_freqs(MY_FREQS, rows)
+                    self._load_reference_sections(select=MY_FREQS)
+                    self._show_reference()
+                    break
+                continue
+            if response != Gtk.ResponseType.OK:
+                break
             try:
                 value = float(mhz.get_text().strip())
             except ValueError:
                 mhz.grab_focus()
                 continue
-            rows = read_freqs(MY_FREQS)
             shift, ctcss = to_float(offset.get_text()), to_float(tone.get_text())
             if (offset.get_text().strip() and shift is None) or (tone.get_text().strip() and not ctcss):
                 (offset if shift is None and offset.get_text().strip() else tone).grab_focus()
                 continue
-            rows.append({"MHz": value, "Mode": mode.get_active_id(),
-                         "Name": name.get_text().strip() or f"{value:g} MHz", "Note": note.get_text().strip(),
-                         "Offset": shift, "Tone": ctcss})
+            row = {"MHz": value, "Mode": mode.get_active_id(),
+                   "Name": name.get_text().strip() or f"{value:g} MHz", "Note": note.get_text().strip(),
+                   "Offset": shift, "Tone": ctcss}
+            if editing:
+                rows[index] = row
+            else:
+                rows.append(row)
             write_freqs(MY_FREQS, rows)
             self._load_reference_sections(select=MY_FREQS)
+            self._show_reference()
             break
         dialog.destroy()
 
-    def _remove_frequency(self, index):
-        rows = read_freqs(MY_FREQS)
-        if index >= len(rows):
+    def _load_frequencies(self):
+        """Add the rows of a CSV on a USB stick (or in Downloads) to My frequencies: the
+        station's own layout, CHIRP's export, or a RepeaterBook or RadioReference download."""
+        mount_usb_sticks()
+        dialog = Gtk.FileChooserDialog(title="Load a frequency list", transient_for=self,
+                                       action=Gtk.FileChooserAction.OPEN)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Add to My frequencies", Gtk.ResponseType.OK)
+        csvs = Gtk.FileFilter()
+        csvs.set_name("Frequency lists (CSV)")
+        for pattern in ("*.csv", "*.CSV"):
+            csvs.add_pattern(pattern)
+        dialog.add_filter(csvs)
+        for folder in [os.path.expanduser("~/Downloads")] + glob.glob(f"/media/{os.environ.get('USER', '')}/*"):
+            if os.path.isdir(folder):
+                dialog.add_shortcut_folder(folder)
+        dialog.set_size_request(800, 500)
+        response = dialog.run()
+        path = dialog.get_filename()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK or not path:
             return
-        if self._confirm(f"Remove {rows[index]['Name']}?", "It comes off My frequencies."):
-            del rows[index]
-            write_freqs(MY_FREQS, rows)
-            self._show_reference()
+        try:
+            new = import_freqs(path)
+        except (OSError, ValueError, csv.Error) as exc:
+            self._message(f"Couldn't read that list: {exc}")
+            return
+        if not new:
+            self._message("That file has no frequencies in it.")
+            return
+        merged, added, skipped = merge_freqs(read_freqs(MY_FREQS), new)
+        if added:
+            write_freqs(MY_FREQS, merged)
+        self._load_reference_sections(select=MY_FREQS)
+        self._show_reference()
+        self.ref_status.set_text(f"Added {added} from {os.path.basename(path)}"
+                                 + (f"; {skipped} already here." if skipped else "."))
 
     def _diag_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)

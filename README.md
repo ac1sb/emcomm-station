@@ -176,19 +176,30 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   in `~/.config/emcomm/broadcastify.json`, readable only by the station user.
 - **Reference** (tile, F5): the US band plan with a which-band-when guide, emergency and
   calling frequencies (IARU emergency centres of activity, Hurricane Watch Net,
-  SATERN, 60 m channels, simplex calling, APRS), and JS8Call and FT8 dial
-  frequencies. **Tune** puts the radio on that frequency and mode. **Add
-  frequency** saves the radio's current frequency (or one you type) to **My
-  frequencies** with a name and note, for local nets and repeaters. For a repeater,
-  also give its offset (for example -0.6, or +5 on 70 cm) and CTCSS tone; **Tune**
-  then sets the radio to FM with that offset and tone, on radios and bands that
-  support it. The lists are CSV files (`MHz,Mode,Name,Note,Offset,Tone`; Offset and
-  Tone may be left out) in `/usr/share/emcomm/reference`; a file of the same name in
-  `~/.local/share/emcomm/reference` replaces the standard one. My frequencies is
-  `~/.local/share/emcomm/reference/My frequencies.csv`, so a list made on a computer
-  can be copied in from a USB stick.
+  SATERN, 60 m channels, simplex calling, APRS), JS8Call and FT8 dial
+  frequencies, and other services to listen to (NOAA Weather Radio, marine
+  channel 16, aviation guard, FRS/GMRS, MURS, CB 9 and 19; marked receive only).
+  A line at the top says whether it's day or night at your grid and which HF
+  bands to try nearby and far, with the Online page's band conditions when it
+  has them. The row the radio is on is highlighted. A search box narrows any
+  list by name, note, mode or MHz, and a drop-down by band. **Tune** puts the
+  radio on that frequency and mode (and turns off any repeater offset or tone an
+  earlier Tune set). **Save to mine** on any row copies it to **My frequencies**;
+  **Add frequency** saves the radio's current frequency (or one you type) there
+  with a name and note, for local nets and repeaters, and **Edit** on one of your
+  rows changes or removes it. For a repeater, also give its offset (for example
+  -0.6, or +5 on 70 cm) and CTCSS tone; **Tune** then sets the radio to FM with
+  that offset and tone, on radios and bands that support it. **Load a list** adds
+  a CSV from a USB stick or Downloads to My frequencies: the station's own layout,
+  CHIRP's export, or a RepeaterBook or RadioReference download (it reads whichever
+  frequency, name, offset, tone and mode columns the file has, and skips rows
+  already there). The lists are CSV files (`MHz,Mode,Name,Note,Offset,Tone`;
+  Offset and Tone may be left out) in `/usr/share/emcomm/reference`; a file of
+  the same name in `~/.local/share/emcomm/reference` replaces the standard one.
+  My frequencies is `~/.local/share/emcomm/reference/My frequencies.csv`.
 - **Nearest Winlink gateways** (on the Reference page): every gateway channel from
-  Pat's list, nearest to your grid first, with distance, bearing, mode and hours.
+  Pat's list, nearest to your grid first, with distance, bearing, mode and hours,
+  and whether it's open now.
   Pick VARA HF, ARDOP, VARA FM or Packet to narrow it, and **Tune** puts the radio
   on the gateway's dial frequency (centre minus 1.5 kHz on HF, as Pat does). It
   works offline from Pat's saved list; **Update list** downloads a fresh one when
@@ -339,7 +350,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 - **CHIRP:** for programming a handheld or mobile over its programming cable (the
   FT-710 and FT-891 don't need it). The station keeps
   `~/My frequencies for CHIRP.csv` up to date with the FM channels from My
-  frequencies, offset and tone included. In CHIRP, download from the radio first,
+  frequencies, offset and tone included (rows noted "Receive only" are left out). In CHIRP, download from the radio first,
   then use File > Import to add that file's channels, and upload to the radio.
   CHIRP is built from its source on GitHub, the same code as its daily builds
   (set `apps_chirp_version` in `roles/apps/defaults/main.yml` to a commit or tag
