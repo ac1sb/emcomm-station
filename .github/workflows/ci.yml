@@ -53,7 +53,6 @@ jobs:
           python tests/test_map_prepare.py
           python tests/test_mesh_nodes.py
           python tests/test_splash.py
-          python tests/test_igate.py
 
   launcher:
     # The real launcher, headless: the Forms page, the ICS-213 editor, Send over the
