@@ -4441,14 +4441,13 @@ class Launcher(Gtk.Window):
         # Right to left after New; each shows for the kind of thing picked.
         self.f213_send_btn = self._navbtn("Send by radio", lambda *_: self._forms_send(), "primary")
         self.f213_open_btn = self._navbtn("Reply / Edit", lambda *_: self._ics213_write(self.f213_path))
-        self.f213_print_btn = self._navbtn("Print", self._ics213_print)
-        self.f213_flmsg_btn = self._navbtn("Open in flmsg", self._ics213_edit)
+        self.f213_more_btn, (self.f213_print_btn, self.f213_flmsg_btn) = self._more_menu(
+            (("Print", self._ics213_print), ("Open in flmsg", self._ics213_edit)))
         self.forms_net_btn = self._navbtn("Net control  F8", lambda *_: self.stack.set_visible_child_name("net"),
                                           "primary")
         self.forms_309_btn = self._navbtn("ICS-309 log", lambda *_: self._forms_ics309())
         self.forms_open_btn = self._navbtn("Open / Print", lambda *_: self._forms_open(), "primary")
-        self.forms_kind_btns = {"213": [self.f213_send_btn, self.f213_open_btn, self.f213_print_btn,
-                                        self.f213_flmsg_btn],
+        self.forms_kind_btns = {"213": [self.f213_send_btn, self.f213_open_btn, self.f213_more_btn],
                                 "net": [self.forms_net_btn, self.forms_309_btn],
                                 "form": [self.forms_open_btn]}
         for btns in self.forms_kind_btns.values():
@@ -4483,6 +4482,31 @@ class Launcher(Gtk.Window):
         self.f213_doc, self.f213_path = None, None
         page.connect("map", lambda *_: self._forms_tick(page))
         return page
+
+    def _more_menu(self, items):
+        """More ▾ for buttons a header has no room for (the screen is 1024 px wide): the menu
+        button and the buttons in it, so they can be greyed out as usual."""
+        button = Gtk.MenuButton(label="More  ▾")
+        button.get_style_context().add_class("navbtn")
+        menu = Gtk.Popover(relative_to=button, position=Gtk.PositionType.BOTTOM)
+        menu.get_style_context().add_class("station-menu")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+
+        def go(item, handler):
+            menu.popdown()
+            handler(item)
+
+        buttons = []
+        for label, handler in items:
+            item = self._navbtn(label, lambda b, h=handler: go(b, h))
+            item.get_child().set_xalign(0)
+            item.set_size_request(200, -1)
+            box.pack_start(item, False, False, 0)
+            buttons.append(item)
+        box.show_all()
+        menu.add(box)
+        button.set_popover(menu)
+        return button, buttons
 
     def _forms_new_menu(self, button):
         """New ▾: what can be started from the Forms page."""
@@ -4877,8 +4901,9 @@ class Launcher(Gtk.Window):
         header.pack_end(self._navbtn("Send by radio", lambda *_: self._ics213_editor_send(), "primary"),
                         False, False, 0)
         header.pack_end(self._navbtn("Save", lambda *_: self._ics213_editor_save()), False, False, 0)
-        header.pack_end(self._navbtn("Print", lambda *_: self._ics213_editor_print()), False, False, 0)
-        header.pack_end(self._navbtn("Open in flmsg", lambda *_: self._ics213_editor_flmsg()), False, False, 0)
+        more, _ = self._more_menu((("Print", lambda *_: self._ics213_editor_print()),
+                                   ("Open in flmsg", lambda *_: self._ics213_editor_flmsg())))
+        header.pack_end(more, False, False, 0)
         page.pack_start(header, False, False, 0)
 
         self.f213e_doc = None

@@ -153,8 +153,9 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   other station's fldigi saves it for flmsg as usual. A copy of what went out is
   kept in `~/.nbems/WRAP/send`, and flmsg's `auto_sent.csv` gets a line, as if
   flmsg had sent it. **Save** keeps a message in flmsg's messages folder,
-  **Print** prints the form (or saves a PDF, which also lands in `~/ICS forms`),
-  and **Open in flmsg** opens a message in flmsg itself, for its other forms.
+  and under **More ▾**, **Print** prints the form (or saves a PDF, which also
+  lands in `~/ICS forms`) and **Open in flmsg** opens a message in flmsg itself,
+  for its other forms.
 - **Recorder** (the **Rec** button at the top of the screen, or on the Logs page):
   records the radio's receive audio to `~/Recordings`, each file named with the
   UTC time, frequency and mode. **Record when there's a signal** keeps only the

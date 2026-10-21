@@ -158,7 +158,7 @@ def main():
     win.stack.set_visible_child_name("forms")
     pump(3)
     check(sorted(r.item["kind"] for r in rows()) == ["213", "309", "net"], f"list kinds {[r.item['kind'] for r in rows()]}")
-    wanted = {"213": ["Open in flmsg", "Print", "Reply / Edit", "Send by radio"],
+    wanted = {"213": ["More  ▾", "Reply / Edit", "Send by radio"],
               "net": ["ICS-309 log", "Net control  F8"], "309": ["Open / Print"]}
     for row in rows():
         win.forms_list.select_row(row)
@@ -186,6 +186,9 @@ def main():
     check(win.stack.get_visible_child_name() == "ics213-edit", "editor opened")
     check(win._ics213_field("t1").endswith("Z"), "time in UTC")
     fits("ICS-213 editor")
+    # The form follows the window's width, so check the editor's buttons on their own too.
+    header = win.f213e_title.get_parent().get_preferred_width()[0]
+    check(header <= 1024 - 40, f"ICS-213 editor buttons fit (need {header})")
     win.f213e_fields["to"].set_text("W1AW")
     win.f213e_fields["sb"].set_text("Smoke test")
     win.f213e_fields["mg"].get_buffer().set_text("Hello from the smoke test")
