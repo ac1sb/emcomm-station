@@ -21,23 +21,66 @@
     layer(B.lakes, { color: "#7FA4C2", weight: 0.5, fillColor: "#AAC3D6", fillOpacity: 1 }),
     layer(B.states, { color: "#8C7F6A", weight: 1.2, dashArray: "4 3" })
   ]).addTo(map);
-  var counties = layer(B.counties, { color: "#C2B9A6", weight: 0.6, fill: false });
-  var roads = layer(B.roads, function (f) {
-    return { color: f.properties.type === "Major Highway" ? "#D98E4A" : "#E0B27A",
-             weight: f.properties.type === "Major Highway" ? 1.6 : 1 };
-  });
+  // Counties and roads are the bulk of the base map and show only from zoom 6, so
+  // they come from a second script (basemap-detail.js, next to basemap.js) read the
+  // first time they're needed. An older single-file base map carries them itself.
+  var counties = null, roads = null, detailLoading = false;
+  function detailLayers(d) {
+    counties = layer(d.counties, { color: "#C2B9A6", weight: 0.6, fill: false });
+    roads = layer(d.roads, function (f) {
+      return { color: f.properties.type === "Major Highway" ? "#D98E4A" : "#E0B27A",
+               weight: f.properties.type === "Major Highway" ? 1.6 : 1 };
+    });
+  }
+  if (B.counties || B.roads) detailLayers(B);
+  function loadDetail() {
+    if (detailLoading) return;
+    detailLoading = true;
+    var tag = document.querySelector('script[src$="basemap.js"]');
+    var script = document.createElement("script");
+    script.src = tag ? tag.src.replace(/basemap\.js$/, "basemap-detail.js") : "basemap-detail.js";
+    script.onload = function () {
+      detailLayers(window.BASEMAP_DETAIL || {});
+      detail();
+    };
+    script.onerror = function () { detailLayers({}); };  // not built yet: the map works without
+    document.body.appendChild(script);
+  }
   var places = L.layerGroup().addTo(map);
   var placeData = B.places ? B.places.features : [];
   // US towns (Census): [lat, lon, name, 1 = town or city, 2 = village or CDP].
   var towns = B.towns || [];
+  // Names are kept in one-degree cells, so a pan or zoom looks only at those in view
+  // rather than at every town in the country.
+  function cells(items, position) {
+    var index = {};
+    items.forEach(function (item) {
+      var p = position(item), key = Math.floor(p[0]) + "," + Math.floor(p[1]);
+      (index[key] || (index[key] = [])).push(item);
+    });
+    return index;
+  }
+  var placeCells = cells(placeData, function (f) { return [f.geometry.coordinates[1], f.geometry.coordinates[0]]; });
+  var townCells = cells(towns, function (t) { return [t[0], t[1]]; });
+  function inView(index, b, each) {
+    var south = Math.floor(b.getSouth()), north = Math.floor(b.getNorth());
+    var west = Math.floor(b.getWest()), east = Math.floor(b.getEast());
+    for (var lat = south; lat <= north; lat++) {
+      for (var lon = west; lon <= east; lon++) {
+        var items = index[lat + "," + lon];
+        if (items) items.forEach(each);
+      }
+    }
+  }
 
   // Counties, roads and smaller towns only once zoomed in, to keep it readable and quick.
   // A name is left off where it would sit on top of one already shown.
   function detail() {
     var z = map.getZoom(), b = map.getBounds(), taken = [];
     var online = base !== "offline";
-    toggle(counties, !online && z >= 6);
-    toggle(roads, !online && z >= 6);
+    if (!online && z >= 6 && !counties) loadDetail();
+    if (counties) toggle(counties, !online && z >= 6);
+    if (roads) toggle(roads, !online && z >= 6);
     places.clearLayers();
     if (online) return;  // the online maps have their own names
     function label(lat, lon, name, cls) {
@@ -50,12 +93,12 @@
       places.addLayer(L.marker([lat, lon], { interactive: false,
         icon: L.divIcon({ className: cls, html: "· " + esc(name), iconSize: null }) }));
     }
-    placeData.forEach(function (f) {
+    inView(placeCells, b, function (f) {
       var c = f.geometry.coordinates;
       if (f.properties.scalerank <= z - 2) label(c[1], c[0], f.properties.name, "place-label");
     });
     if (z >= 9) {
-      towns.forEach(function (t) {
+      inView(townCells, b, function (t) {
         if (t[3] === 1 || z >= 11) label(t[0], t[1], t[2], t[3] === 1 ? "place-label" : "place-label small");
       });
     }

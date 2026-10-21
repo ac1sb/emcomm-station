@@ -2,6 +2,7 @@
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 import tempfile
 import unittest
@@ -51,6 +52,48 @@ class Towns(unittest.TestCase):
     def test_no_census_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(mp.towns(tmp), [])
+
+
+SQUARE = [[0, 0], [0.0005, 0.5], [0, 1], [1, 1], [1, 0.0004], [1, 0], [0, 0]]
+
+
+class Simplify(unittest.TestCase):
+    def test_points_off_the_line_by_less_than_the_tolerance_go(self):
+        self.assertEqual(mp.simplify_line(SQUARE, 0.002), [[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]])
+        self.assertEqual(mp.simplify_line(SQUARE, 0), SQUARE)
+        self.assertEqual(mp.simplify_line([[0, 0], [1, 1]], 0.1), [[0, 0], [1, 1]])
+        # A real bend stays.
+        bent = [[0, 0], [0.5, 0.3], [1, 0]]
+        self.assertEqual(mp.simplify_line(bent, 0.1), bent)
+
+    def test_every_depth_of_geometry(self):
+        self.assertEqual(mp.simplified([1.5, 2.5], 0.1), [1.5, 2.5])
+        self.assertEqual(mp.simplified([[SQUARE], [SQUARE]], 0.002)[1][0][1], [0, 1])
+
+    def test_writes_the_base_map_and_the_detail_apart(self):
+        feature = {"type": "Feature", "properties": {"NAME": "A", "REGION": "B", "type": "Major Highway",
+                                                     "continent": "North America", "name": "A", "scalerank": 1},
+                   "geometry": {"type": "LineString", "coordinates": SQUARE}}
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("ne_50m_admin_0_countries", "ne_50m_lakes", "ne_50m_admin_1_states_provinces_lines",
+                         "ne_10m_admin_2_counties", "ne_10m_roads", "ne_10m_populated_places_simple"):
+                with open(os.path.join(tmp, name + ".geojson"), "w", encoding="utf-8") as f:
+                    json.dump({"type": "FeatureCollection", "features": [feature]}, f)
+            dest = os.path.join(tmp, "out", "basemap.js")
+            os.makedirs(os.path.dirname(dest))
+            self.assertEqual(mp.main([tmp, dest]), 0)
+            with open(dest, encoding="utf-8") as f:
+                base = f.read()
+            with open(os.path.join(tmp, "out", "basemap-detail.js"), encoding="utf-8") as f:
+                detail = f.read()
+        self.assertTrue(base.startswith("window.BASEMAP = {"))
+        self.assertTrue(detail.startswith("window.BASEMAP_DETAIL = {"))
+        base, detail = json.loads(base[len("window.BASEMAP = "):-2]), json.loads(detail[len("window.BASEMAP_DETAIL = "):-2])
+        self.assertEqual(sorted(base), ["countries", "lakes", "places", "states", "towns"])
+        self.assertEqual(sorted(detail), ["counties", "roads"])
+        self.assertEqual(detail["counties"]["features"][0]["geometry"]["coordinates"],
+                         [[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]])
+        self.assertEqual(len(base["places"]["features"][0]["geometry"]["coordinates"]), len(SQUARE))
 
 
 if __name__ == "__main__":

@@ -613,7 +613,13 @@ def bandpass(low, high, rate, taps):
 
 
 class Decimator:
-    """Low-pass filter and keep every nth sample, carrying state from block to block."""
+    """Low-pass filter and keep every nth sample, carrying state from block to block.
+
+    Only the kept samples are worked out: each tap is applied to every nth input
+    sample in one strided pass, which costs a nth of filtering everything and
+    throwing most of it away (and, with numpy, beats splitting the filter into
+    n phases). That's part of what lets a fast receiver (HackRF, Airspy) run on
+    a small computer."""
 
     def __init__(self, taps, factor):
         self.taps, self.factor = taps, factor
@@ -624,11 +630,18 @@ class Decimator:
         self.offset = 0
 
     def __call__(self, x):
+        length, m = len(self.taps), self.factor
         joined = np.concatenate([self.tail, x])
-        self.tail = joined[-(len(self.taps) - 1):]
-        filtered = np.convolve(joined, self.taps, mode="valid")
-        out = filtered[self.offset::self.factor]
-        self.offset = (self.offset - len(filtered)) % self.factor
+        self.tail = joined[-(length - 1):]
+        n = len(x)
+        count = (n - 1 - self.offset) // m + 1 if n > self.offset else 0
+        out = np.zeros(count, joined.dtype)
+        # Output k is the full filter's output at offset + m*k: tap j times joined[c - j + m*k].
+        c = self.offset + length - 1
+        for j, tap in enumerate(self.taps):
+            start = c - j
+            out += tap * joined[start:start + m * count:m]
+        self.offset = (self.offset - n) % m
         return out
 
 
@@ -650,6 +663,14 @@ class Demod:
             self.stages.append(Decimator(lowpass(0.4 * mid, rate, 8 * first + 1), first))
         self.stages.append(Decimator(lowpass(7500, mid, int(97 * mid / RATE) | 1), second))
         self.audio_taps = bandpass(300, 3400, self.audio_rate, 511)
+        # The mixer's phasor repeats every `period` samples (the rates are whole numbers
+        # of hertz), so it's worked out once rather than sample by sample on every block.
+        whole = int(round(rate))
+        self.period = whole // math.gcd(OFFSET, whole)
+        if self.period > 65536:  # an odd rate: fall back to working it out each time
+            self.period = None
+        else:
+            self.phasor = np.exp(-2j * np.pi * OFFSET / rate * np.arange(self.period)).astype(np.complex64)
         self.reset()
 
     def reset(self):
@@ -661,9 +682,15 @@ class Demod:
 
     def channel(self, iq):
         """Mix the channel down to 0 Hz, filter it and drop to about 48 kS/s."""
-        n = np.arange(self.phase, self.phase + len(iq))
-        self.phase = (self.phase + len(iq)) % int(self.rate)
-        mixed = (iq * np.exp(-2j * np.pi * OFFSET / self.rate * n)).astype(np.complex64)
+        n = len(iq)
+        if self.period:
+            start = self.phase % self.period
+            phasor = np.tile(self.phasor, n // self.period + 2)[start:start + n]
+            self.phase = (self.phase + n) % self.period
+        else:
+            phasor = np.exp(-2j * np.pi * OFFSET / self.rate * np.arange(self.phase, self.phase + n))
+            self.phase = (self.phase + n) % int(self.rate)
+        mixed = (iq * phasor).astype(np.complex64, copy=False)
         for stage in self.stages:
             mixed = stage(mixed)
         return mixed

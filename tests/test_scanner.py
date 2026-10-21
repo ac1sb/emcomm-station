@@ -211,6 +211,28 @@ class Receivers(unittest.TestCase):
         self.assertIsNone(sc.pick_receiver("", [], nwr=False))
 
 
+class Decimating(unittest.TestCase):
+    def test_decimator_matches_filtering_everything(self):
+        """Working out only the kept samples gives the same ones as filtering the whole
+        stream and keeping every nth, across blocks of any size."""
+        rng = np.random.default_rng(3)
+        for factor, taps in ((5, 97), (12, 97), (1, 21), (3, 8)):
+            with self.subTest(factor=factor):
+                h = sc.lowpass(7500, 240000, taps)
+                x = (rng.standard_normal(5000) + 1j * rng.standard_normal(5000)).astype(np.complex64)
+                whole = np.convolve(np.concatenate([np.zeros(taps - 1, np.complex64), x]), h, mode="valid")
+                expected = whole[::factor]
+                dec = sc.Decimator(h, factor)
+                got, at = [], 0
+                for size in (1, 7, 300, 2, 1234, 500, 1956):
+                    got.append(dec(x[at:at + size]))
+                    at += size
+                got.append(dec(x[at:]))
+                got = np.concatenate(got)
+                self.assertEqual(len(got), len(expected))
+                self.assertTrue(np.allclose(got, expected, atol=1e-5))
+
+
 class OtherRates(unittest.TestCase):
     def test_squelch_and_tone_at_other_receivers_rates(self):
         for rate in (192000, 768000, 2000000, 2500000):
