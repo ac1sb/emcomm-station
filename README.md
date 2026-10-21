@@ -66,7 +66,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   when you're done typing.
 - **Launcher:** the home screen above. Works by touch, mouse or keyboard: Tab moves
   between buttons, 1–9 open tiles, Esc/F1 goes Home, F2 Diagnostics, F3 Settings,
-  F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control, F9 ICS-213 messages.
+  F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online, F8 Net control, F9 Forms.
   Every drop-down list (radio make and model, ports, counties, logs...) can be
   searched: tap it and type in the box at the top, or with a keyboard just start
   typing on it; only the choices with every word typed stay, and Enter picks the
@@ -118,28 +118,43 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   every book in a window with search.
 - **Logs** (tile, F4): JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
   place, plus a box to note a voice or other contact. Notes get the UTC time,
-  frequency and mode from the radio.
-- **Net control** (tile in the Forms folder, or F8): name the net and tap **Start net**.
-  Type each callsign and press Enter to check it in, or fill in From, To and Message
-  and tap **Log** for traffic; every entry gets the UTC time, and **Undo** removes
-  the last one. **ICS-309 log** fills in the Communications Log for the open (or
-  last) net, and **ICS-205 plan** fills in the Radio Communications Plan from My
-  frequencies (receive and transmit frequency, tone, and the note as the
-  assignment). Both are saved in `~/ICS forms` and open with a **Print** button;
-  the print dialog can also save a PDF to a USB stick. Nets are kept in
-  `~/.local/share/emcomm/nets`.
-- **ICS-213 messages** (the ICS-213 tile in the Forms folder, or F9): every ICS-213 in flmsg, the
-  ones you wrote and the ones fldigi received, shown on FEMA's own General Message
-  form (ICS 213), the same layout as the paper form. Pick one on the left to see
-  it; **Print** prints it (or saves a PDF). **New message** opens the blank form
-  with a box on each field (To, From, Subject, Date, Time, Message, Approved by,
-  Reply...), so the message is typed where it goes on paper; the date and time (UTC)
-  are filled in, and the incident too while a net is open. **Reply or edit** opens
-  the one picked: a received message gets the reply boxes at the bottom and is
-  saved as a copy, so what came in stays as it was. **Save** keeps it in flmsg's
-  messages, **Send with flmsg** saves it and opens it in flmsg (press AutoSend
-  there, with fldigi open), and **Open in flmsg** opens any message in flmsg as
-  before. The filled-in form is also saved as a PDF in `~/ICS forms`.
+  frequency and mode from the radio. **Forms** on this page goes to the messages,
+  nets and ICS forms.
+- **Forms** (tile, F9): one page for everything written down during an event.
+  The list on the left holds every ICS-213 message (the ones you wrote and the
+  ones fldigi received), every net, and every ICS-309 log and ICS-205 plan
+  filled in, newest first; a drop-down narrows it to one kind. Pick one to see
+  it on the right: a message on FEMA's own General Message form (ICS 213), the
+  same layout as the paper form; a net as its log. **New ▾** starts any of them:
+  - **ICS-213 message** opens the blank form with a box on each field (To, From,
+    Subject, Date, Time, Message, Approved by, Reply...), so the message is typed
+    where it goes on paper; the date and time (UTC) are filled in, and the
+    incident too while a net is open. **Reply / Edit** on a message in the list
+    opens it the same way: a received message gets the reply boxes at the bottom
+    and is saved as a copy, so what came in stays as it was.
+  - **Net log** opens Net control (also F8): name the net and tap **Start net**.
+    Type each callsign and press Enter to check it in, or fill in From, To and
+    Message and tap **Log** for traffic; every entry gets the UTC time, and
+    **Undo** removes the last one. Nets are kept in `~/.local/share/emcomm/nets`.
+  - **ICS-309 Communications Log** fills in the log for the net picked in the
+    list (else the open or last net), and **ICS-205 Radio Communications Plan**
+    fills in the plan from My frequencies (receive and transmit frequency, tone,
+    and the note as the assignment). Both are saved in `~/ICS forms` and open
+    with a **Print** button; the print dialog can also save a PDF to a USB stick.
+    An open net stays at the top of the list; its row has **Net control** and
+    **ICS-309 log** buttons.
+
+  **Send over the radio** sends the message picked (or the one being written,
+  saving it first) the way flmsg's AutoSend does, without opening flmsg: it
+  shows whether fldigi is running (with a **Start fldigi** button if not), lets
+  you pick the modem (MT63-2000L and the other NBEMS modems fldigi has; the one
+  fldigi is on is picked), then puts the wrapped message in fldigi's transmit
+  buffer, which keys the radio, and says when fldigi is back on receive. The
+  other station's fldigi saves it for flmsg as usual. A copy of what went out is
+  kept in `~/.nbems/WRAP/send`, and flmsg's `auto_sent.csv` gets a line, as if
+  flmsg had sent it. **Save** keeps a message in flmsg's messages folder,
+  **Print** prints the form (or saves a PDF, which also lands in `~/ICS forms`),
+  and **Open in flmsg** opens a message in flmsg itself, for its other forms.
 - **Recorder** (the **Rec** button at the top of the screen, or on the Logs page):
   records the radio's receive audio to `~/Recordings`, each file named with the
   UTC time, frequency and mode. **Record when there's a signal** keeps only the

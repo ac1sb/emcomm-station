@@ -25,7 +25,7 @@ station_mode: kiosk
 #            to install it (app: its tag in roles/apps).
 #   run:     what the tile starts.
 #   page:    instead of run, a part of the launcher the tile opens (nwr: weather radio setup;
-#            online, reference, logs, ics213, net: those pages).
+#            online, reference, logs, forms, net: those pages).
 #   ready:   a file that must exist too, else the tile offers to set it up (VARA).
 #   icon:    image name in /usr/share/emcomm/icons (.svg or .png). Long-press or
 #            right-click a tile to use your own picture instead.
@@ -49,9 +49,8 @@ launcher_apps:
     app: vara
     ready: ~/.wine-vara/drive_c/VARA FM/VARAFM.exe
     run: [emcomm-start, vara-fm]
-  - { code: MSG, icon: ics213, name: ICS-213, detail: Message forms, command: emcomm-ics, page: ics213 }
-  - { code: NET, icon: net-control, name: Net control, detail: Check-in log, command: emcomm-ics, page: net }
-  - { code: "213", icon: flmsg, name: flmsg, detail: Forms over the air, command: flmsg, app: flmsg, run: [emcomm-start, flmsg] }
+  - { code: MSG, icon: ics213, name: Forms, detail: ICS-213 · nets · 309 · 205, command: emcomm-ics, page: forms }
+  - { code: "213", icon: flmsg, name: flmsg, detail: Other NBEMS forms, command: flmsg, app: flmsg, run: [emcomm-start, flmsg] }
   - { code: FLD, icon: fldigi, name: fldigi, detail: Digital modes · flamp, command: fldigi, app: fldigi, run: [emcomm-start, fldigi] }
   - { code: PKT, icon: packet, name: Packet, detail: Winlink packet, command: direwolf, app: packet, run: [emcomm-start, packet] }
   - { code: ARD, icon: ardop, name: ARDOP, detail: Winlink HF modem, command: ardopcf, app: ardop, run: [emcomm-start, ardop] }
@@ -82,5 +81,4 @@ launcher_apps:
 # moved in and out, and folders added, renamed or removed, with Arrange tiles on the station.
 launcher_folders:
   - { name: Email, apps: [WL, VHF, VFM, ARD, PKT] }
-  - { name: Forms, apps: [MSG, NET, "213"] }
   - { name: Mesh & APRS, apps: [MSH, MCR, APR] }

@@ -8,9 +8,12 @@ import contextlib
 import importlib.machinery
 import io
 import importlib.util
+import json
 import os
 import tempfile
+import threading
 import unittest
+import xmlrpc.server
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HELPER = os.path.join(REPO, "roles/launcher/files/emcomm-ics")
@@ -123,6 +126,106 @@ class Form213(unittest.TestCase):
         self.assertEqual(filled["4 Subject"], "Cots — 50")
         self.assertEqual(filled["2 To Name and Position"], "J. Smith, Logistics")
         self.assertFalse(filled.get("9 Reply"))
+
+
+class Listing(unittest.TestCase):
+    def test_messages_nets_and_forms_newest_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sent, nets, forms = (os.path.join(tmp, d) for d in ("sent", "nets", "forms"))
+            for d in (sent, nets, forms):
+                os.makedirs(d)
+            with open(os.path.join(sent, "ICS213-1.213"), "wb") as f:
+                f.write(ics.write_flmsg(dict(MESSAGE), "AC1SB", now=0))
+            os.utime(os.path.join(sent, "ICS213-1.213"), (1000, 1000))
+            with open(os.path.join(nets, "open.json"), "w", encoding="utf-8") as f:
+                json.dump(dict(NET, closed=None), f)
+            with open(os.path.join(nets, "closed.json"), "w", encoding="utf-8") as f:
+                json.dump(NET, f)
+            with open(os.path.join(nets, "bad.json"), "w", encoding="utf-8") as f:
+                f.write("[")
+            with open(os.path.join(forms, "ICS-309 2025-10-19 1800Z County ARES.html"), "w") as f:
+                f.write("<html>")
+            os.utime(os.path.join(forms, "ICS-309 2025-10-19 1800Z County ARES.html"), (2000, 2000))
+            found = ics.list_forms([("Sent", sent)], nets, forms)
+        self.assertEqual([m["kind"] for m in found], ["net", "net", "309", "213"])
+        self.assertEqual(found[0]["title"], "County ARES <2 m>")
+        self.assertIn("open since 18:00Z".replace(":", ""), found[0]["detail"])
+        self.assertTrue(found[0]["open"] and not found[1]["open"])
+        self.assertIn("1 checked in", found[1]["detail"])
+        self.assertEqual(found[2]["detail"], "ICS-309 Communications Log · saved 1970-01-01 00:33Z")
+        self.assertEqual((found[3]["title"], found[3]["detail"]), ("Cots — 50", "ICS-213 · Sent · to J. Smith · 2026-10-20 · 1520"))
+
+
+class Sending(unittest.TestCase):
+    def test_checksum_as_flmsg_works_it_out(self):
+        self.assertEqual(ics.flmsg_crc16(b"123456789"), "4B37")  # CRC-16/MODBUS, for plain text
+        self.assertEqual(ics.flmsg_crc16(b""), "FFFF")
+        # A byte above 127 goes in as a negative char in flmsg's C++: the sign bits carry up.
+        self.assertEqual(ics.flmsg_crc16("é".encode()), "{:04X}".format(ics_crc_reference("é".encode())))
+
+    def test_wrapped_as_flmsg_autosend(self):
+        text, wrapped = ics.wrap_for_fldigi("ICS213-x.213", b"<flmsg>4.0.23\n<ics213>\n:sb:2 hi\n")
+        payload = b"[WRAP:fn ICS213-x.213]<flmsg>4.0.23\n<ics213>\n:sb:2 hi\n"
+        self.assertEqual(wrapped, b"[WRAP:beg][WRAP:lf]" + payload + b"[WRAP:chksum "
+                         + ics.flmsg_crc16(payload).encode() + b"][WRAP:end]")
+        self.assertEqual(text, "\n\n\n... start\n" + wrapped.decode() + "\n... end\n\n\n")
+        # Windows line endings are sent as line feeds, and the envelope says so.
+        _text, wrapped = ics.wrap_for_fldigi("a.213", b"x\r\ny\r\n")
+        self.assertTrue(wrapped.startswith(b"[WRAP:beg][WRAP:crlf][WRAP:fn a.213]x\ny\n[WRAP:chksum "))
+
+    def test_sends_through_fldigi(self):
+        calls = []
+        server = xmlrpc.server.SimpleXMLRPCServer(("127.0.0.1", 0), logRequests=False)
+        server.register_function(lambda: "4.2.06", "fldigi.version")
+        server.register_function(lambda: calls and calls[-1][0] == "modem" and calls[-1][1] or "BPSK31",
+                                 "modem.get_name")
+        server.register_function(lambda: ["BPSK31", "MT63-2000L", "MFSK32", "CW"], "modem.get_names")
+        server.register_function(lambda: "RX", "main.get_trx_state")
+        server.register_function(lambda name: calls.append(("modem", name)) or 0, "modem.set_by_name")
+        server.register_function(lambda text: calls.append(("queue", text)) or 0, "text.add_tx_queu")
+        server.register_function(lambda: calls.append(("tx",)) or 0, "main.tx")
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        real = ics.FLDIGI_URL, ics.WRAP_SEND_DIR, ics.SENT_LOG
+        with tempfile.TemporaryDirectory() as tmp:
+            ics.FLDIGI_URL = f"http://127.0.0.1:{server.server_address[1]}/"
+            ics.WRAP_SEND_DIR, ics.SENT_LOG = os.path.join(tmp, "send"), os.path.join(tmp, "auto_sent.csv")
+            path = os.path.join(tmp, "ICS213-x.213")
+            with open(path, "wb") as f:
+                f.write(ics.write_flmsg(dict(MESSAGE), "AC1SB", now=0))
+            try:
+                status = ics.fldigi_status(modems=True)
+                self.assertEqual((status["online"], status["trx"], status["modems"][:2]), (True, "rx", ["MT63-2000L", "MFSK32"]))
+                result = ics.send_to_fldigi(path, "MT63-2000L")
+                self.assertEqual(result["modem"], "MT63-2000L")
+                with open(result["wrap"], "rb") as f:
+                    self.assertTrue(f.read().startswith(b"[WRAP:beg][WRAP:lf][WRAP:fn ICS213-x.213]<flmsg>"))
+                with open(ics.SENT_LOG, encoding="utf-8") as f:
+                    self.assertTrue(f.read().startswith("FILE_NAME,DATE,GMT\nICS213-x.213,"))
+            finally:
+                ics.FLDIGI_URL, ics.WRAP_SEND_DIR, ics.SENT_LOG = real
+                server.shutdown()
+                server.server_close()
+        self.assertEqual([c[0] for c in calls], ["modem", "queue", "tx"])
+        self.assertTrue(calls[1][1].endswith("[WRAP:end]\n... end\n\n\n^r"))
+
+    def test_no_fldigi(self):
+        real = ics.FLDIGI_URL
+        ics.FLDIGI_URL = "http://127.0.0.1:1/"
+        try:
+            self.assertEqual(ics.fldigi_status(), {"online": False})
+        finally:
+            ics.FLDIGI_URL = real
+
+
+def ics_crc_reference(data):
+    """flmsg's Ccrc16::update, bit for bit, with C's signed char and 32-bit unsigned int."""
+    crc = 0xFFFF
+    for byte in data:
+        c = byte - 256 if byte > 127 else byte
+        crc = (crc ^ c) & 0xFFFFFFFF
+        for _ in range(8):
+            crc = ((crc >> 1) ^ 0xA001) if crc & 1 else (crc >> 1)
+    return crc
 
 
 if __name__ == "__main__":
