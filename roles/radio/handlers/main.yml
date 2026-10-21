@@ -20,3 +20,9 @@
     name: emcomm-adsb
     state: restarted
     daemon_reload: true
+
+- name: Restart emcomm-igate
+  ansible.builtin.systemd:
+    name: emcomm-igate
+    state: restarted
+    daemon_reload: true

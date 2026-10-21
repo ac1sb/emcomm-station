@@ -1,0 +1,14 @@
+# Managed by the emcomm-station playbook.
+# An APRS iGate on the radio kept for APRS (Settings > APRS iGate); idle while it is off.
+[Unit]
+Description=APRS iGate (Direwolf on the APRS radio)
+After=network.target
+
+[Service]
+User={{ station_user }}
+ExecStart=/usr/local/bin/emcomm-igate
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

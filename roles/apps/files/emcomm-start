@@ -147,15 +147,19 @@ case "${1:-}" in
     exec xterm "${TERM_OPTS[@]}" -T "ARDOP modem" -e ardopcf --logdir "$STATE" 8515 pipewire pipewire
     ;;
   aprs)
-    # Xastir sends and hears APRS through Direwolf. Start Direwolf for it unless
-    # Packet already has it running, and stop it afterwards so other apps can
-    # use the sound card.
+    # Xastir sends and hears APRS through Direwolf: on the APRS radio (port 8010)
+    # when one is set up in Settings > APRS iGate, else on the main radio (8000).
+    # Start Direwolf for it unless the iGate or Packet already has it running,
+    # and stop it afterwards so other apps can use the sound card.
     emcomm-app-setup xastir >/dev/null
+    port=8000
+    [ -e /proc/asound/aprsaudio ] && port=8010
     modem=""
-    if ! listening 8000; then
-      direwolf -t 0 -c "$(emcomm-app-setup direwolf)" >"$STATE/direwolf-aprs.log" 2>&1 &
+    if ! listening "$port"; then
+      if [ "$port" = 8010 ]; then conf=$(emcomm-igate --tile-conf); else conf=$(emcomm-app-setup direwolf); fi
+      direwolf -t 0 -c "$conf" >"$STATE/direwolf-aprs.log" 2>&1 &
       modem=$!
-      for _ in $(seq 20); do listening 8000 && break; sleep 0.5; done
+      for _ in $(seq 20); do listening "$port" && break; sleep 0.5; done
     fi
     xastir
     [ -n "$modem" ] && kill "$modem" 2>/dev/null

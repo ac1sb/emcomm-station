@@ -26,6 +26,7 @@ RIGCTLD = "127.0.0.1:4532"
 # default, so Direwolf can share it with JS8Call, fldigi and the recorder.
 # Opening the card directly (plughw:CARD=rigaudio) would lock the others out.
 RIG_AUDIO = "pipewire"
+APRS_CARD = os.environ.get("EMCOMM_APRS_CARD", "/proc/asound/aprsaudio")  # Settings > APRS iGate
 
 
 def load_station():
@@ -132,13 +133,20 @@ def setup_xastir(station):
     if pos:
         values["STATION_LAT"] = aprs_degrees(pos[0], 2, "N", "S")
         values["STATION_LONG"] = aprs_degrees(pos[1], 3, "E", "W")
+    # Direwolf's AGW port: the APRS radio's (8010) when one is plugged in, else the
+    # main radio's (8000). Changed only while it's still one of these two.
+    port = "8010" if os.path.exists(APRS_CARD) else "8000"
+    current = dict(line.split(":", 1) for line in lines if ":" in line)
+    if current.get("DEVICE0_TYPE") == "12" and current.get("DEVICE0_HOST") == "localhost" \
+            and current.get("DEVICE0_SPEED") in ("8000", "8010"):
+        values["DEVICE0_SPEED"] = port
     if not any(line.startswith("DEVICE0_TYPE:") for line in lines):
         # Type 12 is "Networked AGWPE": Direwolf's AGW port, which emcomm-start
         # opens before Xastir starts. Direwolf keys the radio through rigctld.
         values.update({
             "DEVICE0_TYPE": "12",
             "DEVICE0_HOST": "localhost",
-            "DEVICE0_SPEED": "8000",
+            "DEVICE0_SPEED": port,
             "DEVICE0_RADIO_PORT": "0",
             "DEVICE0_INTERFACE_COMMENT": "Radio (Direwolf)",
             "DEVICE0_UNPROTO1": "WIDE1-1,WIDE2-1",

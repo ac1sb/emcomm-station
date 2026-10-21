@@ -29,8 +29,8 @@ class AppSetupTest(unittest.TestCase):
         with open(self.station, "w") as f:
             json.dump(values, f)
 
-    def run_helper(self, app):
-        env = dict(os.environ, HOME=self.home, EMCOMM_STATION=self.station)
+    def run_helper(self, app, **extra):
+        env = dict(os.environ, HOME=self.home, EMCOMM_STATION=self.station, **extra)
         result = subprocess.run([sys.executable, HELPER, app], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
@@ -93,6 +93,16 @@ class AppSetupTest(unittest.TestCase):
         self.assertIn("STATION_LONG:07242.500W\n", cnf)
         self.assertIn("DEVICE0_TYPE:12\n", cnf)
         self.assertIn("DEVICE0_SPEED:8000\n", cnf)
+
+    def test_xastir_uses_the_aprs_radio_when_plugged_in(self):
+        card = os.path.join(self.home, "aprsaudio")
+        open(card, "w").close()
+        cnf = self.read(self.run_helper("xastir", EMCOMM_APRS_CARD=card))
+        self.assertIn("DEVICE0_SPEED:8010\n", cnf)
+        os.remove(card)  # unplugged: back to the main radio's Direwolf
+        cnf = self.read(self.run_helper("xastir", EMCOMM_APRS_CARD=card)).splitlines()
+        self.assertIn("DEVICE0_SPEED:8000", cnf)
+        self.assertEqual(sum(line.startswith("DEVICE0_SPEED:") for line in cnf), 1)
 
     def test_xastir_keeps_operator_interfaces(self):
         path = os.path.join(self.home, ".xastir/config/xastir.cnf")
