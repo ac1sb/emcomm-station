@@ -71,7 +71,9 @@ class Backup(unittest.TestCase):
     def test_restore_stays_in_home(self):
         evil = os.path.join(self.tmp.name, "emcomm-backup-X-20261019-2200Z.tar.gz")
         with tarfile.open(evil, "w:gz") as tar:
-            for name in ("home/../outside.txt", "/etc/passwd-x", "home/ok.txt", "home/.config/emcomm/accounts.json"):
+            for name in ("home/../outside.txt", "/etc/passwd-x", "home/ICS forms/ok.txt",
+                         "home/.config/emcomm/accounts.json", "home/.bashrc", "home/.config/autostart/x.desktop",
+                         "home/.ssh/authorized_keys", "home/.fldigi/macros/evil.mdf"):
                 info = tarfile.TarInfo(name)
                 info.size = 2
                 tar.addfile(info, io.BytesIO(b"hi"))
@@ -79,8 +81,15 @@ class Backup(unittest.TestCase):
             link.type, link.linkname = tarfile.SYMTYPE, "/etc"
             tar.addfile(link)
         fresh = os.path.join(self.tmp.name, "fresh")
+        # A folder the backup covers that is really a link elsewhere (Wine's dosdevices/z: -> /).
+        elsewhere = os.path.join(self.tmp.name, "elsewhere")
+        os.makedirs(os.path.join(fresh, ".fldigi"))
+        os.makedirs(elsewhere)
+        os.symlink(elsewhere, os.path.join(fresh, ".fldigi", "macros"))
         backup.restore(evil, fresh, apply_settings=False)
-        self.assertEqual(sorted(os.listdir(fresh)), ["ok.txt"])
+        self.assertEqual(sorted(os.listdir(fresh)), [".fldigi", "ICS forms"])
+        self.assertEqual(os.listdir(os.path.join(fresh, "ICS forms")), ["ok.txt"])
+        self.assertEqual(os.listdir(elsewhere), [])
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "outside.txt")))
 
 

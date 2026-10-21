@@ -209,9 +209,11 @@
         mode: "0755"
       loop: [emcomm-map, emcomm-map-prepare, emcomm-mesh-nodes]
 
+    # Two files: basemap.js and basemap-detail.js (counties and roads, loaded when
+    # zoomed in). Older builds made one; the second being missing rebuilds both.
     - name: Check for the base map
       ansible.builtin.stat:
-        path: /usr/share/emcomm/map/basemap.js
+        path: /usr/share/emcomm/map/basemap-detail.js
       register: apps_basemap
 
     - name: Build the offline base map

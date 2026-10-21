@@ -1,4 +1,5 @@
 # Managed by the emcomm-station playbook.
+# shellcheck source=/dev/null
 [ -f ~/.bashrc ] && . ~/.bashrc
 
 # Start the kiosk on the local console only; SSH logins get a normal shell.

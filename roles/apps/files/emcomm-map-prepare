@@ -4,8 +4,11 @@
   emcomm-map-prepare SOURCE_DIR OUTPUT.js
 
 Keeps only what the map draws (names, and roads in North America), rounds
-coordinates to about 100 m, and writes one script the map page loads, since a
-page opened from disk can't fetch files.
+coordinates to about 100 m, drops the points a line doesn't need to look the
+same at the zooms it's drawn at, and writes two scripts the map page loads,
+since a page opened from disk can't fetch files: OUTPUT.js (countries, lakes,
+state lines, towns: always drawn) and OUTPUT-detail.js (counties and roads,
+loaded the first time the map is zoomed in far enough to show them).
 
 US town names come from the Census Bureau's gazetteer files, if SOURCE_DIR has
 them (*_Gaz_place_national.zip and *_Gaz_cousubs_national.zip): every city,
@@ -24,6 +27,11 @@ import sys
 import zipfile
 
 ROAD_TYPES = {"Major Highway", "Secondary Highway", "Beltway", "Bypass"}
+# How far (in degrees) a dropped point may sit from the line drawn without it. Counties
+# and roads show from zoom 6, where a pixel is 0.02 degrees; the coarser 50 m sets
+# are drawn at every zoom but hold no finer detail than this anyway.
+TOLERANCE_10M = 0.002
+TOLERANCE_50M = 0.005
 
 
 def rounded(coords, digits):
@@ -32,21 +40,62 @@ def rounded(coords, digits):
     return [rounded(c, digits) for c in coords]
 
 
+def simplify_line(points, tolerance):
+    """Douglas-Peucker: the fewest of these points that trace the same line to within
+    tolerance. The ends always stay, so a ring stays closed."""
+    if len(points) < 3 or tolerance <= 0:
+        return points
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        first, last = stack.pop()
+        (x1, y1), (x2, y2) = points[first][:2], points[last][:2]
+        dx, dy = x2 - x1, y2 - y1
+        length2 = dx * dx + dy * dy
+        worst, where = 0.0, None
+        for i in range(first + 1, last):
+            x, y = points[i][:2]
+            if length2:
+                t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / length2))
+                px, py = x1 + t * dx, y1 + t * dy
+            else:
+                px, py = x1, y1
+            d = (x - px) ** 2 + (y - py) ** 2
+            if d > worst:
+                worst, where = d, i
+        if where is not None and worst > tolerance * tolerance:
+            keep[where] = True
+            stack.append((first, where))
+            stack.append((where, last))
+    return [p for p, k in zip(points, keep) if k]
+
+
+def simplified(coords, tolerance):
+    """Simplify every line or ring in a GeoJSON coordinate array, whatever its depth."""
+    if not coords or isinstance(coords[0], (int, float)):
+        return coords  # a point
+    if isinstance(coords[0][0], (int, float)):
+        return simplify_line(coords, tolerance)  # a line or ring
+    return [simplified(c, tolerance) for c in coords]
+
+
 def load(src, name):
     with open(os.path.join(src, name + ".geojson"), encoding="utf-8") as f:
         return json.load(f)["features"]
 
 
-def collection(features, props, digits=3, keep=lambda p: True):
+def collection(features, props, digits=3, keep=lambda p: True, tolerance=0):
     out = []
     for feat in features:
         p = feat.get("properties") or {}
         geom = feat.get("geometry")
         if not geom or not keep(p):
             continue
+        coords = rounded(simplified(geom["coordinates"], tolerance), digits)
         out.append({"type": "Feature",
                     "properties": {k: p.get(k) for k in props},
-                    "geometry": {"type": geom["type"], "coordinates": rounded(geom["coordinates"], digits)}})
+                    "geometry": {"type": geom["type"], "coordinates": coords}})
     return {"type": "FeatureCollection", "features": out}
 
 
@@ -100,23 +149,35 @@ def main(argv):
         return 2
     src, dest = argv
     basemap = {
-        "countries": collection(load(src, "ne_50m_admin_0_countries"), ["NAME"]),
-        "lakes": collection(load(src, "ne_50m_lakes"), []),
-        "states": collection(load(src, "ne_50m_admin_1_states_provinces_lines"), []),
-        "counties": collection(load(src, "ne_10m_admin_2_counties"), ["NAME", "REGION"]),
-        "roads": collection(load(src, "ne_10m_roads"), ["type"],
-                            keep=lambda p: str(p.get("continent", "")).startswith("North America")
-                            and p.get("type") in ROAD_TYPES),
+        "countries": collection(load(src, "ne_50m_admin_0_countries"), ["NAME"], tolerance=TOLERANCE_50M),
+        "lakes": collection(load(src, "ne_50m_lakes"), [], tolerance=TOLERANCE_50M),
+        "states": collection(load(src, "ne_50m_admin_1_states_provinces_lines"), [], tolerance=TOLERANCE_50M),
         "places": collection(load(src, "ne_10m_populated_places_simple"), ["name", "scalerank"], digits=4),
         "towns": towns(src),
     }
+    detail = {
+        "counties": collection(load(src, "ne_10m_admin_2_counties"), ["NAME", "REGION"], tolerance=TOLERANCE_10M),
+        "roads": collection(load(src, "ne_10m_roads"), ["type"], tolerance=TOLERANCE_10M,
+                            keep=lambda p: str(p.get("continent", "")).startswith("North America")
+                            and p.get("type") in ROAD_TYPES),
+    }
+    write_script(detail_path(dest), "BASEMAP_DETAIL", detail)
+    write_script(dest, "BASEMAP", basemap)
+    return 0
+
+
+def detail_path(dest):
+    stem, ext = os.path.splitext(dest)
+    return f"{stem}-detail{ext or '.js'}"
+
+
+def write_script(dest, name, data):
     tmp = dest + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        f.write("window.BASEMAP = ")
-        json.dump(basemap, f, separators=(",", ":"))
+        f.write(f"window.{name} = ")
+        json.dump(data, f, separators=(",", ":"))
         f.write(";\n")
     os.replace(tmp, dest)
-    return 0
 
 
 if __name__ == "__main__":

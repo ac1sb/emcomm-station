@@ -24,5 +24,9 @@ if ! rigctl -m 2 -r "$RIG" T 1; then
 fi
 echo "PTT keyed for ${secs}s..."
 sleep "$secs"
-unkey
+if ! unkey; then
+  echo "PTT FAILED: rigctld did not accept the unkey command. The radio may still be transmitting:" >&2
+  echo "check it, and if it is, turn it off." >&2
+  exit 1
+fi
 echo "PTT OK (keyed and released)"

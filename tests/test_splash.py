@@ -90,6 +90,21 @@ class Splash(unittest.TestCase):
         result, _calls = self.run_helper()
         self.assertEqual(json.loads(result.stdout), {"style": "picture", "picture": True})
 
+    def test_a_failed_rebuild_is_tried_again(self):
+        self.run_helper("apply")
+        fake = os.path.join(self.root, "bin", "update-initramfs")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        result, _calls = self.run_helper("set", "text")
+        self.assertEqual(result.returncode, 1)
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write(FAKE)
+        result, calls = self.run_helper("apply")
+        self.assertEqual(result.stdout.strip(), "changed")
+        self.assertIn("update-initramfs -u", calls)
+        result, calls = self.run_helper("apply")
+        self.assertEqual(result.stdout.strip(), "unchanged")
+
     def test_unknown_style(self):
         result, _calls = self.run_helper("set", "fireworks")
         self.assertEqual(result.returncode, 1)

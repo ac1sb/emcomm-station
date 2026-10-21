@@ -66,16 +66,19 @@ def load_station():
 
 
 def refresh_gateways():
-    """Make sure Pat's gateway list exists; refresh it if it's old and we're online."""
+    """Make sure Pat's gateway list exists. With none at all, Pat fetches one now (a few
+    seconds at most); an old one is refreshed in the background for the next opening,
+    so the map doesn't wait on the internet."""
     try:
         age = time.time() - os.path.getmtime(RMSLIST)
     except OSError:
         age = None
-    if age is not None and age < WEEK:
-        return
-    args = ["pat", "rmslist"] + (["--force-download"] if age is not None else [])
     try:
-        subprocess.run(args, capture_output=True, timeout=30, check=False)
+        if age is None:
+            subprocess.run(["pat", "rmslist"], capture_output=True, timeout=10, check=False)
+        elif age >= WEEK:
+            subprocess.Popen(["pat", "rmslist", "--force-download"], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
     except (OSError, subprocess.TimeoutExpired):
         pass
 
@@ -114,11 +117,23 @@ def read_gateways():
 
 
 def tail_lines(path, count=5000):
+    """The last COUNT lines of a file, read from its end in blocks so a big ALL.TXT
+    (years of logging) isn't read whole every time the map opens."""
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            return f.readlines()[-count:]
+        with open(path, "rb") as f:
+            pos = f.seek(0, os.SEEK_END)
+            blocks, newlines = [], 0
+            while pos > 0 and newlines <= count:  # one more newline than lines wanted: a whole first line
+                step = min(64 * 1024, pos)
+                pos -= step
+                f.seek(pos)
+                block = f.read(step)
+                blocks.append(block)
+                newlines += block.count(b"\n")
     except OSError:
         return []
+    text = b"".join(reversed(blocks)).decode("utf-8", errors="replace")
+    return text.splitlines(keepends=True)[-count:]
 
 
 def read_heard(own_call=""):
