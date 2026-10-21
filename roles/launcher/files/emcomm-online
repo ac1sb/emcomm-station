@@ -18,6 +18,7 @@ page's Accounts button writes: email, qrz_user, qrz_password, hamqth_user,
 hamqth_password, aprsfi_key.
 """
 
+import concurrent.futures
 import datetime
 import fcntl
 import http.client
@@ -388,13 +389,40 @@ def outline(geometry):
     return rings
 
 
+ZONE_ID = re.compile(r"[A-Z]{2}[CZ]\d{3}")
+
+
+def zone_path(url):
+    """Where a zone's outline is kept, from its NWS URL; None if that isn't a zone URL."""
+    zone = url.rstrip("/").rsplit("/", 1)[-1]
+    return os.path.join(CACHE_DIR, "zones", zone + ".json") if ZONE_ID.fullmatch(zone) else None
+
+
+def prefetch_zones(doc, budget=ZONE_FETCHES, workers=6):
+    """Fetch the outlines of the zones these alerts name that aren't on disk yet, several
+    at a time: NWS takes a second or two for each, and the first fill can need dozens.
+    Returns how many were fetched."""
+    wanted = []
+    for feature in doc.get("features") or []:
+        if outline(feature.get("geometry")):
+            continue  # a storm-based warning draws its own polygon
+        for url in (feature.get("properties") or {}).get("affectedZones") or []:
+            path = zone_path(url)
+            if path and url not in wanted and not os.path.exists(path):
+                wanted.append(url)
+    wanted = wanted[:budget]
+    if wanted:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(lambda url: zone_outline(url, [1]), wanted))
+    return len(wanted)
+
+
 def zone_outline(url, budget):
     """A forecast or county zone's outline, kept on disk (zones hardly ever change).
     budget is a one-item list: how many more zones may be fetched this time."""
-    zone = url.rstrip("/").rsplit("/", 1)[-1]
-    if not re.fullmatch(r"[A-Z]{2}[CZ]\d{3}", zone):
+    path = zone_path(url)
+    if path is None:
         return []
-    path = os.path.join(CACHE_DIR, "zones", zone + ".json")
     saved = read_json(path, None)
     if saved is not None:
         return saved
@@ -434,7 +462,7 @@ def fetch_alertmap():
     state = station_state(lat, lon)
     areas = ",".join([state] + NEIGHBOURS.get(state, "").split())
     doc = get_json(NWS_AREA_ALERTS.format(areas=areas), headers={"Accept": "application/geo+json"})
-    budget = [ZONE_FETCHES]
+    budget = [ZONE_FETCHES - prefetch_zones(doc)]
     return {"states": areas, "alerts": parse_alert_areas(doc, lambda url: zone_outline(url, budget))}
 
 

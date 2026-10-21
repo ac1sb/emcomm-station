@@ -70,8 +70,11 @@ def latest_file(listing, name):
 
 def mount_usb_sticks():
     for link in glob.glob("/dev/disk/by-id/usb-*-part*"):
-        subprocess.run(["udisksctl", "mount", "--no-user-interaction", "-b", os.path.realpath(link)],
-                       capture_output=True, check=False)
+        try:
+            subprocess.run(["udisksctl", "mount", "--no-user-interaction", "-b", os.path.realpath(link)],
+                           capture_output=True, check=False, timeout=20)
+        except subprocess.TimeoutExpired:  # a damaged stick: don't hold the window for it
+            pass
 
 
 def is_kiwix_serve(pid, proc="/proc"):

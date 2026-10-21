@@ -66,16 +66,19 @@ def load_station():
 
 
 def refresh_gateways():
-    """Make sure Pat's gateway list exists; refresh it if it's old and we're online."""
+    """Make sure Pat's gateway list exists. With none at all, Pat fetches one now (a few
+    seconds at most); an old one is refreshed in the background for the next opening,
+    so the map doesn't wait on the internet."""
     try:
         age = time.time() - os.path.getmtime(RMSLIST)
     except OSError:
         age = None
-    if age is not None and age < WEEK:
-        return
-    args = ["pat", "rmslist"] + (["--force-download"] if age is not None else [])
     try:
-        subprocess.run(args, capture_output=True, timeout=30, check=False)
+        if age is None:
+            subprocess.run(["pat", "rmslist"], capture_output=True, timeout=10, check=False)
+        elif age >= WEEK:
+            subprocess.Popen(["pat", "rmslist", "--force-download"], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
     except (OSError, subprocess.TimeoutExpired):
         pass
 

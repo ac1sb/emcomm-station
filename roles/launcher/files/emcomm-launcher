@@ -755,8 +755,11 @@ def mount_usb_sticks():
     if not shutil.which("udisksctl"):
         return
     for link in glob.glob("/dev/disk/by-id/usb-*-part*"):
-        subprocess.run(["udisksctl", "mount", "--no-user-interaction", "-b", os.path.realpath(link)],
-                       capture_output=True, check=False)
+        try:
+            subprocess.run(["udisksctl", "mount", "--no-user-interaction", "-b", os.path.realpath(link)],
+                           capture_output=True, check=False, timeout=20)
+        except subprocess.TimeoutExpired:  # a damaged stick: don't hold the launcher for it
+            pass
 
 
 def run_detached(argv):
@@ -3537,11 +3540,28 @@ class Launcher(Gtk.Window):
         threading.Thread(target=work, daemon=True).start()
 
     def _show_devices(self):
-        """What's plugged in now: USB serial ports, USB sound cards, RTL-SDR dongles, paired Bluetooth radios."""
+        """What's plugged in now: USB serial ports, USB sound cards, RTL-SDR dongles, paired
+        Bluetooth radios. The SDR and Bluetooth parts ask other programs (emcomm-adsb,
+        bluetoothctl), which can take seconds, so they're looked up off the screen's thread."""
+        ports, cards = list(self.serial_ports), list(self.sound_cards)
+        self._devices_asked = asked = object()
+        buffer = self.devices_view.get_buffer()
+        if not buffer.get_char_count():
+            buffer.set_text("Looking at what's plugged in…\n")
+        threading.Thread(target=lambda: GLib.idle_add(self._devices_found, asked,
+                                                      self._devices_text(ports, cards)), daemon=True).start()
+
+    def _devices_found(self, asked, text):
+        if asked is self._devices_asked:  # the latest look, not one overtaken by a rescan
+            self.devices_view.get_buffer().set_text(text)
+        return False
+
+    @staticmethod
+    def _devices_text(serial_ports, sound_cards):
         lines = ["USB serial ports (radio CAT/PTT, GPS, mesh radios):"]
-        lines += [f"  {label}" for label, _m in self.serial_ports] or ["  none"]
+        lines += [f"  {label}" for label, _m in serial_ports] or ["  none"]
         lines += ["", "USB sound cards:"]
-        lines += [f"  {label}" for label, _m in self.sound_cards] or ["  none"]
+        lines += [f"  {label}" for label, _m in sound_cards] or ["  none"]
         sdrs = sdr_receivers()
         dongles = [label for kind, label in sdrs if kind == "RTL-SDR"]
         lines += ["", "SDR receivers (Scanner, Gqrx; weather radio alerts use an RTL-SDR):"]
@@ -3571,7 +3591,7 @@ class Launcher(Gtk.Window):
                       if line.startswith("Device ") and line.count(" ") >= 2]
             lines += ["", "Paired Bluetooth radios (Meshtastic, MeshCore):"]
             lines += [f"  {name}" for name in paired] or ["  none"]
-        self.devices_view.get_buffer().set_text("\n".join(lines) + "\n")
+        return "\n".join(lines) + "\n"
 
     def _settings_form(self):
         """What the Settings page shows now, to tell whether it's been edited."""
@@ -3795,8 +3815,12 @@ class Launcher(Gtk.Window):
             stick = sticks.get_active_id()
             paths = []
             if stick:
-                result = subprocess.run([BACKUP_CMD, "list", stick], capture_output=True, text=True, check=False)
-                paths = result.stdout.split("\n")[:8] if result.returncode == 0 else []
+                try:
+                    result = subprocess.run([BACKUP_CMD, "list", stick], capture_output=True, text=True, check=False,
+                                            timeout=20)
+                    paths = result.stdout.split("\n")[:8] if result.returncode == 0 else []
+                except (OSError, subprocess.TimeoutExpired):
+                    paths = []
             for path in filter(None, paths):
                 stamp = re.search(r"(\d{8})-(\d{4})Z", path)
                 when = (f"{stamp[1][:4]}-{stamp[1][4:6]}-{stamp[1][6:]} {stamp[2]}Z" if stamp else "")
@@ -4153,19 +4177,27 @@ class Launcher(Gtk.Window):
         return page
 
     def _ics213_tick(self, page):
-        """While the page shows, look for new or changed messages every few seconds."""
+        """While the page shows, look for new or changed messages every few seconds. The
+        list comes from a separate program, so it's asked off the screen's thread."""
         if not page.get_mapped():
             self.f213_ticking = False
             return False
-        found = ics213_messages()
-        stamp = [(m["path"], m["modified"]) for m in found]
-        if stamp != self.f213_listed:
-            self.f213_listed = stamp
-            self._ics213_fill(found)
+        if not getattr(self, "f213_busy", False):
+            self.f213_busy = True
+            threading.Thread(target=lambda: GLib.idle_add(self._ics213_found, ics213_messages()),
+                             daemon=True).start()
         if not getattr(self, "f213_ticking", False):
             self.f213_ticking = True
             GLib.timeout_add_seconds(4, self._ics213_tick, page)
         return True
+
+    def _ics213_found(self, found):
+        self.f213_busy = False
+        stamp = [(m["path"], m["modified"]) for m in found]
+        if stamp != self.f213_listed:
+            self.f213_listed = stamp
+            self._ics213_fill(found)
+        return False
 
     def _ics213_fill(self, found):
         keep = self.f213_path

@@ -38,6 +38,7 @@ radio listener's "first" is then the first of the others.
 """
 
 import csv
+import functools
 import ctypes
 import ctypes.util
 import glob
@@ -726,17 +727,25 @@ class AMDemod(Demod):
         return np.clip(voice / carrier, -1, 1), env, am_level(iq, self.rate)
 
 
+@functools.lru_cache(maxsize=16)
+def _am_masks(n, rate):
+    """The window and the channel and noise-floor bins for a block of n samples (the same
+    every block, so worked out once)."""
+    freqs = np.fft.fftfreq(n, 1 / rate)
+    chan = np.abs(freqs - OFFSET) <= 3000
+    ref = ((np.abs(freqs) <= min(100000, 0.4 * rate)) & (np.abs(freqs) >= 5000)
+           & (np.abs(freqs - OFFSET) > 12500))
+    return np.hanning(n).astype(np.float32), chan, ref
+
+
 def am_level(iq, rate):
     """Noise floor over the channel's power: about 1 with no carrier, falling as one comes up.
     The floor is the median across 200 kHz around the tuned centre, so a few busy
     neighbouring channels don't raise it."""
     if len(iq) < 1024:
         return 1.0
-    spec = np.abs(np.fft.fft(iq * np.hanning(len(iq)))) ** 2
-    freqs = np.fft.fftfreq(len(iq), 1 / rate)
-    chan = np.abs(freqs - OFFSET) <= 3000
-    ref = ((np.abs(freqs) <= min(100000, 0.4 * rate)) & (np.abs(freqs) >= 5000)
-           & (np.abs(freqs - OFFSET) > 12500))
+    window, chan, ref = _am_masks(len(iq), rate)
+    spec = np.abs(np.fft.fft(iq * window)) ** 2
     floor = np.median(spec[ref]) / math.log(2)  # the median of noise power is ln 2 of its mean
     return float(floor / max(spec[chan].mean(), 1e-30))
 
@@ -745,17 +754,24 @@ def demod_for(ch, demods):
     return demods["AM" if ch.get("mode") == "AM" else "FM"]
 
 
+@functools.lru_cache(maxsize=16)
+def _hiss_window(n, audio_rate):
+    """The window, the 6-11 kHz bins and the no-signal level for a block of n samples."""
+    window = np.hanning(n)
+    freqs = np.fft.rfftfreq(n, 1 / audio_rate)
+    # Uniform phase noise has variance pi^2/3 spread evenly over 0..24 kHz; after the
+    # 7.5 kHz channel filter the 6-11 kHz band keeps about a fifth of that (measured).
+    flat = (np.pi ** 2 / 3) * n * (window ** 2).mean() * 0.205
+    return window.astype(np.float32), (freqs >= 6000) & (freqs <= 11000), flat
+
+
 def hiss(fm, audio_rate=AUDIO_RATE):
     """Discriminator power from 6 to 11 kHz, relative to what no signal gives (about 1)."""
     if len(fm) < 256:
         return 1.0
-    spec = np.abs(np.fft.rfft(fm * np.hanning(len(fm)))) ** 2
-    freqs = np.fft.rfftfreq(len(fm), 1 / audio_rate)
-    band = spec[(freqs >= 6000) & (freqs <= 11000)].mean()
-    # Uniform phase noise has variance pi^2/3 spread evenly over 0..24 kHz; after the
-    # 7.5 kHz channel filter the 6-11 kHz band keeps about a fifth of that (measured).
-    flat = (np.pi ** 2 / 3) * len(fm) * (np.hanning(len(fm)) ** 2).mean() * 0.205
-    return float(band / flat)
+    window, band, flat = _hiss_window(len(fm), audio_rate)
+    spec = np.abs(np.fft.rfft(fm * window)) ** 2
+    return float(spec[band].mean() / flat)
 
 
 def has_tone(fm, tone, audio_rate=AUDIO_RATE):
