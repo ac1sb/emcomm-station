@@ -294,6 +294,21 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   only fills in its radio connection the first time, so changes you make in
   Interface Control stick. For HF APRS at 300 baud, put your own Direwolf settings
   in `~/.config/emcomm/direwolf.custom.conf`.
+- **APRS radio and iGate** (Settings > APRS iGate): a second radio kept on 144.390
+  MHz for APRS, through its own Digirig (for an Icom ID-5100: a Digirig Mobile and
+  Digirig's "ICOM RJ-45 Cable for Digirig Mobile", in the mic jack and SP1). Pick
+  its sound card (listed by USB socket, so it can be a Digirig just like the main
+  radio's: keep it in the same socket) and the Digirig's serial port for PTT. The
+  APRS tile then uses that radio. The iGate runs Direwolf in the background:
+  **Receive only** passes packets heard on the radio to the internet (APRS-IS) and
+  sends the station's position there, never keying the radio; **Two-way** also
+  sends messages from APRS-IS to stations heard nearby on the air and beacons there
+  every 30 minutes. The APRS-IS passcode is worked out from your callsign; the
+  iGate uses SSID -10 unless you pick another, and the centre of your grid square
+  unless you give a latitude and longitude. Xastir keeps working alongside it on
+  the same Direwolf. For your own Direwolf settings, use
+  `~/.config/emcomm/direwolf-igate.custom.conf` (iGate) or
+  `direwolf-aprs.custom.conf` (APRS tile with the iGate off).
 - **Meshtastic and MeshCore:** plug the node in by USB, or turn on its Bluetooth,
   and tap its tile. The tile finds the node's USB port (skipping the radio's CAT
   and PTT ports). With no USB node it searches for Bluetooth radios for 10 seconds

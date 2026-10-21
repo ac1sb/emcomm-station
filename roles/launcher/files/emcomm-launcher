@@ -186,6 +186,10 @@ checkbutton.pick check { min-width: 26px; min-height: 26px; border-radius: 6px; 
                         border: 2px solid $input_line; background-image: none; box-shadow: none; }
 checkbutton.pick check:checked { background-color: $accent_fill; border-color: $accent_fill; color: $on_accent;
                                 -gtk-icon-source: -gtk-icontheme("object-select-symbolic"); }
+radiobutton radio { min-width: 20px; min-height: 20px; border-radius: 50%; background: $bg;
+                    border: 2px solid $input_line; background-image: none; box-shadow: none; -gtk-icon-source: none; }
+radiobutton radio:checked { background-color: $accent_fill; border-color: $accent_fill;
+                            box-shadow: inset 0 0 0 4px $bg; }
 .topbar .navbtn { min-height: 40px; padding: 0 12px; }
 .home-nav .navbtn { min-height: 44px; font-size: 15px; padding: 0 14px; }
 .homebar { background: $bar; border-bottom: 2px solid alpha($accent_fill, 0.55); padding: 0 8px; }
@@ -446,6 +450,56 @@ def detect_devices():
             name = props.get("ID_MODEL", "").replace("_", " ") or os.path.basename(path)
             cards.append((f"{describe_match(match)} · {name}", match))
     return ports, cards
+
+
+def aprs_sound_cards():
+    """[(label, match)] for USB sound cards, each match naming its USB socket too (ID_PATH):
+    the APRS radio's Digirig can be just like the main radio's, with no serial number."""
+    if FAKE_DEVICES:
+        return [tuple(c) for c in read_json(FAKE_DEVICES, {}).get("aprs_sound", [])]
+    radio = os.path.realpath("/proc/asound/rigaudio")
+    cards = []
+    for path in sorted(glob.glob("/sys/class/sound/card[0-9]*")):
+        props = udev_props(["-p", path])
+        match = usb_match(props, with_interface=False)
+        if not match:
+            continue
+        if props.get("ID_PATH"):
+            match["path"] = props["ID_PATH"]
+        name = props.get("ID_MODEL", "").replace("_", " ") or os.path.basename(path)
+        socket = props.get("ID_PATH", "").split("-usb-")[-1].split(":")[1] if "-usb-" in props.get("ID_PATH", "") \
+            else ""
+        label = (f"USB socket {socket} · " if socket else "") + f"{name} ({match['vendor']}:{match['product']})"
+        if os.path.basename(path) == os.path.basename(radio):
+            label += " · the main radio's"
+        cards.append((label, match))
+    return cards
+
+
+IGATE_CONFIG = os.path.expanduser("~/.config/emcomm/igate.json")
+APRS_RADIO = os.environ.get("EMCOMM_APRS_RADIO", "/etc/emcomm/aprs-radio.json")
+IGATE_MODES = [
+    ("off", "Off", "The APRS radio is only used by the APRS tile (Xastir)."),
+    ("receive", "Receive only",
+     "Packets heard on the radio are passed to the internet (APRS-IS), and the station's position is "
+     "sent there. The radio is never keyed."),
+    ("two-way", "Two-way",
+     "Also sends messages from the internet to stations heard nearby, and beacons on the air every "
+     "30 minutes. Needs the PTT port."),
+]
+IGATE_SERVERS = [("noam.aprs2.net", "North America"), ("rotate.aprs2.net", "Worldwide"), ("euro.aprs2.net", "Europe"),
+                 ("asia.aprs2.net", "Asia"), ("aunz.aprs2.net", "Australia and NZ"), ("soam.aprs2.net", "South America")]
+
+
+def aprs_passcode(call):
+    """The APRS-IS passcode for a callsign, as emcomm-igate works it out."""
+    call = call.upper().split("-")[0].split("/")[0]
+    code = 0x73E2
+    for i in range(0, len(call), 2):
+        code ^= ord(call[i]) << 8
+        if i + 1 < len(call):
+            code ^= ord(call[i + 1])
+    return code & 0x7FFF
 
 
 SDR_LOCK = os.path.expanduser("~/.local/state/emcomm/sdr.json")
@@ -3207,6 +3261,7 @@ class Launcher(Gtk.Window):
             ("BAK", "Backup", "Save to or restore from USB", self._backup_dialog),
             ("UPD", "Update station", "Latest Emcomm-CNC and apps", self._update_station),
             ("AUD", "Audio", "Radio sound card, speaker and mic", show("audio")),
+            ("IGT", "APRS iGate", "Second radio for APRS", show("aprs-igate")),
             ("PWR", "Power", "Exit, restart or shut down" if self.desktop else "Restart or shut down",
              self._power_dialog),
             ("ARR", "Home tiles", "Arrange and group the apps", lambda: self._arrange(True)),
@@ -3221,6 +3276,7 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._station_radio_page(), "station-radio")
         self.stack.add_named(self._station_devices_page(), "station-devices")
         self.stack.add_named(self._audio_page(), "audio")
+        self.stack.add_named(self._igate_page(), "aprs-igate")
         self.serial_ports, self.sound_cards = detect_devices()
         self._fill_settings()
         return page
@@ -3340,6 +3396,195 @@ class Launcher(Gtk.Window):
         before = read_json(AUDIO_BEFORE, None)
         if isinstance(before, dict) and before.get("alert_sounds") is not None:
             alert_sounds(False if quiet else before["alert_sounds"])
+
+    # ---- APRS iGate ------------------------------------------------------
+
+    def _igate_page(self):
+        """Settings > APRS iGate: the second radio kept for APRS, and the iGate on it."""
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Settings", lambda *_: self.stack.set_visible_child_name("settings")),
+                          False, False, 0)
+        title = Gtk.Label(label="APRS iGate", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        # Save and Undo up here: the page needs the whole screen below.
+        header.pack_end(self._navbtn("Save", lambda *_: self._igate_save(), "primary"), False, False, 0)
+        header.pack_end(self._navbtn("Undo changes", lambda *_: self._igate_fill()), False, False, 0)
+        self.igate_message = Gtk.Label(xalign=1, wrap=True, hexpand=True)
+        header.pack_end(self.igate_message, True, True, 0)
+        page.pack_start(header, False, False, 0)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroll.add(body)
+        page.pack_start(scroll, True, True, 0)
+
+        radio = self._section("APRS radio")
+        row = Gtk.Box(spacing=12)
+        self.igate_card = PickList()
+        self.igate_ptt = PickList()
+        row.pack_start(self._field("Sound card", self.igate_card), True, True, 0)
+        row.pack_start(self._field("PTT port (RTS)", self.igate_ptt), True, True, 0)
+        rescan = self._navbtn("Rescan", lambda *_: self._igate_fill(keep=True))
+        rescan.set_valign(Gtk.Align.END)
+        row.pack_start(rescan, False, False, 0)
+        radio.pack_start(row, False, False, 0)
+        self.igate_radio_label = Gtk.Label(xalign=0, wrap=True)
+        radio.pack_start(self.igate_radio_label, False, False, 0)
+        body.pack_start(radio, False, False, 0)
+
+        gate = self._section("iGate")
+        self.igate_modes, group = {}, None
+        modes = Gtk.Box(spacing=28)
+        self.igate_explain = Gtk.Label(xalign=0, wrap=True)
+        self.igate_explain.get_style_context().add_class("muted")
+        for value, label, detail in IGATE_MODES:
+            btn = Gtk.RadioButton.new_with_label_from_widget(group, label)
+            group = group or btn
+            btn.get_child().get_style_context().add_class("tile-name")
+            btn.connect("toggled", lambda b, d=detail: b.get_active() and self.igate_explain.set_text(d))
+            modes.pack_start(btn, False, False, 0)
+            self.igate_modes[value] = btn
+        gate.pack_start(modes, False, False, 0)
+        gate.pack_start(self.igate_explain, False, False, 0)
+        row = Gtk.Box(spacing=12)
+        self.igate_ssid = PickList()
+        self.igate_server = PickList()
+        for server, label in IGATE_SERVERS:
+            self.igate_server.append(server, label)
+        self.igate_comment = Gtk.Entry(max_length=40, width_chars=12)
+        self.igate_lat = Gtk.Entry(width_chars=8)
+        self.igate_lon = Gtk.Entry(width_chars=8)
+        row.pack_start(self._field("Callsign on APRS", self.igate_ssid), False, False, 0)
+        row.pack_start(self._field("Server", self.igate_server), False, False, 0)
+        row.pack_start(self._field("Beacon comment", self.igate_comment), True, True, 0)
+        row.pack_start(self._field("Latitude", self.igate_lat), False, False, 0)
+        row.pack_start(self._field("Longitude", self.igate_lon), False, False, 0)
+        gate.pack_start(row, False, False, 0)
+        self.igate_pass_label = Gtk.Label(xalign=0, wrap=True)
+        self.igate_pass_label.get_style_context().add_class("muted")
+        gate.pack_start(self.igate_pass_label, False, False, 0)
+        self.igate_status = Gtk.Label(xalign=0, wrap=True)
+        gate.pack_start(self.igate_status, False, False, 0)
+        body.pack_start(gate, False, False, 0)
+
+        page.connect("map", lambda *_: (self._igate_fill(), self._igate_watch()))
+        return page
+
+    def _igate_fill(self, keep=False):
+        """Show the saved iGate settings and the devices plugged in now (keep: the choices on screen)."""
+        saved = read_json(APRS_RADIO, {})
+        card = self._chosen(self.igate_card) if keep else saved.get("audio_match")
+        ptt = self._chosen(self.igate_ptt) if keep else saved.get("ptt_match")
+        serial_ports, _ = detect_devices()
+        self._fill_match_combo(self.igate_card, aprs_sound_cards(), card or "", fixed=[("", "None: no APRS radio")])
+        self._fill_match_combo(self.igate_ptt, serial_ports, ptt or "", fixed=[("", "None: receive only")])
+        if keep:
+            self._igate_show_radio()
+            return
+        s = read_json(IGATE_CONFIG, {})
+        mode = s.get("mode") if s.get("mode") in self.igate_modes else "off"
+        self.igate_modes[mode].set_active(True)
+        self.igate_explain.set_text(next(d for v, _l, d in IGATE_MODES if v == mode))
+        call = self.station.get("callsign", "")
+        call = "" if call == "N0CALL" else call
+        self.igate_ssid.remove_all()
+        for ssid in range(16):
+            self.igate_ssid.append(str(ssid), (f"{call}-{ssid}" if ssid else call or "Your callsign") +
+                                   {10: "  (usual for an iGate)", 0: "  (no SSID)"}.get(ssid, ""))
+        self.igate_ssid.set_active_id(str(s.get("ssid", 10)))
+        self.igate_server.set_active_id(s.get("server") or IGATE_SERVERS[0][0])
+        self.igate_comment.set_text(s.get("comment", "Emcomm-CNC iGate"))
+        here = grid_to_latlon(self.station.get("grid", ""))
+        for entry, key, i in ((self.igate_lat, "lat", 0), (self.igate_lon, "lon", 1)):
+            entry.set_text("" if s.get(key) is None else str(s[key]))
+            entry.set_placeholder_text(f"{here[i]:.4f}" if here else "")
+        self.igate_pass_label.set_text(
+            f"APRS-IS passcode {aprs_passcode(call)}, worked out from your callsign. Latitude and longitude place "
+            "the iGate on the APRS map; left empty, it's the centre of your grid square."
+            if call else "Set your callsign in Settings > User first.")
+        self.igate_message.set_text("")
+        self._igate_show_radio()
+
+    def _igate_show_radio(self):
+        ok, muted = self.colours["ok"], self.colours["muted"]
+        card = os.path.exists("/proc/asound/aprsaudio")
+        ptt = os.path.exists("/dev/aprs-ptt")
+        self.igate_radio_label.set_markup(
+            (f"<span foreground='{ok}'>●</span>  The APRS radio's sound card is plugged in"
+             + (" with its PTT port." if ptt else ".")) if card else
+            f"<span foreground='{muted}'>○</span>  No APRS radio plugged in. Use a 2 m radio kept on 144.390 MHz "
+            "with its own Digirig; the APRS tile uses it too.")
+
+    def _igate_watch(self):
+        """Refresh what the iGate is doing while the page shows."""
+        def tick():
+            if self.stack.get_visible_child_name() != "aprs-igate":
+                return False
+            try:
+                out = subprocess.run(["emcomm-igate", "--status"], capture_output=True, text=True, timeout=5,
+                                     check=False).stdout
+                st = json.loads(out)
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                st = {"state": "missing", "text": "The iGate isn't installed yet. Run Update station."}
+            colour = {"running": self.colours["ok"], "waiting": self.colours["accent"],
+                      "stopped": self.colours["accent"]}.get(st.get("state"), self.colours["muted"])
+            text = st.get("text") or {"off": "The iGate is off.", "starting": "Starting…"}.get(st.get("state"), "")
+            self.igate_status.set_markup(f"<span foreground='{colour}'>●</span>  {GLib.markup_escape_text(text)}")
+            self._igate_show_radio()
+            return True
+
+        if tick():
+            GLib.timeout_add_seconds(3, tick)
+
+    def _igate_save(self):
+        mode = next(v for v, b in self.igate_modes.items() if b.get_active())
+        coords = {}
+        for entry, key, limit in ((self.igate_lat, "lat", 90), (self.igate_lon, "lon", 180)):
+            text = entry.get_text().strip()
+            if not text:
+                coords[key] = None
+                continue
+            try:
+                value = float(text)
+            except ValueError:
+                value = None
+            if value is None or abs(value) > limit:
+                self.igate_message.set_text(f"{key.replace('lat', 'Latitude').replace('lon', 'Longitude')} "
+                                            f"should be a number of degrees, like {'43.16' if key == 'lat' else '-73.07'}.")
+                return
+            coords[key] = round(value, 4)
+        card, ptt = self._chosen(self.igate_card) or None, self._chosen(self.igate_ptt) or None
+        if mode == "two-way" and not ptt:
+            self.igate_message.set_text("Two-way needs the PTT port: pick the Digirig's serial port.")
+            return
+        if mode != "off" and not card:
+            self.igate_message.set_text("Pick the APRS radio's sound card first.")
+            return
+        write_json(IGATE_CONFIG, {"mode": mode, "ssid": int(self.igate_ssid.get_active_id() or 10),
+                                  "server": self.igate_server.get_active_id() or IGATE_SERVERS[0][0],
+                                  "comment": self.igate_comment.get_text().strip(), **coords})
+        saved = read_json(APRS_RADIO, {})
+        if saved.get("audio_match") == card and saved.get("ptt_match") == ptt:
+            self.igate_message.set_text("Saved.")
+            return
+        self.igate_message.set_text("Saving…")
+
+        def work():
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump({"audio_match": card, "ptt_match": ptt}, f)
+                path = f.name
+            try:
+                result = subprocess.run(APPLY_CMD + ["--aprs", path], stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True, timeout=60)
+                text = result.stdout.strip()
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                text = f"Not saved: {exc}"
+            finally:
+                os.unlink(path)
+            GLib.idle_add(lambda: (self.igate_message.set_text(text), self._igate_show_radio()) and False)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _settings_tile(self, code, name, detail, handler):
         btn = Gtk.Button()

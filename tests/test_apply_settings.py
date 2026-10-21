@@ -162,5 +162,52 @@ class ApplySettingsTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "etc/emcomm")))
 
 
+class AprsRadioTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_helper(self, aprs):
+        path = os.path.join(self.root, "aprs.json")
+        with open(path, "w") as f:
+            json.dump(aprs, f)
+        return subprocess.run([sys.executable, HELPER, "--aprs", path], env=dict(os.environ, EMCOMM_ROOT=self.root),
+                              capture_output=True, text=True)
+
+    def rules(self):
+        with open(os.path.join(self.root, "etc/udev/rules.d/99-emcomm-vhf.rules")) as f:
+            return f.read()
+
+    def test_second_digirig_named_by_its_usb_socket(self):
+        result = self.run_helper({
+            "audio_match": {"vendor": "0D8C", "product": "0012", "path": "pci-0000:00:14.0-usb-0:3.4:1.0"},
+            "ptt_match": {"vendor": "10c4", "product": "ea60", "serial": "d4e5f6", "interface": "00"}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rules = self.rules()
+        self.assertIn('SUBSYSTEM=="sound", KERNEL=="card*", ENV{ID_PATH}=="pci-0000:00:14.0-usb-0:3.4:1.0", '
+                      'ENV{ID_MODEL_ID}=="0012", ENV{ID_VENDOR_ID}=="0d8c", ATTR{id}="aprsaudio"', rules)
+        self.assertIn('SYMLINK+="aprs-ptt"', rules)
+        # After the main radio's rules, so a card just like the radio's ends up named for APRS.
+        self.assertGreater("99-emcomm-vhf.rules", "99-emcomm-radio.rules")
+        with open(os.path.join(self.root, "etc/emcomm/aprs-radio.json")) as f:
+            self.assertEqual(json.load(f)["audio_match"]["vendor"], "0d8c")
+
+    def test_receive_only_and_none(self):
+        self.assertEqual(self.run_helper({"audio_match": {"vendor": "0d8c", "product": "0012"},
+                                          "ptt_match": None}).returncode, 0)
+        self.assertNotIn("aprs-ptt", self.rules())
+        self.assertEqual(self.run_helper({"audio_match": None}).returncode, 0)
+        self.assertNotIn("aprsaudio", self.rules())
+
+    def test_rejects_rule_text(self):
+        result = self.run_helper({"audio_match": {"vendor": "0d8c", "product": "0012",
+                                                  "path": 'x", RUN+="/bin/sh'}})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "etc/udev/rules.d/99-emcomm-vhf.rules")))
+
+
 if __name__ == "__main__":
     unittest.main()
