@@ -1,0 +1,27 @@
+MHz,Mode,Name,Note
+162.400,FM,NOAA Weather Radio WX2,Receive only. The NOAA radio tile decodes alerts from these
+162.425,FM,NOAA Weather Radio WX4,Receive only
+162.450,FM,NOAA Weather Radio WX5,Receive only
+162.475,FM,NOAA Weather Radio WX3,Receive only
+162.500,FM,NOAA Weather Radio WX6,Receive only
+162.525,FM,NOAA Weather Radio WX7,Receive only
+162.550,FM,NOAA Weather Radio WX1,Receive only
+156.800,FM,Marine VHF channel 16,Receive only. Distress and calling; the Coast Guard listens here
+157.100,FM,Marine VHF channel 22A,Receive only. Coast Guard working channel and safety broadcasts
+121.500,AM,Aviation emergency (guard),Receive only. Aircraft in distress and ELT beacons
+462.5625,FM,FRS/GMRS channel 1,Receive only without a GMRS licence; family radios
+462.5875,FM,FRS/GMRS channel 2,Receive only without a GMRS licence
+462.6125,FM,FRS/GMRS channel 3,Receive only without a GMRS licence
+462.6375,FM,FRS/GMRS channel 4,Receive only without a GMRS licence
+462.6625,FM,FRS/GMRS channel 5,Receive only without a GMRS licence
+462.6875,FM,FRS/GMRS channel 6,Receive only without a GMRS licence
+462.7125,FM,FRS/GMRS channel 7,Receive only without a GMRS licence
+462.5500,FM,GMRS channel 15 (repeater output 15R),Receive only without a GMRS licence. Many GMRS repeaters are here to 462.725
+462.6750,FM,GMRS channel 20 (repeater output 20R),Receive only without a GMRS licence. The GMRS emergency and travel channel
+151.820,FM,MURS channel 1,Receive only. Licence-free business and family radios
+151.880,FM,MURS channel 2,Receive only
+151.940,FM,MURS channel 3,Receive only
+154.570,FM,MURS channel 4,Receive only. Also used by shops (Blue Dot)
+154.600,FM,MURS channel 5,Receive only. Green Dot
+27.065,AM,CB channel 9,Receive only. Emergency and traveller assistance
+27.185,AM,CB channel 19,Receive only. Truckers and road conditions
