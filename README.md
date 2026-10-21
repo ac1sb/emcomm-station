@@ -231,7 +231,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
     XML Logbook Data subscribers.
 - **NOAA Weather Radio alerts, no internet needed:** plug in an RTL-SDR dongle
   (any RTL2832U stick, about $30) with an antenna for 162 MHz, then tap the
-  **NOAA alerts** tile on Home (or **Set up** next to NOAA Weather Radio on the
+  **NOAA radio** tile on Home (or **Set up** next to NOAA Weather Radio on the
   Online page's Weather alerts), pick your
   nearest transmitter's channel (weather.gov/nwr lists them), then pick a state
   and county and tap **Add county** for each county you want alerts for. Every
