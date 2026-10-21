@@ -124,6 +124,12 @@ window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', san
         background-image: linear-gradient(to bottom, alpha($text, 0.035), alpha($text, 0)); }
 .tile:hover { background-color: $hover; border-color: alpha($accent_fill, 0.6); }
 .tile:active { background-color: $hover; border-color: $accent_fill; }
+/* A tap shows even when the finger lifts before :active draws; an app being started says so. */
+.tile { transition: background-color 180ms ease-out, border-color 180ms ease-out; }
+.tile.tapped { background-color: alpha($accent_fill, 0.22); border-color: $accent_fill; transition: none; }
+.tile.opening { border-color: $accent_fill; }
+.tile.opening .tile-detail { color: $accent; }
+.tile spinner { color: $accent; min-width: 20px; min-height: 20px; }
 .tile-icon { background: alpha($accent_fill, 0.12); border-radius: 10px; padding: 7px; }
 .tile:focus, .navbtn:focus { border: 2px solid $accent_fill; outline: none; }
 .key-hint { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: $muted; }
@@ -818,6 +824,10 @@ def mount_usb_sticks():
                            capture_output=True, check=False, timeout=20)
         except subprocess.TimeoutExpired:  # a damaged stick: don't hold the launcher for it
             pass
+
+
+# How long a tile shows "Opening…" for an app with no window yet (VARA under Wine is slow).
+OPENING_TIMEOUT = 45
 
 
 def run_detached(argv):
@@ -2643,6 +2653,7 @@ class Launcher(Gtk.Window):
         if time.monotonic() - self.last_swipe < 0.5:
             return
         if not self.arranging:
+            self._tile_tapped(btn)
             self._open_folder(btn)
         elif self.picked is not None and self.picked.kind == "app" and self.picked not in btn.members:
             if len(btn.members) >= FOLDER_MAX:
@@ -2885,6 +2896,9 @@ class Launcher(Gtk.Window):
         btn.key_hint = Gtk.Label(yalign=0)
         btn.key_hint.get_style_context().add_class("key-hint")
         top.pack_end(btn.key_hint, False, False, 0)
+        btn.spinner = Gtk.Spinner(valign=Gtk.Align.START, margin_end=8, no_show_all=True)  # while the app starts
+        top.pack_end(btn.spinner, False, False, 0)
+        btn.opening = False
         # Ellipsize, so five tiles across still fit a 1024-pixel screen.
         name = Gtk.Label(label=app.get("name", ""), xalign=0, ellipsize=Pango.EllipsizeMode.END)
         name.get_style_context().add_class("tile-name")
@@ -3291,7 +3305,7 @@ class Launcher(Gtk.Window):
     def _update_tile(self, btn):
         btn.app_state = self._app_state(btn.app)
         installable = bool(btn.app.get("app"))
-        btn.detail.set_text({"ready": btn.app.get("detail", ""),
+        btn.detail.set_text("Opening…" if btn.opening else {"ready": btn.app.get("detail", ""),
                              "setup": "Tap to set up",
                              "missing": "Tap to install" if installable else "Not installed",
                              }[btn.app_state])
@@ -3312,6 +3326,9 @@ class Launcher(Gtk.Window):
         if self.arranging:
             self._arrange_tap(btn)
             return
+        self._tile_tapped(btn)
+        if btn.opening:
+            return  # still starting from the last tap: not a second copy
         app = btn.app
         if app.get("page"):  # a part of the launcher, not a separate app
             {"nwr": self._edit_nwr}.get(app["page"], lambda: self.stack.set_visible_child_name(app["page"]))()
@@ -3322,7 +3339,9 @@ class Launcher(Gtk.Window):
                 if window_app(win, [app], self.started):
                     wmctrl("-i", "-a", hex(win["id"]))
                     return
-            self.started[app.get("code")] = run_detached(app.get("run") or [app["command"]]).pid
+            proc = run_detached(app.get("run") or [app["command"]])
+            self.started[app.get("code")] = proc.pid
+            self._tile_opening(btn, proc)
             if self.desktop and not self.session:
                 self.iconify()  # a desktop may open the app behind a full-screen window
             return
@@ -3330,6 +3349,48 @@ class Launcher(Gtk.Window):
                          "It's downloaded from the internet, which takes a few minutes."):
             self._run_in_terminal(f"Installing {app['name']}", UPDATE_CMD + ["--app", app["app"]],
                                   self._refresh_tiles)
+
+    @staticmethod
+    def _tile_tapped(btn):
+        """A short flash on the tile: a quick tap on a touch screen can lift before :active draws."""
+        ctx = btn.get_style_context()
+        ctx.add_class("tapped")
+        GLib.timeout_add(200, lambda: ctx.remove_class("tapped") or False)
+
+    def _tile_opening(self, btn, proc):
+        """Show "Opening…" and a spinner on the tile until the app's window appears. If the
+        program quits with an error first, or no window comes within OPENING_TIMEOUT, say so."""
+        app = btn.app
+        btn.opening = True
+        btn.get_style_context().add_class("opening")
+        btn.spinner.show()
+        btn.spinner.start()
+        self._update_tile(btn)
+
+        def done(outcome):
+            btn.opening = False
+            btn.get_style_context().remove_class("opening")
+            btn.spinner.stop()
+            btn.spinner.hide()
+            self._update_tile(btn)
+            if outcome:
+                btn.detail.set_text(outcome)
+                GLib.timeout_add_seconds(8, lambda: (not btn.opening and self._update_tile(btn)) or False)
+            return False
+
+        def watch():
+            deadline = time.monotonic() + OPENING_TIMEOUT
+            while time.monotonic() < deadline:
+                time.sleep(0.5)
+                if any(window_app(win, [app], self.started) for win in open_windows()):
+                    GLib.idle_add(done, None)
+                    return
+                if proc.poll() not in (None, 0):  # a starter script that exits 0 may still open one
+                    GLib.idle_add(done, "Didn't start")
+                    return
+            GLib.idle_add(done, "No window yet")
+
+        threading.Thread(target=watch, daemon=True).start()
 
     def _confirm(self, text, secondary):
         dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,

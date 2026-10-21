@@ -55,7 +55,11 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   brings the launcher back, each open app has a button to bring it to the front
   (and ✕ to close it), and the bar shows the callsign, local time and UTC. Tapping the
   tile of an app that's already open brings it to the front instead of starting a
-  second copy. With a keyboard, Alt+Tab also switches apps.
+  second copy. A tile flashes when tapped; while an app starts, its tile shows a
+  spinner and **Opening…** until the window appears (more taps are ignored
+  meanwhile), or **Didn't start** / **No window yet** after 45 s. There are no
+  tap sounds, since the radio's sound card is the default output. With a
+  keyboard, Alt+Tab also switches apps.
 - **Several apps at once:** every app reaches the radio's sound card through
   PipeWire, so they can all listen together (JS8Call and the recorder, say).
   Transmit from one app at a time: there's one radio, and each app keys it and

@@ -392,6 +392,47 @@ def main():
     check((L.gateway_open("00-23"), L.gateway_open("?"), L.gateway_open("22-04", now=1750510800)) == ("open now", "", "opens 2200Z"),
           "gateway hours")
 
+    # ---- tapping a tile: a flash, then "Opening…" until the app's window appears ----
+    win.stack.set_visible_child_name("home")
+    pump(0.5)
+    windows = []
+    L.open_windows = lambda: list(windows)  # no window manager here: say which windows are up
+    L.OPENING_TIMEOUT = 3
+    tile = win._tile({"code": "TST", "name": "Test app", "command": "sleep", "run": ["sleep", "30"],
+                      "detail": "A test"})
+    tile.show_all()
+    tile.clicked()
+    check(tile.get_style_context().has_class("tapped"), "tap flashes the tile")
+    first = win.started.get("TST")
+    check(tile.opening and tile.spinner.get_visible() and tile.detail.get_text() == "Opening…",
+          f"opening shown: {tile.detail.get_text()}")
+    pump(0.5)
+    check(not tile.get_style_context().has_class("tapped"), "flash fades")
+    tile.clicked()
+    check(win.started.get("TST") == first, "a second tap while opening doesn't start a second copy")
+    windows.append({"id": 1, "pid": first, "cls": "sleep.Sleep", "title": "Test app"})
+    pump(1.5)
+    check(not tile.opening and not tile.spinner.get_visible() and tile.detail.get_text() == "A test",
+          f"window up: {tile.detail.get_text()}")
+    os.kill(first, 15)
+    windows.clear()
+    failing = win._tile({"code": "BAD", "name": "Bad app", "command": "false", "run": ["false"], "detail": "x"})
+    failing.show_all()
+    failing.clicked()
+    pump(1.5)
+    check(not failing.opening and failing.detail.get_text() == "Didn't start", f"failed: {failing.detail.get_text()}")
+    slow = win._tile({"code": "SLOW", "name": "Slow app", "command": "sleep", "run": ["sleep", "10"], "detail": "x"})
+    slow.show_all()
+    slow.clicked()
+    pump(4)
+    check(not slow.opening and slow.detail.get_text() == "No window yet", f"no window: {slow.detail.get_text()}")
+    os.kill(win.started["SLOW"], 15)
+    folder = next((t for t in win.slots if getattr(t, "kind", None) == "folder"), None)
+    if folder is not None:
+        folder.clicked()
+        check(folder.get_style_context().has_class("tapped") and win.stack.get_visible_child_name() == "folder",
+              "folder tap flashes and opens")
+
     win.destroy()
     pump(0.2)
     tmp.cleanup()
