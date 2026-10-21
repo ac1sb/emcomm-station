@@ -7,6 +7,8 @@
                              first run only: APRS through Direwolf's AGW port
   emcomm-app-setup js8call   first run only: callsign, grid and rig control
   emcomm-app-setup wsjtx     first run only: callsign, grid and rig control
+  emcomm-app-setup flmsg     dates and times in UTC (2026-10-21, 1356Z), and the
+                             callsign if flmsg has none yet
 
 Every app reaches the radio through rigctld on 127.0.0.1:4532, which already
 handles PTT the way Settings says, so each app is told to key the radio by CAT
@@ -175,6 +177,38 @@ def setup_qt_ini(station, name):
     return path
 
 
+def setup_flmsg(station):
+    """flmsg keeps its settings in ~/.nbems/flmsg.prefs (FLTK preferences: "key:value"
+    lines). utc 2 writes times as HHMMZ in UTC, dtformat 0 dates as YYYY-MM-DD, and
+    dt_fname 4 stamps file names with UTC (Z). Every other setting is left alone."""
+    path = os.path.join(HOME, ".nbems/flmsg.prefs")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = ["; FLTK preferences file format 1.0", "; vendor: w1hkj.com", "; application: flmsg", "", "[.]", ""]
+    wanted = {"utc": "2", "dtformat": "0", "dt_fname": "4"}
+    if station.get("callsign"):
+        wanted["mycall"] = station["callsign"]
+    out = []
+    for line in lines:
+        key = line.split(":", 1)[0]
+        if ":" in line and not line.startswith(";") and key in wanted:
+            if key == "mycall" and line.split(":", 1)[1].strip():
+                wanted.pop(key)  # the operator's own entry stays
+                out.append(line)
+                continue
+            out.append(f"{key}:{wanted.pop(key)}")
+        else:
+            out.append(line)
+    if "[.]" not in out:
+        out.append("[.]")
+    at = out.index("[.]") + 1
+    out[at:at] = [f"{key}:{value}" for key, value in wanted.items()]
+    write(path, "\n".join(out).rstrip("\n") + "\n")
+    return path
+
+
 def main(argv):
     if len(argv) != 1:
         print(__doc__.strip(), file=sys.stderr)
@@ -191,6 +225,8 @@ def main(argv):
         path = setup_qt_ini(station, "JS8Call.ini")
     elif app == "wsjtx":
         path = setup_qt_ini(station, "WSJT-X.ini")
+    elif app == "flmsg":
+        path = setup_flmsg(station)
     else:
         print(f"unknown app: {app}", file=sys.stderr)
         return 2

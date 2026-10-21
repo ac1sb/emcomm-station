@@ -86,6 +86,24 @@ class AppSetupTest(unittest.TestCase):
         self.run_helper("js8call")
         self.assertEqual(self.read(path), "[Configuration]\nMyCall=CHANGED\n")
 
+    def test_flmsg_uses_utc(self):
+        path = self.run_helper("flmsg")
+        prefs = self.read(path)
+        self.assertTrue(path.endswith(".nbems/flmsg.prefs"))
+        for line in ("[.]", "utc:2", "dtformat:0", "dt_fname:4", "mycall:AC1SB"):
+            self.assertIn(line + "\n", prefs)
+        # flmsg's own settings stay; the operator's callsign wins; the time settings come back.
+        with open(path, "w") as f:
+            f.write("; FLTK preferences file format 1.0\n\n[.]\n\nmainx:50\nutc:0\nmycall:W1AW\n")
+        self.run_helper("flmsg")
+        prefs = self.read(path)
+        self.assertIn("mainx:50\n", prefs)
+        self.assertIn("utc:2\n", prefs)
+        self.assertNotIn("utc:0", prefs)
+        self.assertIn("mycall:W1AW\n", prefs)
+        self.assertNotIn("AC1SB", prefs)
+        self.assertEqual(prefs.count("utc:"), 1)
+
     def test_xastir_position_from_grid_and_agwpe_port(self):
         cnf = self.read(self.run_helper("xastir"))
         self.assertIn("STATION_CALLSIGN:AC1SB\n", cnf)

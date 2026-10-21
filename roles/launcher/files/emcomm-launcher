@@ -4162,10 +4162,6 @@ class Launcher(Gtk.Window):
         self.log_combo.set_active_id("notes")
         self.log_combo.connect("changed", lambda *_: self._show_log())
         header.pack_start(self.log_combo, False, False, 0)
-        header.pack_end(self._navbtn("Net control  F8", lambda *_: self.stack.set_visible_child_name("net"),
-                                     "primary"), False, False, 0)
-        header.pack_end(self._navbtn("ICS-213  F9", lambda *_: self.stack.set_visible_child_name("ics213")),
-                        False, False, 0)
         header.pack_end(self._navbtn("Recorder", lambda *_: self.stack.set_visible_child_name("recorder")),
                         False, False, 0)
         header.pack_end(self._navbtn("Refresh", lambda *_: self._show_log()), False, False, 0)
@@ -4221,7 +4217,7 @@ class Launcher(Gtk.Window):
     def _net_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
         header = Gtk.Box(spacing=12)
-        header.pack_start(self._navbtn("‹ Logs", lambda *_: self.stack.set_visible_child_name("logs")),
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")),
                           False, False, 0)
         title = Gtk.Label(label="Net control", xalign=0)
         title.get_style_context().add_class("title")
@@ -4397,7 +4393,7 @@ class Launcher(Gtk.Window):
     def _ics213_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
         header = Gtk.Box(spacing=12)
-        header.pack_start(self._navbtn("‹ Logs", lambda *_: self.stack.set_visible_child_name("logs")),
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")),
                           False, False, 0)
         title = Gtk.Label(label="ICS-213 messages", xalign=0)
         title.get_style_context().add_class("title")
@@ -4575,7 +4571,7 @@ class Launcher(Gtk.Window):
 
     def _ics213_edit(self, *_):
         if self.f213_path and shutil.which("flmsg"):
-            run_detached(["flmsg", self.f213_path])
+            run_detached(["emcomm-start", "flmsg", self.f213_path])
 
     # ---- typing an ICS-213 on the form ------------------------------------
     # The blank FEMA form is drawn and a box sits on each of its fields, so the
@@ -4678,15 +4674,15 @@ class Launcher(Gtk.Window):
                 fields = {}
         received = bool(path) and not os.path.dirname(os.path.abspath(path)) == os.path.abspath(ICS213_SENT)
         if not path:
-            now = time.localtime()
-            fields = {"d1": time.strftime("%Y-%m-%d", now), "t1": time.strftime("%H%M", now)}
+            now = time.gmtime()  # UTC, as flmsg is set to write it (emcomm-app-setup flmsg)
+            fields = {"d1": time.strftime("%Y-%m-%d", now), "t1": time.strftime("%H%MZ", now)}
             net_path, net = open_net()
             if net and net.get("incident"):
                 fields["inc"] = net["incident"]
         if received and not fields.get("rp"):
-            now = time.localtime()
+            now = time.gmtime()
             fields.setdefault("d2", time.strftime("%Y-%m-%d", now))
-            fields.setdefault("t2", time.strftime("%H%M", now))
+            fields.setdefault("t2", time.strftime("%H%MZ", now))
         for key, widget in self.f213e_fields.items():
             value = fields.get(key, "")
             if isinstance(widget, Gtk.TextView):
@@ -4710,7 +4706,7 @@ class Launcher(Gtk.Window):
             return None
         path = self.f213e_path
         if not path:
-            stem = time.strftime("ICS213-%Y%m%d-%H%M%S")
+            stem = time.strftime("ICS213-%Y%m%d-%H%M%SZ", time.gmtime())
             subject = re.sub(r"[^A-Za-z0-9 _-]+", "", fields.get("sb", ""))[:30].strip()
             path = os.path.join(ICS213_SENT, f"{stem} {subject}.213" if subject else f"{stem}.213")
         try:
@@ -4725,7 +4721,7 @@ class Launcher(Gtk.Window):
             return None
         self.f213e_path = path
         self.f213e_title.set_text("Edit ICS-213")
-        self.f213e_status.set_text("Saved " + time.strftime("%H:%M") + ". It's in the messages list.")
+        self.f213e_status.set_text("Saved " + time.strftime("%H:%MZ", time.gmtime()) + ". It's in the messages list.")
         self.f213_listed = None  # list it next time the messages page shows
         return path
 
@@ -4736,7 +4732,7 @@ class Launcher(Gtk.Window):
         if not shutil.which("flmsg"):
             self.f213e_status.set_text("Saved. flmsg isn't installed: tap its tile on Home to install it.")
             return
-        run_detached(["flmsg", path])
+        run_detached(["emcomm-start", "flmsg", path])
         self.f213e_status.set_text("Opened in flmsg: with fldigi open, press AutoSend in flmsg's menu bar to send it.")
 
     def _ics213_editor_print(self):
