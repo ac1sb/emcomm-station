@@ -102,7 +102,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   touchscreen turns with the screen. A change to the screen goes back by itself
   after 15 seconds unless you tap **Keep**, so a setting the screen can't show
   can't lock you out.
-- **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, flmsg (ICS-213 forms), Pat for
+- **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, flmsg (ICS-213 forms; set to date and time everything in UTC, e.g. 1356Z), Pat for
   Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf), Direwolf for
   packet, Xastir for APRS, and the Meshtastic (`contact`) and MeshCore
   (`meshcore-cli`) clients for LoRa mesh radios, and CHIRP for programming
@@ -119,7 +119,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 - **Logs** (tile, F4): JS8Call messages and activity, WSJT-X contacts and Winlink mail in one
   place, plus a box to note a voice or other contact. Notes get the UTC time,
   frequency and mode from the radio.
-- **Net control** (F8, or the button on Logs): name the net and tap **Start net**.
+- **Net control** (tile in the Forms folder, or F8): name the net and tap **Start net**.
   Type each callsign and press Enter to check it in, or fill in From, To and Message
   and tap **Log** for traffic; every entry gets the UTC time, and **Undo** removes
   the last one. **ICS-309 log** fills in the Communications Log for the open (or
@@ -128,12 +128,12 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
   assignment). Both are saved in `~/ICS forms` and open with a **Print** button;
   the print dialog can also save a PDF to a USB stick. Nets are kept in
   `~/.local/share/emcomm/nets`.
-- **ICS-213 messages** (F9, or the button on Logs): every ICS-213 in flmsg, the
+- **ICS-213 messages** (the ICS-213 tile in the Forms folder, or F9): every ICS-213 in flmsg, the
   ones you wrote and the ones fldigi received, shown on FEMA's own General Message
   form (ICS 213), the same layout as the paper form. Pick one on the left to see
   it; **Print** prints it (or saves a PDF). **New message** opens the blank form
   with a box on each field (To, From, Subject, Date, Time, Message, Approved by,
-  Reply...), so the message is typed where it goes on paper; the date and time
+  Reply...), so the message is typed where it goes on paper; the date and time (UTC)
   are filled in, and the incident too while a net is open. **Reply or edit** opens
   the one picked: a received message gets the reply boxes at the bottom and is
   saved as a copy, so what came in stays as it was. **Save** keeps it in flmsg's

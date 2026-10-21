@@ -118,8 +118,14 @@ case "${1:-}" in
     emcomm-app-setup "$1" >/dev/null
     exec "$1"
     ;;
-  fldigi|flmsg)
+  fldigi)
     exec "$1"
+    ;;
+  flmsg)
+    # Dates and times in UTC, and the callsign from Settings. A message file may follow.
+    emcomm-app-setup flmsg >/dev/null
+    shift
+    exec flmsg "$@"
     ;;
   pat)
     # Pat runs as a small web server; the mailbox opens in its own window.
