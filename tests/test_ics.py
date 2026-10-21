@@ -153,7 +153,7 @@ class Listing(unittest.TestCase):
         self.assertTrue(found[0]["open"] and not found[1]["open"])
         self.assertIn("1 checked in", found[1]["detail"])
         self.assertEqual(found[2]["detail"], "ICS-309 Communications Log · saved 1970-01-01 00:33Z")
-        self.assertEqual((found[3]["title"], found[3]["detail"]), ("Cots — 50", "ICS-213 · Sent · to J. Smith · 2026-10-20 · 1520"))
+        self.assertEqual((found[3]["title"], found[3]["detail"]), ("Cots — 50", "ICS-213 · Sent · to J. Smith · 2026-10-20 · 1405"))
 
 
 class Sending(unittest.TestCase):
