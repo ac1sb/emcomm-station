@@ -4,8 +4,10 @@ squelch and PL tone check work on simulated signals.
 Run: python3 tests/test_scanner.py
 """
 
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import os
 import sys
 import tempfile
@@ -113,6 +115,28 @@ class Manual(unittest.TestCase):
             self.assertEqual((last["mhz"], last["name"], last["group"]), (155.475, "STATE MUTUAL AID", "My channels"))
             sc.append_channel(os.path.join(d, "new.csv"), 462.5625, "FRS 1")
             self.assertEqual(sc.load_channels(os.path.join(d, "new.csv"))[0]["name"], "FRS 1")
+
+    def test_a_blank_first_line_doesnt_lose_the_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "list.csv")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\nFrequency,Alpha Tag\n155.4750,NATIONAL EMS\n")
+            sc.append_channel(path, 462.5625, "FRS 1")
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            self.assertIn("155.4750,NATIONAL EMS\n", text)
+            self.assertIn("462.5625,FRS 1\n", text)
+
+    def test_a_list_that_isnt_utf8_is_reported_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "list.csv")
+            with open(path, "wb") as f:
+                f.write(b"Frequency,Alpha Tag\n155.4750,CAF\xc9\n")  # Latin-1, as a spreadsheet may save it
+            with self.assertRaises(UnicodeDecodeError):
+                sc.load_channels(path)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(sc.main(["--list", path]), 1)
+            self.assertIn("Couldn't read", err.getvalue())
 
 
 class FakeRange:

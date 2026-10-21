@@ -4,6 +4,7 @@ that it keeps the last good answer and its rate limits.
 Run: python3 tests/test_online.py
 """
 
+import http.client
 import importlib.machinery
 import importlib.util
 import json
@@ -172,6 +173,30 @@ class Refresh(WithHome):
         self.assertEqual(len(calls), 1)
         online.refresh("heard", force=True, now=1301)
         self.assertEqual(len(calls), 2)
+
+    def test_a_reader_that_trips_is_recorded_not_raised(self):
+        def broken():
+            raise TypeError("'NoneType' object is not subscriptable")
+
+        online.FETCHERS["alerts"] = broken
+        for now in (1000, 2000):  # one refresh after the other, as the launcher and the page both ask
+            record = online.refresh("alerts", now=now)
+            self.assertIn("couldn't read", record["error"])
+            self.assertIn("TypeError", record["detail"])
+        self.assertFalse([n for n in os.listdir(online.CACHE_DIR) if n.endswith(".tmp")])
+
+    def test_a_cut_off_download_is_an_online_error(self):
+        def cut_off(request, timeout=None):
+            raise http.client.IncompleteRead(b"half of it")
+
+        saved = online.urllib.request.urlopen
+        online.urllib.request.urlopen = cut_off
+        try:
+            with self.assertRaises(online.OnlineError) as caught:
+                online.http_get("https://example.invalid/")
+        finally:
+            online.urllib.request.urlopen = saved
+        self.assertIn("cut off", str(caught.exception))
 
 
 

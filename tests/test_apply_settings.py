@@ -123,6 +123,8 @@ class ApplySettingsTest(unittest.TestCase):
             preset("ft-710", cat_match={"vendor": "10c4", "product": "ea70", "serial": "a\"b"}),
             preset("ft-710", cat_match={"vendor": "10c4", "product": "ea70", "driver": "x"}),
             preset("ft-710", radio_name="Evil\"; RUN+=\"x"),
+            preset("ft-710", cat_match={"vendor": "10c4", "product": "ea70", "serial": "ABC\n"}),
+            [],
         ]
         for settings in bad:
             with self.subTest(settings=settings):
@@ -138,6 +140,11 @@ class ApplySettingsTest(unittest.TestCase):
         open(os.path.join(self.root, "passwd"), "w").close()
         r = self.run_helper(preset("ft-710", timezone="America/New_York"))
         self.assertEqual(r.returncode, 0, r.stderr)
+        # tzdata's "localtime" is a link to /etc/localtime: picking it would make a loop.
+        os.symlink(os.path.join(self.root, "passwd"), os.path.join(self.root, "usr/share/zoneinfo/localtime"))
+        r = self.run_helper(preset("ft-710", timezone="localtime"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("time zone", r.stderr)
         self.assertEqual(json.loads(self.read("etc/emcomm/station.json"))["timezone"], "America/New_York")
         for zone in ("America/Nowhere", "../../../passwd", "America/New_York; reboot", "/etc/passwd"):
             with self.subTest(zone=zone):

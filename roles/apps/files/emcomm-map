@@ -114,11 +114,23 @@ def read_gateways():
 
 
 def tail_lines(path, count=5000):
+    """The last COUNT lines of a file, read from its end in blocks so a big ALL.TXT
+    (years of logging) isn't read whole every time the map opens."""
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            return f.readlines()[-count:]
+        with open(path, "rb") as f:
+            pos = f.seek(0, os.SEEK_END)
+            blocks, newlines = [], 0
+            while pos > 0 and newlines <= count:  # one more newline than lines wanted: a whole first line
+                step = min(64 * 1024, pos)
+                pos -= step
+                f.seek(pos)
+                block = f.read(step)
+                blocks.append(block)
+                newlines += block.count(b"\n")
     except OSError:
         return []
+    text = b"".join(reversed(blocks)).decode("utf-8", errors="replace")
+    return text.splitlines(keepends=True)[-count:]
 
 
 def read_heard(own_call=""):

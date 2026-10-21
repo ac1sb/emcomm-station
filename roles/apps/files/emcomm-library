@@ -74,13 +74,36 @@ def mount_usb_sticks():
                        capture_output=True, check=False)
 
 
+def is_kiwix_serve(pid, proc="/proc"):
+    """Whether this pid is still kiwix-serve: the pidfile can outlive it, and the
+    number be given to some other program since."""
+    try:
+        with open(os.path.join(proc, str(pid), "cmdline"), "rb") as f:
+            return b"kiwix-serve" in f.read()
+    except OSError:
+        return False
+
+
+def remove_parts(folder=None):
+    """Clear out any .part a download left behind when the Library was closed part way."""
+    for part in glob.glob(os.path.join(folder or LIBRARY, "*.part")):
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+
+
 def serve(paths):
     """(Re)start kiwix-serve for these books; returns once it answers."""
     pid_file = os.path.join(STATE, "kiwix-serve.pid")
     try:
         with open(pid_file) as f:
-            os.kill(int(f.read()), signal.SIGTERM)
-        time.sleep(0.5)
+            pid = int(f.read())
+        if is_kiwix_serve(pid):
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(0.5)
+        else:
+            os.remove(pid_file)  # stale: that kiwix-serve is long gone
     except (OSError, ValueError):
         pass
     os.makedirs(STATE, exist_ok=True)
@@ -234,6 +257,7 @@ def window():
 
     open_btn.connect("clicked", open_library)
     win.connect("key-press-event", lambda _w, e: e.keyval == 0xff1b and (win.destroy() or True))
+    remove_parts()
     mount_usb_sticks()
     fill()
     shown = [None]

@@ -31,6 +31,13 @@ NOW = calendar.timegm((2026, 10, 19, 22, 20, 0))  # day 292
 
 
 class Same(unittest.TestCase):
+    def test_garbled_time_is_not_a_header(self):
+        # The timestamp is DDDHHMM; a burst with an impossible one is dropped, not a crash.
+        for stamp in ("0002215", "3992215", "2922415", "2922260", "2920060"):
+            with self.subTest(stamp=stamp):
+                self.assertIsNone(nwr.parse_header(f"EAS: ZCZC-WXR-TOR-025017+0030-{stamp}-KBOX/NWS-", NOW))
+        self.assertIsNotNone(nwr.parse_header("EAS: ZCZC-WXR-TOR-025017+0030-3660000-KBOX/NWS-", NOW))
+
     def test_header(self):
         h = nwr.parse_header("EAS: ZCZC-WXR-TOR-025017-125021+0030-2922215-KBOX/NWS-\n", NOW)
         self.assertEqual((h["event"], h["severity"], h["originator"]),

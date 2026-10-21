@@ -10,6 +10,7 @@ import importlib.util
 import json
 import math
 import os
+import tempfile
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -59,6 +60,21 @@ class Recorder(unittest.TestCase):
         self.assertEqual(seg.feed(QUIET)[0], "start")
         actions = [seg.feed(QUIET)[0] for _ in range(rec.MAX_CHUNKS - 1)]
         self.assertEqual(actions[-1], "stop")
+
+    def test_prune_keeps_the_newest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            names = ["2026-10-18/220000Z.wav", "2026-10-18/230000Z.wav", "2026-10-19/010000Z.wav",
+                     "2026-10-19/020000Z.wav.part"]
+            for name in names:
+                os.makedirs(os.path.join(folder, os.path.dirname(name)), exist_ok=True)
+                with open(os.path.join(folder, name), "wb") as f:
+                    f.write(b"\0" * 1000)
+            self.assertEqual(rec.prune(folder, limit=4000), 0)
+            self.assertEqual(rec.prune(folder, limit=2500), 2)
+            self.assertEqual(sorted(os.listdir(folder)), ["2026-10-19"])
+            self.assertEqual(sorted(os.listdir(os.path.join(folder, "2026-10-19"))),
+                             ["010000Z.wav", "020000Z.wav.part"])
+            self.assertEqual(rec.prune(os.path.join(folder, "missing")), 0)
 
     def test_file_name(self):
         name = rec.file_name(1792447200, "14074000", "USB")
