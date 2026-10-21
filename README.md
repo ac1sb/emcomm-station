@@ -144,7 +144,7 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
     An open net stays at the top of the list; its row has **Net control** and
     **ICS-309 log** buttons.
 
-  **Send over the radio** sends the message picked (or the one being written,
+  **Send by radio** sends the message picked (or the one being written,
   saving it first) the way flmsg's AutoSend does, without opening flmsg: it
   shows whether fldigi is running (with a **Start fldigi** button if not), lets
   you pick the modem (MT63-2000L and the other NBEMS modems fldigi has; the one

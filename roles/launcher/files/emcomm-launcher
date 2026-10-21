@@ -4439,7 +4439,7 @@ class Launcher(Gtk.Window):
         new.set_popover(self._forms_new_menu(new))
         header.pack_end(new, False, False, 0)
         # Right to left after New; each shows for the kind of thing picked.
-        self.f213_send_btn = self._navbtn("Send over the radio", lambda *_: self._forms_send(), "primary")
+        self.f213_send_btn = self._navbtn("Send by radio", lambda *_: self._forms_send(), "primary")
         self.f213_open_btn = self._navbtn("Reply / Edit", lambda *_: self._ics213_write(self.f213_path))
         self.f213_print_btn = self._navbtn("Print", self._ics213_print)
         self.f213_flmsg_btn = self._navbtn("Open in flmsg", self._ics213_edit)
@@ -4585,6 +4585,11 @@ class Launcher(Gtk.Window):
             return
         rows = [r for r in self.forms_list.get_children() if hasattr(r, "item")]
         pick = next((r for r in rows if r.item["path"] == keep), rows[0])
+        if self.forms_item and pick.item["path"] == keep and pick.item.get("modified") == self.forms_item.get("modified"):
+            # Unchanged: keep what's shown and the line above it (a "Saved to" note, say).
+            self.forms_item = pick.item
+            self.forms_list.select_row(pick)
+            return
         self.forms_item = None  # the file may have changed: show it again
         self.forms_list.select_row(pick)
         if self.forms_item is None:  # the same row again: no row-selected signal
@@ -4869,7 +4874,7 @@ class Launcher(Gtk.Window):
         self.f213e_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         self.f213e_status.get_style_context().add_class("muted")
         header.pack_start(self.f213e_status, True, True, 0)
-        header.pack_end(self._navbtn("Send over the radio", lambda *_: self._ics213_editor_send(), "primary"),
+        header.pack_end(self._navbtn("Send by radio", lambda *_: self._ics213_editor_send(), "primary"),
                         False, False, 0)
         header.pack_end(self._navbtn("Save", lambda *_: self._ics213_editor_save()), False, False, 0)
         header.pack_end(self._navbtn("Print", lambda *_: self._ics213_editor_print()), False, False, 0)

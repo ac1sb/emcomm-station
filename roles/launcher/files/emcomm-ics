@@ -18,8 +18,6 @@ messages over the radio through fldigi.
                                               transmit buffer, which keys the radio
 
 The launcher's Net control page keeps each net as a JSON file:
-
-The launcher's Net control page keeps each net as a JSON file:
   {"name", "incident", "operator", "callsign", "started", "closed",
    "entries": [{"time", "from", "to", "message"}]}
 with times in seconds since 1970 (UTC). Without OUT.html the page is written to
@@ -339,8 +337,9 @@ def list_forms(dirs=FLMSG_DIRS, nets_dir=NETS_DIR, forms_dir=FORMS_DIR):
         entries = net.get("entries") or []
         calls = {e.get("from") for e in entries if e.get("checkin") and e.get("from")}
         started, closed = net.get("started"), net.get("closed")
-        # An open net stays at the top of the list; a closed one sits at the time it closed.
-        latest = time.time() if not closed else max([started or 0, closed or 0] + [e.get("time") or 0 for e in entries])
+        # When it last changed: an open net's stamp moves only when an entry is logged, so the
+        # list isn't rebuilt every time it's asked; open nets go to the top when sorting.
+        latest = max([started or 0, closed or 0] + [e.get("time") or 0 for e in entries])
         when = (f"open since {utc(started, '%H%MZ')}" if not closed else
                 f"{utc(started, '%Y-%m-%d %H%MZ')} to {utc(closed, '%H%MZ')}")
         detail = " · ".join(filter(None, ["Net", when, f"{len(calls)} checked in", net.get("incident", "")]))
@@ -356,7 +355,7 @@ def list_forms(dirs=FLMSG_DIRS, nets_dir=NETS_DIR, forms_dir=FORMS_DIR):
         label = {"309": "ICS-309 Communications Log", "205": "ICS-205 Radio Communications Plan"}.get(kind, "Form")
         found.append({"kind": kind, "path": path, "title": name, "modified": mtime,
                       "detail": f"{label} · saved {utc(mtime)}"})
-    return sorted(found, key=lambda m: m["modified"], reverse=True)
+    return sorted(found, key=lambda m: (bool(m.get("open")), m["modified"]), reverse=True)
 
 
 # ---- sending through fldigi, as flmsg's AutoSend does (flmsg src/utils/wrap.cxx) ----
@@ -370,7 +369,7 @@ def flmsg_crc16(data):
         crc ^= (byte - 256 if byte > 127 else byte) & 0xFFFFFFFF
         for _ in range(8):
             crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
-    return f"{crc:04X}"
+    return f"{crc:04X}"[:4]  # flmsg prints it into char[5]: past 16 bits, the first four digits
 
 
 def wrap_for_fldigi(name, data):
@@ -443,10 +442,7 @@ def send_to_fldigi(path, modem=None):
         with open(wrap_path, "wb") as f:
             f.write(wrapped)
         os.makedirs(os.path.dirname(SENT_LOG), exist_ok=True)
-        new = not os.path.exists(SENT_LOG)
-        with open(SENT_LOG, "a", encoding="utf-8") as f:
-            if new:
-                f.write("FILE_NAME,DATE,GMT\n")
+        with open(SENT_LOG, "a", encoding="utf-8") as f:  # a line as flmsg appends it; no header
             f.write(f"{name},{time.strftime('%Y-%m-%d,%H%M', time.gmtime())}\n")
     except OSError:
         wrap_path = None  # sent all the same

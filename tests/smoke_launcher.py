@@ -42,11 +42,13 @@ def yaml_to_json(src, dest, key=None):
 
 
 def make_station(root):
-    """A scratch station: the standard tiles, a callsign, one message, one net, one form."""
+    """A scratch station: the standard tiles, a callsign, one message, one net, one form, a frequency."""
     home, etc, presets = (os.path.join(root, d) for d in ("home", "etc", "presets"))
     for d in (os.path.join(home, ".nbems/ICS/messages"), os.path.join(home, ".local/share/emcomm/nets"),
-              os.path.join(home, "ICS forms"), etc, presets):
+              os.path.join(home, ".local/share/emcomm/reference"), os.path.join(home, "ICS forms"), etc, presets):
         os.makedirs(d)
+    with open(os.path.join(home, ".local/share/emcomm/reference/My frequencies.csv"), "w", encoding="utf-8") as f:
+        f.write("Name,MHz,Mode,Offset,Tone,Note\nCounty ARES,146.940,FM,-0.6,100.0,Net Sunday 1900\n")
     yaml_to_json(os.path.join(REPO, "group_vars/all.yml"), os.path.join(etc, "vars.json"))
     with open(os.path.join(etc, "vars.json"), encoding="utf-8") as f:
         g = json.load(f)
@@ -140,6 +142,11 @@ def main():
     def dialogs():
         return [w for w in Gtk.Window.list_toplevels() if isinstance(w, Gtk.Dialog) and w.get_visible()]
 
+    def fits(what):
+        # The station's screen is 1024 px wide: the window mustn't ask for more.
+        width = win.get_preferred_width()[0]
+        check(width <= 1024, f"{what}: fits 1024 px (needs {width})")
+
     def visible_buttons():
         return sorted(b.get_label() for btns in win.forms_kind_btns.values() for b in btns if b.get_visible())
 
@@ -151,7 +158,7 @@ def main():
     win.stack.set_visible_child_name("forms")
     pump(3)
     check(sorted(r.item["kind"] for r in rows()) == ["213", "309", "net"], f"list kinds {[r.item['kind'] for r in rows()]}")
-    wanted = {"213": ["Open in flmsg", "Print", "Reply / Edit", "Send over the radio"],
+    wanted = {"213": ["Open in flmsg", "Print", "Reply / Edit", "Send by radio"],
               "net": ["ICS-309 log", "Net control  F8"], "309": ["Open / Print"]}
     for row in rows():
         win.forms_list.select_row(row)
@@ -160,6 +167,7 @@ def main():
         check(win.forms_item is row.item, f"{kind}: selected")
         check(win.forms_view.get_visible_child_name() == ("pdf" if kind == "213" else "text"), f"{kind}: preview")
         check(visible_buttons() == wanted[kind], f"{kind}: buttons {visible_buttons()}")
+        fits(f"Forms with a {kind} picked")
         if kind == "213":
             check(win.f213_doc is not None and win.f213_send_btn.get_sensitive(), "213: form drawn, Send enabled")
         if kind == "net":
@@ -177,6 +185,7 @@ def main():
     pump(0.5)
     check(win.stack.get_visible_child_name() == "ics213-edit", "editor opened")
     check(win._ics213_field("t1").endswith("Z"), "time in UTC")
+    fits("ICS-213 editor")
     win.f213e_fields["to"].set_text("W1AW")
     win.f213e_fields["sb"].set_text("Smoke test")
     win.f213e_fields["mg"].get_buffer().set_text("Hello from the smoke test")
@@ -243,7 +252,7 @@ def main():
           f"309: {win.f213_status.get_text()[:60]}")
     win._forms_ics205()
     pump(0.5)
-    check(win.f213_status.get_text() != "", f"205: {win.f213_status.get_text()[:60]}")
+    check(win.f213_status.get_text().startswith("Saved to"), f"205: {win.f213_status.get_text()[:60]}")
 
     # ---- New ▾ Net log: Net control, a check-in, the open net tops the Forms list ----
     win._forms_new_net()
@@ -259,6 +268,13 @@ def main():
     win.stack.set_visible_child_name("forms")
     pump(5)
     check(rows() and rows()[0].item["kind"] == "net" and rows()[0].item.get("open"), "open net tops the list")
+    # With a net open the list stays put (it isn't rebuilt every check) and a note isn't overwritten.
+    win._forms_ics205()
+    pump(5)  # the new ICS-205 file joins the list once
+    before = rows()
+    pump(9)
+    check(rows() == before, "open net: list not rebuilt")
+    check(win.f213_status.get_text().startswith("Saved to"), f"205 note kept: {win.f213_status.get_text()[:60]}")
     win.stack.set_visible_child_name("logs")
     pump(0.5)
     check(win.stack.get_visible_child_name() == "logs", "Logs page")

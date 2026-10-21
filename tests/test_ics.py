@@ -161,7 +161,9 @@ class Sending(unittest.TestCase):
         self.assertEqual(ics.flmsg_crc16(b"123456789"), "4B37")  # CRC-16/MODBUS, for plain text
         self.assertEqual(ics.flmsg_crc16(b""), "FFFF")
         # A byte above 127 goes in as a negative char in flmsg's C++: the sign bits carry up.
-        self.assertEqual(ics.flmsg_crc16("é".encode()), "{:04X}".format(ics_crc_reference("é".encode())))
+        # When they're still there at the end, flmsg's sval() prints into char[5]: the first four digits.
+        self.assertEqual(ics.flmsg_crc16("é".encode()), "{:04X}".format(ics_crc_reference("é".encode()))[:4])
+        self.assertEqual(ics.flmsg_crc16("é\n".encode()), "{:04X}".format(ics_crc_reference("é\n".encode())))
 
     def test_wrapped_as_flmsg_autosend(self):
         text, wrapped = ics.wrap_for_fldigi("ICS213-x.213", b"<flmsg>4.0.23\n<ics213>\n:sb:2 hi\n")
@@ -200,7 +202,7 @@ class Sending(unittest.TestCase):
                 with open(result["wrap"], "rb") as f:
                     self.assertTrue(f.read().startswith(b"[WRAP:beg][WRAP:lf][WRAP:fn ICS213-x.213]<flmsg>"))
                 with open(ics.SENT_LOG, encoding="utf-8") as f:
-                    self.assertTrue(f.read().startswith("FILE_NAME,DATE,GMT\nICS213-x.213,"))
+                    self.assertTrue(f.read().startswith("ICS213-x.213,"))  # as flmsg appends it, no header
             finally:
                 ics.FLDIGI_URL, ics.WRAP_SEND_DIR, ics.SENT_LOG = real
                 server.shutdown()
