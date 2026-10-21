@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Fill in ICS forms as printable pages, from the station's own records.
+"""Fill in ICS forms as printable pages, from the station's own records, and send
+messages over the radio through fldigi.
 
   emcomm-ics 309 NET.json [OUT.html]          Communications Log for a net
   emcomm-ics 205 [--incident NAME] [OUT.html] Radio Communications Plan from My frequencies
@@ -8,6 +9,13 @@
   emcomm-ics 213 --fields MSG.213             an flmsg ICS-213 file's fields, as JSON
   emcomm-ics 213 --save OUT.213 [CALL]        write the fields given as JSON on stdin as an
                                               flmsg ICS-213 file (CALL: who edited it)
+  emcomm-ics list                             every message, net and filled-in form, newest
+                                              first, as JSON (the launcher's Forms page)
+  emcomm-ics fldigi [--modems]                whether fldigi is running, its modem and whether
+                                              it's transmitting (--modems: the modems it has)
+  emcomm-ics send MSG.213 [--modem NAME]      send an flmsg message over the radio: wrapped the
+                                              way flmsg's AutoSend does and put in fldigi's
+                                              transmit buffer, which keys the radio
 
 The launcher's Net control page keeps each net as a JSON file:
   {"name", "incident", "operator", "callsign", "started", "closed",
@@ -29,8 +37,18 @@ import os
 import re
 import sys
 import time
+import xmlrpc.client
 
-FORMS_DIR = os.path.expanduser("~/ICS forms")
+FORMS_DIR = os.environ.get("EMCOMM_ICS_FORMS", os.path.expanduser("~/ICS forms"))
+NETS_DIR = os.environ.get("EMCOMM_NETS", os.path.expanduser("~/.local/share/emcomm/nets"))
+# fldigi's XML-RPC server, on its standard port; the same one flmsg talks to.
+FLDIGI_URL = os.environ.get("EMCOMM_FLDIGI", "http://127.0.0.1:7362/")
+WRAP_SEND_DIR = os.path.expanduser("~/.nbems/WRAP/send")  # a copy of each message as sent, as flmsg keeps
+SENT_LOG = os.path.expanduser("~/.nbems/ICS/auto_sent.csv")  # flmsg's record of what AutoSend sent
+# Modems NBEMS nets use for forms, fastest first (MT63-2000L is the usual choice on VHF).
+NBEMS_MODEMS = ["MT63-2000L", "MT63-1000L", "MT63-500L", "MFSK128", "MFSK64", "MFSK32", "MFSK16",
+                "PSK500R", "PSK250R", "PSK125R", "Olivia-8-500", "Olivia-16-500", "THOR50x1", "THOR22",
+                "BPSK63", "BPSK31"]
 STATION = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 REFERENCE_DIR = os.environ.get("EMCOMM_REFERENCE", "/usr/share/emcomm/reference")
 MY_FREQS = os.path.join(os.path.expanduser("~/.local/share/emcomm/reference"), "My frequencies.csv")
@@ -297,6 +315,160 @@ def list_213(dirs=FLMSG_DIRS):
     return sorted(found, key=lambda m: m["modified"], reverse=True)
 
 
+def list_forms(dirs=FLMSG_DIRS, nets_dir=NETS_DIR, forms_dir=FORMS_DIR):
+    """Everything the Forms page lists, newest first: ICS-213 messages (kind "213"),
+    nets (kind "net", "open" while the net is) and filled-in ICS-309 and ICS-205 pages
+    (kind "309" or "205"). Each has a path, a title, a detail line and a modified time."""
+    found = []
+    for m in list_213(dirs):
+        other = m["from"] if m["folder"] == "Received" else m["to"]
+        detail = " · ".join(filter(None, ["ICS-213", m["folder"],
+                                          ("from " if m["folder"] == "Received" else "to ") + other if other else "",
+                                          m["date"], m["time"]]))
+        found.append(dict(m, kind="213", title=m["subject"] or "(no subject)", detail=detail))
+    for path in glob.glob(os.path.join(nets_dir, "*.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                net = json.load(f)
+            if not isinstance(net, dict):
+                continue
+        except (OSError, ValueError):
+            continue
+        entries = net.get("entries") or []
+        calls = {e.get("from") for e in entries if e.get("checkin") and e.get("from")}
+        started, closed = net.get("started"), net.get("closed")
+        # When it last changed: an open net's stamp moves only when an entry is logged, so the
+        # list isn't rebuilt every time it's asked; open nets go to the top when sorting.
+        latest = max([started or 0, closed or 0] + [e.get("time") or 0 for e in entries])
+        when = (f"open since {utc(started, '%H%MZ')}" if not closed else
+                f"{utc(started, '%Y-%m-%d %H%MZ')} to {utc(closed, '%H%MZ')}")
+        detail = " · ".join(filter(None, ["Net", when, f"{len(calls)} checked in", net.get("incident", "")]))
+        found.append({"kind": "net", "path": path, "title": net.get("name") or "Net", "detail": detail,
+                      "modified": int(latest), "open": not closed})
+    for path in glob.glob(os.path.join(forms_dir, "*.html")):
+        name = os.path.splitext(os.path.basename(path))[0]
+        kind = "309" if name.startswith("ICS-309") else "205" if name.startswith("ICS-205") else "form"
+        try:
+            mtime = int(os.path.getmtime(path))
+        except OSError:
+            continue
+        label = {"309": "ICS-309 Communications Log", "205": "ICS-205 Radio Communications Plan"}.get(kind, "Form")
+        found.append({"kind": kind, "path": path, "title": name, "modified": mtime,
+                      "detail": f"{label} · saved {utc(mtime)}"})
+    return sorted(found, key=lambda m: (bool(m.get("open")), m["modified"]), reverse=True)
+
+
+# ---- sending through fldigi, as flmsg's AutoSend does (flmsg src/utils/wrap.cxx) ----
+
+def flmsg_crc16(data):
+    """flmsg's checksum of a wrapped message (Ccrc16: CRC-16 with the 0xA001 polynomial from
+    0xFFFF), as four hex digits. A byte above 127 is taken as a negative char, as flmsg's
+    C++ does, so the digits match flmsg's for any text."""
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= (byte - 256 if byte > 127 else byte) & 0xFFFFFFFF
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+    return f"{crc:04X}"[:4]  # flmsg prints it into char[5]: past 16 bits, the first four digits
+
+
+def wrap_for_fldigi(name, data):
+    """The text flmsg's AutoSend puts in fldigi's transmit buffer for a message file:
+    the file name and contents between [WRAP:beg] and [WRAP:end] with a checksum, so the
+    receiving fldigi saves it for flmsg exactly as sent. Returns (text, wrapped), the
+    second being the part a .wrap file holds."""
+    crlf = b"\r\n" in data
+    payload = b"[WRAP:fn " + name.encode("utf-8") + b"]" + data.replace(b"\r\n", b"\n")
+    wrapped = (b"[WRAP:beg]" + (b"[WRAP:crlf]" if crlf else b"[WRAP:lf]") + payload
+               + b"[WRAP:chksum " + flmsg_crc16(payload).encode() + b"][WRAP:end]")
+    text = b"\n\n\n... start\n" + wrapped + b"\n... end\n\n\n"
+    return text.decode("utf-8", "replace"), wrapped
+
+
+def fldigi(timeout=5):
+    return xmlrpc.client.ServerProxy(FLDIGI_URL, allow_none=True,
+                                     transport=TimeoutTransport(timeout))
+
+
+class TimeoutTransport(xmlrpc.client.Transport):
+    def __init__(self, timeout):
+        super().__init__()
+        self.timeout = timeout
+
+    def make_connection(self, host):
+        connection = super().make_connection(host)
+        connection.timeout = self.timeout
+        return connection
+
+
+def fldigi_status(modems=False):
+    """{"online": bool, "modem": name, "trx": "rx"/"tx"/"tune", "version"} and, asked for,
+    "modems": the NBEMS modems fldigi has, in NBEMS_MODEMS order, then every other."""
+    proxy = fldigi()
+    try:
+        status = {"online": True, "version": str(proxy.fldigi.version()), "modem": str(proxy.modem.get_name()),
+                  "trx": str(proxy.main.get_trx_state()).lower()}
+        if modems:
+            names = [str(n) for n in proxy.modem.get_names()]
+            status["modems"] = [m for m in NBEMS_MODEMS if m in names] + sorted(set(names) - set(NBEMS_MODEMS))
+    except (OSError, xmlrpc.client.Error, ValueError, TypeError):
+        return {"online": False}
+    return status
+
+
+def send_to_fldigi(path, modem=None):
+    """Put an flmsg message in fldigi's transmit buffer and start transmitting, on `modem`
+    if given. Keeps a copy of what went out in ~/.nbems/WRAP/send and a line in flmsg's
+    auto_sent.csv. Returns {"name", "modem", "wrap"}; raises OSError if fldigi isn't there."""
+    with open(path, "rb") as f:
+        data = f.read()
+    name = os.path.basename(path)
+    text, wrapped = wrap_for_fldigi(name, data)
+    proxy = fldigi(timeout=15)
+    try:
+        if modem:
+            proxy.modem.set_by_name(modem)
+        used = str(proxy.modem.get_name())
+        try:
+            proxy.text.add_tx_queu(text + "^r")  # ^r: back to receive once it's sent
+        except xmlrpc.client.Fault:  # an fldigi from before the queued form
+            proxy.text.add_tx(text + "^r")
+        proxy.main.tx()
+    except xmlrpc.client.Error as exc:
+        raise OSError(f"fldigi didn't accept the message: {exc}") from None
+    try:
+        os.makedirs(WRAP_SEND_DIR, exist_ok=True)
+        wrap_path = os.path.join(WRAP_SEND_DIR, name + ".wrap")
+        with open(wrap_path, "wb") as f:
+            f.write(wrapped)
+        os.makedirs(os.path.dirname(SENT_LOG), exist_ok=True)
+        with open(SENT_LOG, "a", encoding="utf-8") as f:  # a line as flmsg appends it; no header
+            f.write(f"{name},{time.strftime('%Y-%m-%d,%H%M', time.gmtime())}\n")
+    except OSError:
+        wrap_path = None  # sent all the same
+    return {"name": name, "modem": used, "wrap": wrap_path}
+
+
+def main_send(args):
+    modem = None
+    if "--modem" in args:
+        i = args.index("--modem")
+        modem = args[i + 1] if i + 1 < len(args) else None
+        del args[i:i + 2]
+    if len(args) != 1:
+        print("emcomm-ics send MSG.213 [--modem NAME]", file=sys.stderr)
+        return 2
+    if not fldigi_status().get("online"):
+        print("fldigi isn't running. Open it from its tile first.", file=sys.stderr)
+        return 1
+    try:
+        print(json.dumps(send_to_fldigi(args[0], modem)))
+    except OSError as exc:
+        print(f"Couldn't send: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main_213(args):
     if args == ["--list"]:
         print(json.dumps(list_213()))
@@ -349,11 +521,19 @@ def write_out(text, path):
 
 
 def main(argv):
-    if not argv or argv[0] not in ("309", "205", "213"):
+    if not argv or argv[0] not in ("309", "205", "213", "list", "fldigi", "send"):
         print(__doc__.strip(), file=sys.stderr)
         return 2
     if argv[0] == "213":
         return main_213(argv[1:])
+    if argv[0] == "list":
+        print(json.dumps(list_forms()))
+        return 0
+    if argv[0] == "fldigi":
+        print(json.dumps(fldigi_status(modems="--modems" in argv[1:])))
+        return 0
+    if argv[0] == "send":
+        return main_send(argv[1:])
     try:
         with open(STATION, encoding="utf-8") as f:
             station = json.load(f)

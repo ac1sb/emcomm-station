@@ -1427,13 +1427,31 @@ ICS213_HINTS = {"inc": "Incident name (optional)", "to": "Name", "p1": "Position
                 "p2": "Position", "sb": "Subject", "d1": "Date", "t1": "Time", "d2": "Date", "t2": "Time"}
 
 
-# ICS-213 messages: flmsg's files, shown on FEMA's form (emcomm-ics fills in the PDF).
-def ics213_messages():
+# The Forms page: ICS-213 messages (flmsg's files, shown on FEMA's form: emcomm-ics fills in
+# the PDF), nets and filled-in ICS-309 and ICS-205 pages, in one list.
+FORMS_FILTERS = [("all", "Everything"), ("213", "ICS-213 messages"), ("net", "Nets"),
+                 ("forms", "ICS-309 and ICS-205 forms")]
+
+
+def forms_list():
+    """Every message, net and filled-in form, newest first, from emcomm-ics list."""
     try:
-        result = subprocess.run([ICS_CMD, "213", "--list"], capture_output=True, text=True, timeout=20, check=False)
-        return json.loads(result.stdout) if result.returncode == 0 else []
+        result = subprocess.run([ICS_CMD, "list"], capture_output=True, text=True, timeout=20, check=False)
+        found = json.loads(result.stdout) if result.returncode == 0 else []
     except (OSError, ValueError, subprocess.TimeoutExpired):
-        return []
+        found = []
+    return [m for m in found if isinstance(m, dict) and m.get("path")] if isinstance(found, list) else []
+
+
+def fldigi_status(modems=False):
+    """Whether fldigi is running, its modem and whether it's transmitting (emcomm-ics fldigi)."""
+    try:
+        result = subprocess.run([ICS_CMD, "fldigi"] + (["--modems"] if modems else []), capture_output=True,
+                                text=True, timeout=20, check=False)
+        status = json.loads(result.stdout) if result.returncode == 0 else {}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        status = {}
+    return status if isinstance(status, dict) else {"online": False}
 
 
 def open_net():
@@ -1771,7 +1789,7 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._wifi_page(), "wifi")
         self.stack.add_named(self._online_page(), "online")
         self.stack.add_named(self._net_page(), "net")
-        self.stack.add_named(self._ics213_page(), "ics213")
+        self.stack.add_named(self._forms_page(), "forms")
         self.stack.add_named(self._ics213_editor(), "ics213-edit")
         self.stack.add_named(self._recorder_page(), "recorder")
         root.pack_start(self.stack, True, True, 0)
@@ -1903,10 +1921,10 @@ class Launcher(Gtk.Window):
 
     def _on_key(self, _widget, event):
         """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online,
-        F8 Net control, F9 ICS-213 messages, 1-9 open a tile on Home, Page Up/Down change Home page."""
+        F8 Net control, F9 Forms, 1-9 open a tile on Home, Page Up/Down change Home page."""
         pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home", Gdk.KEY_F2: "diagnostics",
                  Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs", Gdk.KEY_F5: "reference", Gdk.KEY_F6: "wifi",
-                 Gdk.KEY_F7: "online", Gdk.KEY_F8: "net", Gdk.KEY_F9: "ics213"}
+                 Gdk.KEY_F7: "online", Gdk.KEY_F8: "net", Gdk.KEY_F9: "forms"}
         if event.keyval in pages:
             self.stack.set_visible_child_name(pages[event.keyval])
             return True
@@ -4162,6 +4180,8 @@ class Launcher(Gtk.Window):
         self.log_combo.set_active_id("notes")
         self.log_combo.connect("changed", lambda *_: self._show_log())
         header.pack_start(self.log_combo, False, False, 0)
+        header.pack_end(self._navbtn("Forms  F9", lambda *_: self.stack.set_visible_child_name("forms"), "primary"),
+                        False, False, 0)
         header.pack_end(self._navbtn("Recorder", lambda *_: self.stack.set_visible_child_name("recorder")),
                         False, False, 0)
         header.pack_end(self._navbtn("Refresh", lambda *_: self._show_log()), False, False, 0)
@@ -4217,7 +4237,7 @@ class Launcher(Gtk.Window):
     def _net_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
         header = Gtk.Box(spacing=12)
-        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")),
+        header.pack_start(self._navbtn("‹ Forms", lambda *_: self.stack.set_visible_child_name("forms")),
                           False, False, 0)
         title = Gtk.Label(label="Net control", xalign=0)
         title.get_style_context().add_class("title")
@@ -4325,6 +4345,7 @@ class Launcher(Gtk.Window):
             self.ncs["entries"].append({"time": now, "from": self.ncs["callsign"], "to": "",
                                         "message": f"Net opened{' on ' + freq if freq else ''}"})
             save_net(self.ncs_path, self.ncs)
+        self.forms_listed = None  # the Forms list shows the net's new state
         self._net_show()
 
     def _net_add(self, checkin):
@@ -4372,129 +4393,415 @@ class Launcher(Gtk.Window):
         self._run_ics(["205", "--incident", self.ncs_incident.get_text().strip()],
                       "ICS-205 Radio Communications Plan")
 
-    def _run_ics(self, args, title):
-        """Fill in the form with emcomm-ics and show it, with a Print button."""
+    def _run_ics(self, args, title, status=None):
+        """Fill in the form with emcomm-ics and show it, with a Print button. What happened
+        goes on `status` (the Net control page's line unless another is given)."""
+        status = status or self.ncs_status
         try:
             result = subprocess.run([ICS_CMD] + args, capture_output=True, text=True, timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            self.ncs_status.set_text(f"Couldn't fill in the form: {exc}")
+            status.set_text(f"Couldn't fill in the form: {exc}")
             return
         if result.returncode != 0:
-            self.ncs_status.set_text(result.stderr.strip().splitlines()[-1] if result.stderr.strip()
-                                     else "Couldn't fill in the form.")
+            status.set_text(result.stderr.strip().splitlines()[-1] if result.stderr.strip()
+                            else "Couldn't fill in the form.")
             return
         path = result.stdout.strip().splitlines()[-1]
-        self.ncs_status.set_text(f"Saved to {path.replace(os.path.expanduser('~'), '~')}")
+        status.set_text(f"Saved to {path.replace(os.path.expanduser('~'), '~')}")
+        self.forms_listed = None  # it joins the Forms list
         if shutil.which("emcomm-webview"):
             run_detached(["emcomm-webview", "--print", GLib.filename_to_uri(path, None), title])
 
-    # ---- ICS-213 messages ------------------------------------------------
+    # ---- Forms: ICS-213 messages, nets and ICS forms in one list -------------
 
-    def _ics213_page(self):
+    def _forms_page(self):
+        """Every ICS-213 message, net and filled-in ICS-309 or ICS-205 in one list, newest
+        first. New ▾ starts another; a message can be sent over the radio from here."""
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
         header = Gtk.Box(spacing=12)
         header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")),
                           False, False, 0)
-        title = Gtk.Label(label="ICS-213 messages", xalign=0)
+        title = Gtk.Label(label="Forms", xalign=0)
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
+        self.forms_filter = PickList()
+        for value, label in FORMS_FILTERS:
+            self.forms_filter.append(value, label)
+        self.forms_filter.set_active_id("all")
+        self.forms_filter.connect("changed", lambda *_: self._forms_fill(self.forms_found))
+        header.pack_start(self.forms_filter, False, False, 0)
         self.f213_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         self.f213_status.get_style_context().add_class("muted")
         header.pack_start(self.f213_status, True, True, 0)
-        header.pack_end(self._navbtn("New message", lambda *_: self._ics213_write(None), "primary"),
-                        False, False, 0)
-        self.f213_open_btn = self._navbtn("Reply or edit", lambda *_: self._ics213_write(self.f213_path))
-        self.f213_flmsg_btn = self._navbtn("Open in flmsg", self._ics213_edit)
-        self.f213_print_btn = self._navbtn("Print", self._ics213_print)
-        header.pack_end(self.f213_open_btn, False, False, 0)
-        header.pack_end(self.f213_flmsg_btn, False, False, 0)
-        header.pack_end(self.f213_print_btn, False, False, 0)
+        new = Gtk.MenuButton(label="New  ▾")
+        for cls in ("navbtn", "primary"):
+            new.get_style_context().add_class(cls)
+        new.set_popover(self._forms_new_menu(new))
+        header.pack_end(new, False, False, 0)
+        # Right to left after New; each shows for the kind of thing picked.
+        self.f213_send_btn = self._navbtn("Send by radio", lambda *_: self._forms_send(), "primary")
+        self.f213_open_btn = self._navbtn("Reply / Edit", lambda *_: self._ics213_write(self.f213_path))
+        self.f213_more_btn, (self.f213_print_btn, self.f213_flmsg_btn) = self._more_menu(
+            (("Print", self._ics213_print), ("Open in flmsg", self._ics213_edit)))
+        self.forms_net_btn = self._navbtn("Net control  F8", lambda *_: self.stack.set_visible_child_name("net"),
+                                          "primary")
+        self.forms_309_btn = self._navbtn("ICS-309 log", lambda *_: self._forms_ics309())
+        self.forms_open_btn = self._navbtn("Open / Print", lambda *_: self._forms_open(), "primary")
+        self.forms_kind_btns = {"213": [self.f213_send_btn, self.f213_open_btn, self.f213_more_btn],
+                                "net": [self.forms_net_btn, self.forms_309_btn],
+                                "form": [self.forms_open_btn]}
+        for btns in self.forms_kind_btns.values():
+            for btn in btns:
+                btn.set_no_show_all(True)
+                header.pack_end(btn, False, False, 0)
         page.pack_start(header, False, False, 0)
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True)
-        self.f213_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.BROWSE)
-        self.f213_list.connect("row-selected", self._ics213_selected)
+        self.forms_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.BROWSE)
+        self.forms_list.connect("row-selected", self._forms_selected)
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        scroller.set_size_request(300, -1)
-        scroller.add(self.f213_list)
+        scroller.set_size_request(320, -1)
+        scroller.add(self.forms_list)
         paned.pack1(scroller, False, False)
+        self.forms_view = Gtk.Stack()
         self.f213_form = Gtk.DrawingArea()
         self.f213_form.connect("draw", self._ics213_draw)
         self.f213_form.connect("size-allocate", lambda *_: self._ics213_fit())
         self.f213_scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         self.f213_scroller.add(self.f213_form)
-        paned.pack2(self.f213_scroller, True, False)
+        self.forms_view.add_named(self.f213_scroller, "pdf")
+        self.forms_text = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                       left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        text_scroller = Gtk.ScrolledWindow()
+        text_scroller.add(self.forms_text)
+        self.forms_view.add_named(text_scroller, "text")
+        paned.pack2(self.forms_view, True, False)
         page.pack_start(paned, True, True, 0)
 
-        self.f213_listed, self.f213_doc, self.f213_path = None, None, None
-        page.connect("map", lambda *_: self._ics213_tick(page))
+        self.forms_found, self.forms_listed, self.forms_item = [], None, None
+        self.f213_doc, self.f213_path = None, None
+        page.connect("map", lambda *_: self._forms_tick(page))
         return page
 
-    def _ics213_tick(self, page):
-        """While the page shows, look for new or changed messages every few seconds. The
-        list comes from a separate program, so it's asked off the screen's thread."""
+    def _more_menu(self, items):
+        """More ▾ for buttons a header has no room for (the screen is 1024 px wide): the menu
+        button and the buttons in it, so they can be greyed out as usual."""
+        button = Gtk.MenuButton(label="More  ▾")
+        button.get_style_context().add_class("navbtn")
+        menu = Gtk.Popover(relative_to=button, position=Gtk.PositionType.BOTTOM)
+        menu.get_style_context().add_class("station-menu")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+
+        def go(item, handler):
+            menu.popdown()
+            handler(item)
+
+        buttons = []
+        for label, handler in items:
+            item = self._navbtn(label, lambda b, h=handler: go(b, h))
+            item.get_child().set_xalign(0)
+            item.set_size_request(200, -1)
+            box.pack_start(item, False, False, 0)
+            buttons.append(item)
+        box.show_all()
+        menu.add(box)
+        button.set_popover(menu)
+        return button, buttons
+
+    def _forms_new_menu(self, button):
+        """New ▾: what can be started from the Forms page."""
+        menu = Gtk.Popover(relative_to=button, position=Gtk.PositionType.BOTTOM)
+        menu.get_style_context().add_class("station-menu")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+
+        def go(handler):
+            menu.popdown()
+            handler()
+
+        for label, handler in (("ICS-213 message", lambda: self._ics213_write(None)),
+                               ("Net log  (Net control)", self._forms_new_net),
+                               ("ICS-309 Communications Log  (of the net)", self._forms_ics309),
+                               ("ICS-205 Radio Communications Plan  (My frequencies)", self._forms_ics205)):
+            item = self._navbtn(label, lambda _b, h=handler: go(h))
+            item.get_child().set_xalign(0)
+            item.set_size_request(360, -1)
+            box.pack_start(item, False, False, 0)
+        box.show_all()
+        menu.add(box)
+        return menu
+
+    def _forms_new_net(self):
+        self.stack.set_visible_child_name("net")
+        if not self.ncs:
+            GLib.idle_add(lambda: self.ncs_name.grab_focus() and False)
+
+    def _forms_ics309(self):
+        """The ICS-309 for the net picked in the list, else the open or last net."""
+        item = self.forms_item
+        path = item["path"] if item and item.get("kind") == "net" else self.ncs_path
+        if not path:
+            nets = sorted(glob.glob(os.path.join(NETS_DIR, "*.json")))
+            path = nets[-1] if nets else None
+        if not path:
+            self.f213_status.set_text("No nets logged yet: New ▾ Net log starts one.")
+            return
+        self._run_ics(["309", path], "ICS-309 Communications Log", self.f213_status)
+
+    def _forms_ics205(self):
+        _path, net = open_net()
+        incident = (net or {}).get("incident") or self.ncs_incident.get_text().strip()
+        self._run_ics(["205", "--incident", incident], "ICS-205 Radio Communications Plan", self.f213_status)
+
+    def _forms_tick(self, page):
+        """While the page shows, look for new or changed items every few seconds. The list
+        comes from a separate program, so it's asked off the screen's thread."""
         if not page.get_mapped():
-            self.f213_ticking = False
+            self.forms_ticking = False
             return False
-        if not getattr(self, "f213_busy", False):
-            self.f213_busy = True
-            threading.Thread(target=lambda: GLib.idle_add(self._ics213_found, ics213_messages()),
-                             daemon=True).start()
-        if not getattr(self, "f213_ticking", False):
-            self.f213_ticking = True
-            GLib.timeout_add_seconds(4, self._ics213_tick, page)
+        if not getattr(self, "forms_busy", False):
+            self.forms_busy = True
+            threading.Thread(target=lambda: GLib.idle_add(self._forms_found, forms_list()), daemon=True).start()
+        if not getattr(self, "forms_ticking", False):
+            self.forms_ticking = True
+            GLib.timeout_add_seconds(4, self._forms_tick, page)
         return True
 
-    def _ics213_found(self, found):
-        self.f213_busy = False
-        stamp = [(m["path"], m["modified"]) for m in found]
-        if stamp != self.f213_listed:
-            self.f213_listed = stamp
-            self._ics213_fill(found)
+    def _forms_found(self, found):
+        self.forms_busy = False
+        stamp = [(m["path"], m.get("modified"), m.get("open")) for m in found]
+        if stamp != self.forms_listed:
+            self.forms_listed, self.forms_found = stamp, found
+            self._forms_fill(found)
         return False
 
-    def _ics213_fill(self, found):
-        keep = self.f213_path
-        for child in self.f213_list.get_children():
-            self.f213_list.remove(child)
-        for message in found:
+    def _forms_fill(self, found):
+        keep = self.forms_item["path"] if self.forms_item else None
+        kind = self.forms_filter.get_active_id() or "all"
+        shown = [m for m in found if kind == "all" or m.get("kind") == kind
+                 or (kind == "forms" and m.get("kind") in ("309", "205", "form"))]
+        for child in self.forms_list.get_children():
+            self.forms_list.remove(child)
+        for item in shown:
             row = Gtk.ListBoxRow()
-            row.message = message
+            row.item = item
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin=8)
-            subject = Gtk.Label(label=message["subject"] or "(no subject)", xalign=0,
-                                ellipsize=Pango.EllipsizeMode.END)
-            subject.get_style_context().add_class("tile-name")
-            other = message["from"] if message["folder"] == "Received" else message["to"]
-            detail = " · ".join(filter(None, [message["folder"], ("from " if message["folder"] == "Received" else "to ")
-                                              + other if other else "", message["date"], message["time"]]))
-            note = Gtk.Label(label=detail, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            name = Gtk.Label(label=("● " if item.get("open") else "") + (item.get("title") or "(untitled)"), xalign=0,
+                             ellipsize=Pango.EllipsizeMode.END)
+            name.get_style_context().add_class("tile-name")
+            note = Gtk.Label(label=item.get("detail", ""), xalign=0, ellipsize=Pango.EllipsizeMode.END)
             note.get_style_context().add_class("tile-detail")
-            box.pack_start(subject, False, False, 0)
+            box.pack_start(name, False, False, 0)
             box.pack_start(note, False, False, 0)
             row.add(box)
-            self.f213_list.add(row)
-        if not found:
+            self.forms_list.add(row)
+        if not shown:
             hint = Gtk.Label(xalign=0, wrap=True, margin=12, label=(
-                "No ICS-213 messages yet.\n\nTap New message to type one on the form. "
-                "Messages fldigi receives show here too.\n\nThis is the blank form; Print gives you paper copies."))
+                "Nothing here yet.\n\nNew ▾ starts an ICS-213 message (typed on the form), a net log, "
+                "or an ICS-309 or ICS-205 form. Messages fldigi receives show here too.\n\n"
+                "This is the blank ICS-213; Print gives you paper copies."))
             hint.get_style_context().add_class("muted")
             row = Gtk.ListBoxRow(selectable=False, activatable=False)
             row.add(hint)
-            self.f213_list.add(row)
-        self.f213_list.show_all()
-        if not found:
-            self.f213_status.set_text("")
-            self._ics213_show(None)
+            self.forms_list.add(row)
+        self.forms_list.show_all()
+        if not shown:
+            self._forms_show(None)
             return
-        rows = self.f213_list.get_children()
-        pick = next((r for r in rows if r.message["path"] == keep), rows[0])
-        if pick.message["path"] == keep:
-            self.f213_path = None  # the file may have changed: fill in the form again
-        self.f213_list.select_row(pick)
+        rows = [r for r in self.forms_list.get_children() if hasattr(r, "item")]
+        pick = next((r for r in rows if r.item["path"] == keep), rows[0])
+        if self.forms_item and pick.item["path"] == keep and pick.item.get("modified") == self.forms_item.get("modified"):
+            # Unchanged: keep what's shown and the line above it (a "Saved to" note, say).
+            self.forms_item = pick.item
+            self.forms_list.select_row(pick)
+            return
+        self.forms_item = None  # the file may have changed: show it again
+        self.forms_list.select_row(pick)
+        if self.forms_item is None:  # the same row again: no row-selected signal
+            self._forms_show(pick.item)
 
-    def _ics213_selected(self, _listbox, row):
-        if row is not None and row.message["path"] != self.f213_path:
-            self._ics213_show(row.message["path"])
+    def _forms_selected(self, _listbox, row):
+        if row is not None and hasattr(row, "item") and (self.forms_item is None
+                                                         or row.item["path"] != self.forms_item["path"]):
+            self._forms_show(row.item)
+
+    def _forms_show(self, item):
+        """Show the item picked: a message on the form, a net as its log, a form by name."""
+        self.forms_item = item
+        kind = item.get("kind") if item else None
+        group = "213" if kind == "213" else "net" if kind == "net" else "form" if kind else None
+        for name, btns in self.forms_kind_btns.items():
+            for btn in btns:
+                btn.set_visible(name == group)
+        if group in ("213", None):
+            self.forms_view.set_visible_child_name("pdf")
+            self._ics213_show(item["path"] if item else None)
+            return
+        self.f213_path, self.f213_doc = None, None
+        if kind == "net":
+            net = read_json(item["path"], {})
+            net = net if isinstance(net, dict) else {}
+            lines = [net.get("name") or "Net", item.get("detail", "")]
+            if net.get("incident"):
+                lines.append(f"Incident: {net['incident']}")
+            operator = " ".join(filter(None, [net.get("operator", ""), net.get("callsign", "")]))
+            if operator:
+                lines.append(f"Net control: {operator}")
+            if net.get("frequency"):
+                lines.append(f"Frequency: {net['frequency']}")
+            text = "\n".join(lines) + "\n\n" + net_lines(net)
+            self.f213_status.set_text("Net control logs check-ins and traffic; ICS-309 log fills in the form for "
+                                      "this net.")
+        else:
+            text = (f"{item.get('title', '')}\n{item.get('detail', '')}\n\n"
+                    "Open / Print shows the filled-in form with a Print button; the print dialog can also "
+                    f"save a PDF to a USB stick.\n\nKept at {item['path'].replace(os.path.expanduser('~'), '~')}\n")
+            self.f213_status.set_text("")
+        self.forms_view.set_visible_child_name("text")
+        self.forms_text.get_buffer().set_text(text)
+
+    def _forms_open(self):
+        item = self.forms_item
+        if item and shutil.which("emcomm-webview"):
+            run_detached(["emcomm-webview", "--print", GLib.filename_to_uri(item["path"], None),
+                          item.get("title") or "Form"])
+
+    def _forms_send(self):
+        if self.f213_path:
+            self._send_dialog(self.f213_path)
+
+    # ---- sending a message over the radio through fldigi -------------------
+
+    def _send_dialog(self, path):
+        """Send an flmsg message file the way flmsg's AutoSend does (emcomm-ics send): the
+        modem is picked here, fldigi is started if need be, and the dialog says when fldigi
+        is back on receive."""
+        dialog = Gtk.Dialog(title="Send over the radio", transient_for=self, modal=True)
+        dialog.set_default_size(620, -1)
+        box = dialog.get_content_area()
+        box.set_spacing(12)
+        box.set_property("margin", 16)
+        name = Gtk.Label(label=f"Send {os.path.basename(path)} with fldigi", xalign=0)
+        name.get_style_context().add_class("tile-name")
+        status = Gtk.Label(label="Looking for fldigi…", xalign=0, wrap=True)
+        modem = PickList()
+        box.pack_start(name, False, False, 0)
+        box.pack_start(status, False, False, 0)
+        box.pack_start(self._field("Modem (the one the net uses; MT63-2000L is usual on VHF)", modem),
+                       False, False, 0)
+        start_btn = dialog.add_button("Start fldigi", 1)
+        send_btn = dialog.add_button("Send", Gtk.ResponseType.OK)
+        send_btn.get_style_context().add_class("primary")
+        send_btn.set_sensitive(False)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        state = {"online": False, "sending": False, "sent": None, "starting": None, "closed": False}
+
+        def check(delay=0):
+            def ask():
+                if not state["closed"]:
+                    threading.Thread(target=lambda: GLib.idle_add(found, fldigi_status(modems=True)),
+                                     daemon=True).start()
+                return False
+            if delay:
+                GLib.timeout_add_seconds(delay, ask)
+            else:
+                ask()
+
+        def found(st):
+            if state["closed"]:
+                return False
+            if st.get("online"):
+                if not state["online"]:
+                    state["online"] = True
+                    names = st.get("modems") or [st.get("modem") or ""]
+                    modem.remove_all()
+                    for n in names:
+                        modem.append(n, n)
+                    modem.set_active_id(st.get("modem") if st.get("modem") in names else names[0])
+                start_btn.hide()
+                if state["sent"]:
+                    if st.get("trx") == "rx":
+                        status.set_text(f"Sent as {state['sent']}. fldigi is back on receive.")
+                        send_btn.set_label("Send again")
+                        send_btn.set_sensitive(True)
+                    else:
+                        status.set_text(f"Transmitting as {state['sent']}… the radio stays keyed until it's "
+                                        "through.")
+                        check(2)
+                elif not state["sending"]:
+                    status.set_text(f"fldigi is running, on {st.get('modem', '?')}. Pick the modem the net uses and "
+                                    "tap Send: fldigi keys the radio and sends the message.")
+                    send_btn.set_sensitive(True)
+            else:
+                state["online"] = False
+                send_btn.set_sensitive(False)
+                start_btn.show()
+                if state["starting"] and time.time() - state["starting"] < 90:
+                    status.set_text("Starting fldigi… its window opens in a few seconds.")
+                    check(2)
+                elif state["starting"]:
+                    state["starting"] = None
+                    start_btn.set_sensitive(True)
+                    status.set_text("fldigi didn't start. Open it from its tile on Home, then tap Send.")
+                else:
+                    status.set_text("fldigi isn't running. Tap Start fldigi; once its window is up, tap Send.")
+            return False
+
+        def sent(outcome):
+            if state["closed"]:
+                return False
+            state["sending"] = False
+            ok, info = outcome
+            if ok:
+                state["sent"] = info
+                status.set_text(f"In fldigi's transmit buffer as {info}: the radio is keyed until it's through.")
+                self.f213_status.set_text(f"Sent {os.path.basename(path)} as {info} with fldigi at "
+                                          f"{time.strftime('%H%MZ', time.gmtime())}.")
+                check(2)
+            else:
+                status.set_text(info)
+                send_btn.set_sensitive(True)
+            return False
+
+        def send():
+            chosen = modem.get_active_id()
+            state["sending"], state["sent"] = True, None
+            send_btn.set_sensitive(False)
+            status.set_text("Sending…")
+
+            def work():
+                try:
+                    result = subprocess.run([ICS_CMD, "send", path] + (["--modem", chosen] if chosen else []),
+                                            capture_output=True, text=True, timeout=60, check=False)
+                    if result.returncode == 0:
+                        outcome = (True, json.loads(result.stdout).get("modem") or chosen or "the current modem")
+                    else:
+                        outcome = (False, (result.stderr.strip().splitlines() or ["Couldn't send."])[-1])
+                except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                    outcome = (False, f"Couldn't send: {exc}")
+                GLib.idle_add(sent, outcome)
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def respond(_dialog, response):
+            if response == Gtk.ResponseType.OK:
+                send()
+            elif response == 1:
+                if not shutil.which("fldigi"):
+                    status.set_text("fldigi isn't installed: tap its tile on Home to install it.")
+                    return
+                state["starting"] = time.time()
+                start_btn.set_sensitive(False)
+                status.set_text("Starting fldigi… its window opens in a few seconds.")
+                run_detached(["emcomm-start", "fldigi"])
+                check(3)
+            else:
+                state["closed"] = True
+                dialog.destroy()
+
+        dialog.connect("response", respond)
+        dialog.show_all()
+        start_btn.hide()
+        check()
 
     def _ics213_show(self, path):
         """Fill FEMA's form from the flmsg file and draw it; with no file, draw the blank form."""
@@ -4523,6 +4830,7 @@ class Launcher(Gtk.Window):
         self.f213_print_btn.set_sensitive(self.f213_doc is not None)
         self.f213_open_btn.set_sensitive(path is not None)
         self.f213_flmsg_btn.set_sensitive(path is not None)
+        self.f213_send_btn.set_sensitive(path is not None)
         self._ics213_fit()
         self.f213_form.queue_draw()
 
@@ -4576,12 +4884,13 @@ class Launcher(Gtk.Window):
     # ---- typing an ICS-213 on the form ------------------------------------
     # The blank FEMA form is drawn and a box sits on each of its fields, so the
     # message is typed where it goes on paper. It's saved as an flmsg file, so
-    # flmsg sends it and the messages list shows it.
+    # it can go over the radio through fldigi, flmsg can open it, and the Forms
+    # list shows it.
 
     def _ics213_editor(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
         header = Gtk.Box(spacing=12)
-        header.pack_start(self._navbtn("‹ Messages", lambda *_: self.stack.set_visible_child_name("ics213")),
+        header.pack_start(self._navbtn("‹ Forms", lambda *_: self.stack.set_visible_child_name("forms")),
                           False, False, 0)
         self.f213e_title = Gtk.Label(xalign=0)
         self.f213e_title.get_style_context().add_class("title")
@@ -4589,10 +4898,12 @@ class Launcher(Gtk.Window):
         self.f213e_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         self.f213e_status.get_style_context().add_class("muted")
         header.pack_start(self.f213e_status, True, True, 0)
-        header.pack_end(self._navbtn("Send with flmsg", lambda *_: self._ics213_editor_send(), "primary"),
+        header.pack_end(self._navbtn("Send by radio", lambda *_: self._ics213_editor_send(), "primary"),
                         False, False, 0)
         header.pack_end(self._navbtn("Save", lambda *_: self._ics213_editor_save()), False, False, 0)
-        header.pack_end(self._navbtn("Print", lambda *_: self._ics213_editor_print()), False, False, 0)
+        more, _ = self._more_menu((("Print", lambda *_: self._ics213_editor_print()),
+                                   ("Open in flmsg", lambda *_: self._ics213_editor_flmsg())))
+        header.pack_end(more, False, False, 0)
         page.pack_start(header, False, False, 0)
 
         self.f213e_doc = None
@@ -4721,11 +5032,18 @@ class Launcher(Gtk.Window):
             return None
         self.f213e_path = path
         self.f213e_title.set_text("Edit ICS-213")
-        self.f213e_status.set_text("Saved " + time.strftime("%H:%MZ", time.gmtime()) + ". It's in the messages list.")
-        self.f213_listed = None  # list it next time the messages page shows
+        self.f213e_status.set_text("Saved " + time.strftime("%H:%MZ", time.gmtime()) + ". It's in the Forms list.")
+        self.forms_listed = None  # list it next time the Forms page shows, picked and ready to send
+        self.forms_item = {"kind": "213", "path": path}
         return path
 
     def _ics213_editor_send(self):
+        """Save, then send through fldigi (the dialog starts fldigi if it isn't running)."""
+        path = self._ics213_editor_save()
+        if path:
+            self._send_dialog(path)
+
+    def _ics213_editor_flmsg(self):
         path = self._ics213_editor_save()
         if not path:
             return
@@ -4733,12 +5051,13 @@ class Launcher(Gtk.Window):
             self.f213e_status.set_text("Saved. flmsg isn't installed: tap its tile on Home to install it.")
             return
         run_detached(["emcomm-start", "flmsg", path])
-        self.f213e_status.set_text("Opened in flmsg: with fldigi open, press AutoSend in flmsg's menu bar to send it.")
+        self.f213e_status.set_text("Opened in flmsg.")
 
     def _ics213_editor_print(self):
         path = self._ics213_editor_save()
         if path:
             self.f213_path = None
+            self.forms_view.set_visible_child_name("pdf")
             self._ics213_show(path)
             self._ics213_print()
 
