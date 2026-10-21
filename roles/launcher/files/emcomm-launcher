@@ -755,8 +755,11 @@ def mount_usb_sticks():
     if not shutil.which("udisksctl"):
         return
     for link in glob.glob("/dev/disk/by-id/usb-*-part*"):
-        subprocess.run(["udisksctl", "mount", "--no-user-interaction", "-b", os.path.realpath(link)],
-                       capture_output=True, check=False)
+        try:
+            subprocess.run(["udisksctl", "mount", "--no-user-interaction", "-b", os.path.realpath(link)],
+                           capture_output=True, check=False, timeout=20)
+        except subprocess.TimeoutExpired:  # a damaged stick: don't hold the launcher for it
+            pass
 
 
 def run_detached(argv):
@@ -957,7 +960,7 @@ def read_freqs(path):
                 rows.append({"MHz": mhz, "Mode": (row.get("Mode") or "").strip().upper(),
                              "Name": (row.get("Name") or "").strip(), "Note": (row.get("Note") or "").strip(),
                              "Offset": to_float(row.get("Offset")), "Tone": to_float(row.get("Tone"))})
-    except OSError:
+    except (OSError, csv.Error, ValueError):  # unreadable, or damaged by a power cut: an empty list
         pass
     return rows
 
@@ -975,13 +978,14 @@ def freq_detail(row):
 
 def write_freqs(path, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="") as f:
+    with open(path + ".tmp", "w", encoding="utf-8", newline="") as f:
         out = csv.DictWriter(f, FREQ_FIELDS)
         out.writeheader()
         for row in rows:
             out.writerow({**row, "MHz": f"{row['MHz']:.6f}".rstrip("0").rstrip("."),
                           "Offset": "" if row.get("Offset") is None else f"{row['Offset']:+g}",
                           "Tone": f"{row['Tone']:g}" if row.get("Tone") else ""})
+    os.replace(path + ".tmp", path)  # whole or untouched, even through a power cut
     if path == MY_FREQS:
         export_chirp(rows)
 
@@ -1230,9 +1234,17 @@ LOG_SOURCES = [
 
 
 def tail_file(path, lines=400):
+    """The last `lines` of a file, read from its end: ALL.TXT grows for months."""
     try:
-        with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as f:
-            return "".join(f.readlines()[-lines:]) or "(empty)\n"
+        with open(os.path.expanduser(path), "rb") as f:
+            end = f.seek(0, os.SEEK_END)
+            data, pos = b"", end
+            while pos > 0 and data.count(b"\n") <= lines:
+                pos = max(0, pos - 65536)
+                f.seek(pos)
+                data = f.read(end - pos)
+            text = data.decode("utf-8", errors="replace")
+            return "\n".join(text.splitlines()[-lines:]) + "\n" if text else "(empty)\n"
     except FileNotFoundError:
         return "Nothing logged yet.\n"
     except OSError as exc:
@@ -1673,6 +1685,8 @@ class Launcher(Gtk.Window):
         self.choices = {}
         self._filling = False
         self.default_audio_card = None
+        self._poll_lock = threading.Lock()  # one status check at a time
+        self._audio_lock = threading.Lock()  # the default-audio choice and the check that applies it
         self.net_connected = False
         self.nwr_shown = set()
         self.css_provider = None
@@ -1718,8 +1732,10 @@ class Launcher(Gtk.Window):
         self.connect("key-press-event", self._on_key)
         self.home_bar = HomeBar(self)
         GLib.timeout_add_seconds(8, self._recorder_autostart)
-        # A keyboard left over from before the launcher restarted would not hide from here.
-        subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "onboard"], capture_output=True, check=False)
+        # A keyboard left over from before the launcher restarted would not hide from here
+        # (not on a desktop, where an Onboard running is the person's own).
+        if not self.desktop or self.session:
+            subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "onboard"], capture_output=True, check=False)
         self._watch_text_entries()
 
     def go_home(self):
@@ -1934,13 +1950,20 @@ class Launcher(Gtk.Window):
         return text
 
     def _poll_status(self):
+        # One check at a time: when nmcli is slow, checks mustn't pile up or report out of order.
+        if not self._poll_lock.acquire(blocking=False):
+            return True
+
         def work():
-            freq = format_freq(rigctld_query(*RIGCTLD, "f"))
-            audio = os.path.exists("/proc/asound/rigaudio")
-            self._default_audio_to_radio(audio)
-            net = self._network_summary()
-            gps = gps_fix() if os.path.exists(GPS_DEV) else "absent"
-            GLib.idle_add(self._show_status, freq, audio, net, gps)
+            try:
+                freq = format_freq(rigctld_query(*RIGCTLD, "f"))
+                audio = os.path.exists("/proc/asound/rigaudio")
+                self._default_audio_to_radio(audio)
+                net = self._network_summary()
+                gps = gps_fix() if os.path.exists(GPS_DEV) else "absent"
+                GLib.idle_add(self._show_status, freq, audio, net, gps)
+            finally:
+                self._poll_lock.release()
 
         threading.Thread(target=work, daemon=True).start()
         return True
@@ -1978,19 +2001,20 @@ class Launcher(Gtk.Window):
         """Each time the radio's sound card appears, make it the default audio device.
         Retried on later polls until PipeWire has picked the card up."""
         card = os.path.realpath("/proc/asound/rigaudio") if audio else None
-        choice = self._audio_choice()
-        if choice == "never":
-            return
-        if card and card != self.default_audio_card and shutil.which("emcomm-audio-default"):
-            if choice == "while_open":
-                save_sound_before()
-                if self.audio["quiet"]:
-                    alert_sounds(False)  # so a notification ding isn't transmitted
-            result = subprocess.run(["emcomm-audio-default"], capture_output=True, check=False)
-            if result.returncode == 0:
-                self.default_audio_card = card
-        elif not card:
-            self.default_audio_card = None
+        with self._audio_lock:  # Settings > Audio can't change the choice halfway through
+            choice = self._audio_choice()
+            if choice == "never":
+                return
+            if card and card != self.default_audio_card and shutil.which("emcomm-audio-default"):
+                if choice == "while_open":
+                    save_sound_before()
+                    if self.audio["quiet"]:
+                        alert_sounds(False)  # so a notification ding isn't transmitted
+                result = subprocess.run(["emcomm-audio-default"], capture_output=True, check=False)
+                if result.returncode == 0:
+                    self.default_audio_card = card
+            elif not card:
+                self.default_audio_card = None
 
     @staticmethod
     def _network_summary():
@@ -3110,8 +3134,9 @@ class Launcher(Gtk.Window):
     def quit(self, status=0):
         """Leave the launcher, giving back the computer's own sound (Settings > Audio)."""
         self.exit_status = status
-        if self.desktop and self._audio_choice() == "while_open":
-            restore_sound_before()
+        with self._audio_lock:
+            if self.desktop and self._audio_choice() == "while_open":
+                restore_sound_before()
         Gtk.main_quit()
 
     def _navbtn(self, label, handler, extra_class=None):
@@ -3295,13 +3320,14 @@ class Launcher(Gtk.Window):
     def _set_audio_choice(self, value):
         if self._filling or value == self.audio["radio_default"]:
             return
-        self.audio["radio_default"] = value
-        write_json(AUDIO_PATH, self.audio)
-        if value == "never":
-            restore_sound_before()  # the computer's own speaker and microphone, now
-        elif value == "always":
-            restore_sound_before(devices=False)  # the radio stays; alert sounds come back
-        self.default_audio_card = None  # the next status check applies it
+        with self._audio_lock:  # after a status check that's applying the old choice has finished
+            self.audio["radio_default"] = value
+            write_json(AUDIO_PATH, self.audio)
+            if value == "never":
+                restore_sound_before()  # the computer's own speaker and microphone, now
+            elif value == "always":
+                restore_sound_before(devices=False)  # the radio stays; alert sounds come back
+            self.default_audio_card = None  # the next status check applies it
         self._poll_status()
         GLib.timeout_add(1500, lambda: self._audio_refresh() and False)
         self._audio_refresh()
@@ -3514,11 +3540,28 @@ class Launcher(Gtk.Window):
         threading.Thread(target=work, daemon=True).start()
 
     def _show_devices(self):
-        """What's plugged in now: USB serial ports, USB sound cards, RTL-SDR dongles, paired Bluetooth radios."""
+        """What's plugged in now: USB serial ports, USB sound cards, RTL-SDR dongles, paired
+        Bluetooth radios. The SDR and Bluetooth parts ask other programs (emcomm-adsb,
+        bluetoothctl), which can take seconds, so they're looked up off the screen's thread."""
+        ports, cards = list(self.serial_ports), list(self.sound_cards)
+        self._devices_asked = asked = object()
+        buffer = self.devices_view.get_buffer()
+        if not buffer.get_char_count():
+            buffer.set_text("Looking at what's plugged in…\n")
+        threading.Thread(target=lambda: GLib.idle_add(self._devices_found, asked,
+                                                      self._devices_text(ports, cards)), daemon=True).start()
+
+    def _devices_found(self, asked, text):
+        if asked is self._devices_asked:  # the latest look, not one overtaken by a rescan
+            self.devices_view.get_buffer().set_text(text)
+        return False
+
+    @staticmethod
+    def _devices_text(serial_ports, sound_cards):
         lines = ["USB serial ports (radio CAT/PTT, GPS, mesh radios):"]
-        lines += [f"  {label}" for label, _m in self.serial_ports] or ["  none"]
+        lines += [f"  {label}" for label, _m in serial_ports] or ["  none"]
         lines += ["", "USB sound cards:"]
-        lines += [f"  {label}" for label, _m in self.sound_cards] or ["  none"]
+        lines += [f"  {label}" for label, _m in sound_cards] or ["  none"]
         sdrs = sdr_receivers()
         dongles = [label for kind, label in sdrs if kind == "RTL-SDR"]
         lines += ["", "SDR receivers (Scanner, Gqrx; weather radio alerts use an RTL-SDR):"]
@@ -3548,7 +3591,7 @@ class Launcher(Gtk.Window):
                       if line.startswith("Device ") and line.count(" ") >= 2]
             lines += ["", "Paired Bluetooth radios (Meshtastic, MeshCore):"]
             lines += [f"  {name}" for name in paired] or ["  none"]
-        self.devices_view.get_buffer().set_text("\n".join(lines) + "\n")
+        return "\n".join(lines) + "\n"
 
     def _settings_form(self):
         """What the Settings page shows now, to tell whether it's been edited."""
@@ -3772,8 +3815,12 @@ class Launcher(Gtk.Window):
             stick = sticks.get_active_id()
             paths = []
             if stick:
-                result = subprocess.run([BACKUP_CMD, "list", stick], capture_output=True, text=True, check=False)
-                paths = result.stdout.split("\n")[:8] if result.returncode == 0 else []
+                try:
+                    result = subprocess.run([BACKUP_CMD, "list", stick], capture_output=True, text=True, check=False,
+                                            timeout=20)
+                    paths = result.stdout.split("\n")[:8] if result.returncode == 0 else []
+                except (OSError, subprocess.TimeoutExpired):
+                    paths = []
             for path in filter(None, paths):
                 stamp = re.search(r"(\d{8})-(\d{4})Z", path)
                 when = (f"{stamp[1][:4]}-{stamp[1][4:6]}-{stamp[1][6:]} {stamp[2]}Z" if stamp else "")
@@ -4130,19 +4177,27 @@ class Launcher(Gtk.Window):
         return page
 
     def _ics213_tick(self, page):
-        """While the page shows, look for new or changed messages every few seconds."""
+        """While the page shows, look for new or changed messages every few seconds. The
+        list comes from a separate program, so it's asked off the screen's thread."""
         if not page.get_mapped():
             self.f213_ticking = False
             return False
-        found = ics213_messages()
-        stamp = [(m["path"], m["modified"]) for m in found]
-        if stamp != self.f213_listed:
-            self.f213_listed = stamp
-            self._ics213_fill(found)
+        if not getattr(self, "f213_busy", False):
+            self.f213_busy = True
+            threading.Thread(target=lambda: GLib.idle_add(self._ics213_found, ics213_messages()),
+                             daemon=True).start()
         if not getattr(self, "f213_ticking", False):
             self.f213_ticking = True
             GLib.timeout_add_seconds(4, self._ics213_tick, page)
         return True
+
+    def _ics213_found(self, found):
+        self.f213_busy = False
+        stamp = [(m["path"], m["modified"]) for m in found]
+        if stamp != self.f213_listed:
+            self.f213_listed = stamp
+            self._ics213_fill(found)
+        return False
 
     def _ics213_fill(self, found):
         keep = self.f213_path
@@ -5257,8 +5312,12 @@ class Launcher(Gtk.Window):
             if here and aprs.get("lat") is not None:
                 miles, bearing = distance_bearing(here, (aprs["lat"], aprs["lon"]))
                 where = f", {miles:,.0f} mi at {bearing:03.0f}°"
+            if aprs.get("lat") is not None and aprs.get("lon") is not None:
+                place = f"  {aprs['lat']:.4f}, {aprs['lon']:.4f}"
+            else:
+                place = "  (no position given)"
             lines += ["", f"Last APRS position (aprs.fi): {aprs['name']} {ago(aprs.get('time'))}{where}",
-                      f"  {aprs['lat']:.4f}, {aprs['lon']:.4f}  {aprs.get('comment', '')}".rstrip()]
+                      f"{place}  {aprs.get('comment', '')}".rstrip()]
         elif "aprs" in r:
             lines += ["", "No recent APRS position on aprs.fi."]
         if r.get("errors"):

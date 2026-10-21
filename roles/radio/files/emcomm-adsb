@@ -121,10 +121,31 @@ def use(index, found=None, write_serial=None):
             "it's the ADS-B receiver from then on.")
 
 
+def lock_holder():
+    """The app (Scanner, Gqrx) named in the SDR lock if it's still running and isn't
+    this process, else None."""
+    try:
+        with open(SDR_LOCK, encoding="utf-8") as f:
+            lock = json.load(f)
+        pid = int(lock["pid"])
+        if pid == os.getpid():
+            return None
+        os.kill(pid, 0)
+    except PermissionError:  # running as someone else: still running
+        pass
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return str(lock.get("app") or "another app")
+
+
 def write_mark(index):
     """Write the ADS-B serial number into dongle `index`; an error message, or None."""
     if not shutil.which("rtl_eeprom"):
         return "rtl_eeprom isn't installed. Run Update station in Settings."
+    holder = lock_holder()
+    if holder:  # its lock stays: taking it would hand the weather radio listener a dongle in use
+        return (f"The {holder} is using the SDR receiver. Close it (Settings > Devices > "
+                "Free the SDR receiver) and try again.")
     # The weather radio listener lets go of its dongle while the lock names a running program.
     os.makedirs(os.path.dirname(SDR_LOCK), exist_ok=True)
     with open(SDR_LOCK, "w", encoding="utf-8") as f:
@@ -141,10 +162,11 @@ def write_mark(index):
                     "(Settings > Devices > Free the SDR receiver) and try again.")
         return None
     finally:
-        try:
-            os.remove(SDR_LOCK)
-        except OSError:
-            pass
+        if lock_holder() is None:  # only this process's own lock comes off
+            try:
+                os.remove(SDR_LOCK)
+            except OSError:
+                pass
 
 
 # ---- decoding ----------------------------------------------------------------------

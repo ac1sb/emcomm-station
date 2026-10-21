@@ -15,6 +15,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -38,6 +39,7 @@ INCLUDE = [
 ]
 SECRETS = {".config/emcomm/accounts.json"}
 SKIP_SUFFIXES = (".tmp", ".part", ".wav")
+MAX_FILE = 256 * 1024 * 1024  # a backup never holds anything near this; a bomb would
 NAME_RE = re.compile(r"^emcomm-backup-[A-Z0-9/-]*-?\d{8}-\d{4}Z\.tar\.gz$")
 
 
@@ -89,9 +91,23 @@ def backups(folder):
     return [os.path.join(folder, n) for n in sorted(names, key=lambda n: n[-22:], reverse=True)]
 
 
+def included(rel):
+    """Whether a path under home is one the backup covers (INCLUDE): a restore puts
+    back only those, never a .bashrc, an autostart entry or an SSH key."""
+    return any(rel == item or rel.startswith(item + "/") for item in INCLUDE)
+
+
+def inside(home, target):
+    """Whether target's folder really is under home. A symlink on the way (Wine's
+    dosdevices/z: points at /) would otherwise send the file anywhere."""
+    root = os.path.realpath(home)
+    parent = os.path.realpath(os.path.dirname(target))
+    return parent == root or parent.startswith(root + os.sep)
+
+
 def safe_members(tar):
-    """Regular files and folders under home/, plus station.json; nothing that
-    could write outside the home folder."""
+    """Regular files and folders under home/ that the backup covers, plus
+    station.json; nothing that could write outside those folders."""
     for member in tar.getmembers():
         name = member.name
         if name == "station.json" and member.isfile():
@@ -99,9 +115,10 @@ def safe_members(tar):
             continue
         if not name.startswith("home/") or os.path.isabs(name) or ".." in name.split("/"):
             continue
-        if not (member.isfile() or member.isdir()):
+        if not (member.isfile() or member.isdir()) or member.size > MAX_FILE:
             continue
-        if name[5:] in SECRETS:
+        rel = name[5:]
+        if rel in SECRETS or not included(rel):
             continue
         yield member
 
@@ -118,12 +135,14 @@ def restore(path, home=HOME, apply_settings=True):
                     station_ok, station_note = apply_station(data)
                 continue
             target = os.path.join(home, member.name[5:])
+            if not inside(home, target):
+                continue
             if member.isdir():
                 os.makedirs(target, exist_ok=True)
                 continue
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with tar.extractfile(member) as src, open(target + ".tmp", "wb") as out:
-                out.write(src.read())
+                shutil.copyfileobj(src, out)
             os.replace(target + ".tmp", target)
             os.utime(target, (member.mtime, member.mtime))
             restored += 1

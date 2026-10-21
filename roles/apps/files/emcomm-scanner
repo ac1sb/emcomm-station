@@ -38,6 +38,7 @@ radio listener's "first" is then the first of the others.
 """
 
 import csv
+import functools
 import ctypes
 import ctypes.util
 import glob
@@ -210,10 +211,12 @@ def append_channel(path, mhz, name, group="My channels"):
     fields = None
     if os.path.exists(path):
         with open(path, encoding="utf-8-sig", newline="") as f:
-            fields = next(csv.reader(f), None)
+            fields = next((row for row in csv.reader(f) if row), None)  # the header, past any blank lines
     if not fields:
         fields = ["Group", "Alpha Tag", "Agency", "County", "Frequency", "Callsign", "Tone"]
-        with open(path, "w", encoding="utf-8", newline="") as f:
+        # Appended, not written over: a file with nothing but blank lines keeps them
+        # rather than being replaced, and an empty one gets the header either way.
+        with open(path, "a", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(fields)
     wanted = {"frequency": f"{mhz:.4f}", "frequency output": f"{mhz:.4f}", "freq": f"{mhz:.4f}",
               "mhz": f"{mhz:.4f}", "alpha tag": name, "name": name, "group": group, "mode": default_mode(mhz)}
@@ -611,7 +614,13 @@ def bandpass(low, high, rate, taps):
 
 
 class Decimator:
-    """Low-pass filter and keep every nth sample, carrying state from block to block."""
+    """Low-pass filter and keep every nth sample, carrying state from block to block.
+
+    Only the kept samples are worked out: each tap is applied to every nth input
+    sample in one strided pass, which costs a nth of filtering everything and
+    throwing most of it away (and, with numpy, beats splitting the filter into
+    n phases). That's part of what lets a fast receiver (HackRF, Airspy) run on
+    a small computer."""
 
     def __init__(self, taps, factor):
         self.taps, self.factor = taps, factor
@@ -622,11 +631,18 @@ class Decimator:
         self.offset = 0
 
     def __call__(self, x):
+        length, m = len(self.taps), self.factor
         joined = np.concatenate([self.tail, x])
-        self.tail = joined[-(len(self.taps) - 1):]
-        filtered = np.convolve(joined, self.taps, mode="valid")
-        out = filtered[self.offset::self.factor]
-        self.offset = (self.offset - len(filtered)) % self.factor
+        self.tail = joined[-(length - 1):]
+        n = len(x)
+        count = (n - 1 - self.offset) // m + 1 if n > self.offset else 0
+        out = np.zeros(count, joined.dtype)
+        # Output k is the full filter's output at offset + m*k: tap j times joined[c - j + m*k].
+        c = self.offset + length - 1
+        for j, tap in enumerate(self.taps):
+            start = c - j
+            out += tap * joined[start:start + m * count:m]
+        self.offset = (self.offset - n) % m
         return out
 
 
@@ -648,6 +664,14 @@ class Demod:
             self.stages.append(Decimator(lowpass(0.4 * mid, rate, 8 * first + 1), first))
         self.stages.append(Decimator(lowpass(7500, mid, int(97 * mid / RATE) | 1), second))
         self.audio_taps = bandpass(300, 3400, self.audio_rate, 511)
+        # The mixer's phasor repeats every `period` samples (the rates are whole numbers
+        # of hertz), so it's worked out once rather than sample by sample on every block.
+        whole = int(round(rate))
+        self.period = whole // math.gcd(OFFSET, whole)
+        if self.period > 65536:  # an odd rate: fall back to working it out each time
+            self.period = None
+        else:
+            self.phasor = np.exp(-2j * np.pi * OFFSET / rate * np.arange(self.period)).astype(np.complex64)
         self.reset()
 
     def reset(self):
@@ -659,9 +683,15 @@ class Demod:
 
     def channel(self, iq):
         """Mix the channel down to 0 Hz, filter it and drop to about 48 kS/s."""
-        n = np.arange(self.phase, self.phase + len(iq))
-        self.phase = (self.phase + len(iq)) % int(self.rate)
-        mixed = (iq * np.exp(-2j * np.pi * OFFSET / self.rate * n)).astype(np.complex64)
+        n = len(iq)
+        if self.period:
+            start = self.phase % self.period
+            phasor = np.tile(self.phasor, n // self.period + 2)[start:start + n]
+            self.phase = (self.phase + n) % self.period
+        else:
+            phasor = np.exp(-2j * np.pi * OFFSET / self.rate * np.arange(self.phase, self.phase + n))
+            self.phase = (self.phase + n) % int(self.rate)
+        mixed = (iq * phasor).astype(np.complex64, copy=False)
         for stage in self.stages:
             mixed = stage(mixed)
         return mixed
@@ -697,17 +727,25 @@ class AMDemod(Demod):
         return np.clip(voice / carrier, -1, 1), env, am_level(iq, self.rate)
 
 
+@functools.lru_cache(maxsize=16)
+def _am_masks(n, rate):
+    """The window and the channel and noise-floor bins for a block of n samples (the same
+    every block, so worked out once)."""
+    freqs = np.fft.fftfreq(n, 1 / rate)
+    chan = np.abs(freqs - OFFSET) <= 3000
+    ref = ((np.abs(freqs) <= min(100000, 0.4 * rate)) & (np.abs(freqs) >= 5000)
+           & (np.abs(freqs - OFFSET) > 12500))
+    return np.hanning(n).astype(np.float32), chan, ref
+
+
 def am_level(iq, rate):
     """Noise floor over the channel's power: about 1 with no carrier, falling as one comes up.
     The floor is the median across 200 kHz around the tuned centre, so a few busy
     neighbouring channels don't raise it."""
     if len(iq) < 1024:
         return 1.0
-    spec = np.abs(np.fft.fft(iq * np.hanning(len(iq)))) ** 2
-    freqs = np.fft.fftfreq(len(iq), 1 / rate)
-    chan = np.abs(freqs - OFFSET) <= 3000
-    ref = ((np.abs(freqs) <= min(100000, 0.4 * rate)) & (np.abs(freqs) >= 5000)
-           & (np.abs(freqs - OFFSET) > 12500))
+    window, chan, ref = _am_masks(len(iq), rate)
+    spec = np.abs(np.fft.fft(iq * window)) ** 2
     floor = np.median(spec[ref]) / math.log(2)  # the median of noise power is ln 2 of its mean
     return float(floor / max(spec[chan].mean(), 1e-30))
 
@@ -716,17 +754,24 @@ def demod_for(ch, demods):
     return demods["AM" if ch.get("mode") == "AM" else "FM"]
 
 
+@functools.lru_cache(maxsize=16)
+def _hiss_window(n, audio_rate):
+    """The window, the 6-11 kHz bins and the no-signal level for a block of n samples."""
+    window = np.hanning(n)
+    freqs = np.fft.rfftfreq(n, 1 / audio_rate)
+    # Uniform phase noise has variance pi^2/3 spread evenly over 0..24 kHz; after the
+    # 7.5 kHz channel filter the 6-11 kHz band keeps about a fifth of that (measured).
+    flat = (np.pi ** 2 / 3) * n * (window ** 2).mean() * 0.205
+    return window.astype(np.float32), (freqs >= 6000) & (freqs <= 11000), flat
+
+
 def hiss(fm, audio_rate=AUDIO_RATE):
     """Discriminator power from 6 to 11 kHz, relative to what no signal gives (about 1)."""
     if len(fm) < 256:
         return 1.0
-    spec = np.abs(np.fft.rfft(fm * np.hanning(len(fm)))) ** 2
-    freqs = np.fft.rfftfreq(len(fm), 1 / audio_rate)
-    band = spec[(freqs >= 6000) & (freqs <= 11000)].mean()
-    # Uniform phase noise has variance pi^2/3 spread evenly over 0..24 kHz; after the
-    # 7.5 kHz channel filter the 6-11 kHz band keeps about a fifth of that (measured).
-    flat = (np.pi ** 2 / 3) * len(fm) * (np.hanning(len(fm)) ** 2).mean() * 0.205
-    return float(band / flat)
+    window, band, flat = _hiss_window(len(fm), audio_rate)
+    spec = np.abs(np.fft.rfft(fm * window)) ** 2
+    return float(spec[band].mean() / flat)
 
 
 def has_tone(fm, tone, audio_rate=AUDIO_RATE):
@@ -1566,6 +1611,9 @@ def window_main():
                 self.channels = []
                 self._say(f"No channel list yet. Put a CSV with a Frequency column at ~/{os.path.basename(CHANNELS)} "
                           "or tap Load a list.", True)
+            except (UnicodeDecodeError, csv.Error, ValueError) as err:  # there, but not a CSV the station can read
+                self.channels = []
+                self._say(f"Couldn't read ~/{os.path.basename(CHANNELS)}: {err}", True)
             self.here = station_location()
             add_distances(self.channels, self.here)
             self.where_label.set_text("of this station's grid square" if self.here else
@@ -1829,22 +1877,28 @@ def window_main():
                 return
             try:
                 found = load_channels(path)
-            except (OSError, UnicodeDecodeError, csv.Error) as err:
+            except (OSError, UnicodeDecodeError, csv.Error, ValueError) as err:
                 self._say(f"Couldn't read that file: {err}", True)
                 return
             if not found:
                 self._say("That file has no channels: it needs a Frequency column in MHz.", True)
                 return
-            if os.path.exists(CHANNELS):
-                shutil.copyfile(CHANNELS, CHANNELS + ".old")
-            shutil.copyfile(path, CHANNELS)
-            self.settings["groups_off"], self.settings["lockouts"] = [], []
-            save_settings(self.settings)
+            # Picking the station's own list (edited by hand, say) just reads it again.
+            same = os.path.exists(CHANNELS) and os.path.samefile(path, CHANNELS)
+            if not same:
+                if os.path.exists(CHANNELS):
+                    shutil.copyfile(CHANNELS, CHANNELS + ".old")
+                shutil.copyfile(path, CHANNELS)
+                self.settings["groups_off"], self.settings["lockouts"] = [], []
+                save_settings(self.settings)
             self._load()
             if self.scanner:
                 self.scanner.configure(self.channels, self.settings)
-            self._say(f"Loaded {len(found)} channels. The previous list is kept as "
-                      f"~/{os.path.basename(CHANNELS)}.old")
+            if same:
+                self._say(f"Reloaded {len(found)} channels from ~/{os.path.basename(CHANNELS)}.")
+            else:
+                self._say(f"Loaded {len(found)} channels. The previous list is kept as "
+                          f"~/{os.path.basename(CHANNELS)}.old")
 
         def _dongle_dialog(self, *_):
             dialog = Gtk.Dialog(title="Receiver", transient_for=self, modal=True)
@@ -1942,13 +1996,22 @@ def main(argv):
         return 0
     if argv == ["--gqrx-bookmarks"]:
         ensure_list()
-        sys.stdout.write(gqrx_bookmarks(load_channels()))
+        try:
+            channels = load_channels()
+        except (OSError, UnicodeDecodeError, csv.Error, ValueError) as err:
+            print(f"Couldn't read {CHANNELS}: {err}", file=sys.stderr)
+            return 1
+        sys.stdout.write(gqrx_bookmarks(channels))
         return 0
     if argv[:1] == ["--list"]:
         path = argv[1] if len(argv) > 1 else CHANNELS
         if len(argv) == 1:
             ensure_list()
-        channels = load_channels(path)
+        try:
+            channels = load_channels(path)
+        except (OSError, UnicodeDecodeError, csv.Error, ValueError) as err:
+            print(f"Couldn't read {path}: {err}", file=sys.stderr)
+            return 1
         add_distances(channels, station_location())
         settings = load_settings()
         keep = {channel_key(ch) for ch in scan_list(channels, settings)}

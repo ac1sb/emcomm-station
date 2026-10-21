@@ -19,6 +19,7 @@ so a change rebuilds it (update-initramfs, about a minute). "text" takes
 """
 
 import filecmp
+import hashlib
 import json
 import os
 import re
@@ -33,6 +34,7 @@ STATION = f"{ROOT}/etc/emcomm/station.json"
 THEME_DIR = f"{ROOT}/usr/share/plymouth/themes/emcomm"
 GRUB = f"{ROOT}/etc/default/grub"
 GRUB_CFG = f"{ROOT}/etc/default/grub.d/emcomm-quiet-boot.cfg"
+BUILT = f"{ROOT}/etc/emcomm/splash-built"  # what the initramfs was last rebuilt with
 STYLES = ("logo", "picture", "spinner", "text")
 MAX_PICTURE = 20 * 1024 * 1024
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -180,18 +182,41 @@ def current_theme():
     return result.stdout.strip()
 
 
+def wanted_build(theme):
+    """A stamp for what the initramfs should hold: the theme, and the theme's files."""
+    digest = hashlib.sha256(theme.encode())
+    if theme == "emcomm":
+        for name in ("splash.png", "emcomm.script"):
+            try:
+                with open(os.path.join(THEME_DIR, name), "rb") as f:
+                    digest.update(f.read())
+            except OSError:
+                pass
+    return digest.hexdigest().encode()
+
+
 def apply():
     style = load()
     theme = "emcomm" if style in ("logo", "picture") else "spinner"
-    rebuild = theme_files(style) if theme == "emcomm" else False
+    if theme == "emcomm":
+        theme_files(style)
     if current_theme() != theme:
         subprocess.run(["plymouth-set-default-theme", theme], check=True)
-        rebuild = True
     grub = False
     if os.path.exists(GRUB):
         grub = write_if_changed(GRUB_CFG, (GRUB_TEXT if style == "text" else GRUB_QUIET).encode())
+    # Rebuild whenever the initramfs doesn't hold what's wanted: the stamp is written only
+    # after a rebuild finishes, so one that failed or lost power is tried again next time.
+    wanted = wanted_build(theme)
+    rebuild = False
+    try:
+        with open(BUILT, "rb") as f:
+            rebuild = f.read() != wanted
+    except OSError:
+        rebuild = True
     if rebuild:
         subprocess.run(["update-initramfs", "-u"], check=True, stdout=subprocess.DEVNULL)
+        write_if_changed(BUILT, wanted)
     if grub:
         subprocess.run(["update-grub"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return rebuild or grub

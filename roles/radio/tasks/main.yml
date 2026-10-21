@@ -1,7 +1,26 @@
 ---
-- name: Install Hamlib
+# A USB GPS sets the clock when there's no internet (FT8, JS8 and VARA need it
+# within a second or so) and gives the launcher a position for the grid square.
+# On a desktop, uninstall-desktop.sh puts back the gpsd settings found here
+# (or gpsd's standard ones, if it wasn't installed). Looked at before anything
+# is installed, so what's kept is what the computer had.
+- name: Keep a copy of this computer's gpsd settings
+  ansible.builtin.shell: |
+    set -e
+    [ -f /etc/default/gpsd ] || exit 0  # no gpsd yet
+    grep -q "Emcomm-CNC" /etc/default/gpsd && exit 0  # already ours: the copy was made before
+    cp /etc/default/gpsd /etc/emcomm/before/gpsd
+  args:
+    creates: /etc/emcomm/before/gpsd
+  when: station_mode == 'desktop'
+
+# One apt call for the lot: each call reads the whole package database, which is
+# slow on an SD card. Hamlib; gpsd; the RTL-SDR tools and multimon-ng (the SAME
+# decoder for weather radio alerts); PipeWire's PulseAudio tools (parec, pacat:
+# the recorder and the Scanner's audio); ffmpeg (the Broadcastify stream).
+- name: Install Hamlib, gpsd, the RTL-SDR tools, the SAME decoder, the audio tools and ffmpeg
   ansible.builtin.apt:
-    name: libhamlib-utils
+    name: [libhamlib-utils, gpsd, gpsd-clients, rtl-sdr, multimon-ng, pulseaudio-utils, ffmpeg]
     install_recommends: false
 
 - name: Create the radio preset directory
@@ -61,26 +80,6 @@
     enabled: false
     daemon_reload: true
 
-# A USB GPS sets the clock when there's no internet (FT8, JS8 and VARA need it
-# within a second or so) and gives the launcher a position for the grid square.
-# On a desktop, uninstall-desktop.sh puts back the gpsd settings found here
-# (or gpsd's standard ones, if it wasn't installed).
-- name: Keep a copy of this computer's gpsd settings
-  ansible.builtin.shell: |
-    set -e
-    [ -f /etc/default/gpsd ] || exit 0  # no gpsd yet
-    grep -q "Emcomm-CNC" /etc/default/gpsd && exit 0  # already ours: the copy was made before
-    cp /etc/default/gpsd /etc/emcomm/before/gpsd
-  args:
-    creates: /etc/emcomm/before/gpsd
-  when: station_mode == 'desktop'
-
-- name: Install gpsd
-  ansible.builtin.apt:
-    name: [gpsd, gpsd-clients]
-    install_recommends: false
-
-
 - name: Point gpsd at /dev/gps0 only, so it never opens the radio's ports
   ansible.builtin.copy:
     content: |
@@ -117,11 +116,6 @@
 # NOAA Weather Radio alerts with no internet: an RTL-SDR dongle on 162 MHz, decoded
 # by multimon-ng. The service waits quietly until a channel is picked on the
 # Online page and a dongle is plugged in.
-- name: Install the RTL-SDR tools and the SAME decoder
-  ansible.builtin.apt:
-    name: [rtl-sdr, multimon-ng]
-    install_recommends: false
-
 - name: Keep the TV-tuner driver off the RTL-SDR dongle
   ansible.builtin.copy:
     content: "# Managed by the emcomm-station playbook.\nblacklist dvb_usb_rtl28xxu\n"
@@ -196,11 +190,6 @@
 
 # The receive audio recorder reads the radio's audio through PipeWire's
 # PulseAudio side (parec), so other apps can use the sound card meanwhile.
-- name: Install the receive audio recorder
-  ansible.builtin.apt:
-    name: pulseaudio-utils
-    install_recommends: false
-
 - name: Install the recorder script
   ansible.builtin.copy:
     src: emcomm-recorder
@@ -209,11 +198,6 @@
 
 # Streaming the same receive audio to a Broadcastify feed: ffmpeg encodes the
 # MP3 and sends it to Broadcastify's Icecast server.
-- name: Install ffmpeg, for the Broadcastify stream
-  ansible.builtin.apt:
-    name: ffmpeg
-    install_recommends: false
-
 - name: Install the stream script
   ansible.builtin.copy:
     src: emcomm-stream

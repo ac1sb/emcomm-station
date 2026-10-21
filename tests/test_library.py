@@ -50,6 +50,23 @@ class Library(unittest.TestCase):
             self.assertEqual(sorted(books), ["wikem_en_all_maxi", "wikipedia_en_all_nopic"])
             self.assertTrue(books["wikem_en_all_maxi"].startswith(home))  # the newer copy
 
+    def test_only_a_kiwix_serve_is_stopped(self):
+        with tempfile.TemporaryDirectory() as proc:
+            for pid, cmdline in ((12, b"kiwix-serve\0--address=127.0.0.1\0"), (13, b"bash\0")):
+                os.makedirs(os.path.join(proc, str(pid)))
+                with open(os.path.join(proc, str(pid), "cmdline"), "wb") as f:
+                    f.write(cmdline)
+            self.assertTrue(library.is_kiwix_serve(12, proc))
+            self.assertFalse(library.is_kiwix_serve(13, proc))  # the number was reused
+            self.assertFalse(library.is_kiwix_serve(14, proc))  # gone
+
+    def test_half_downloads_are_cleared(self):
+        with tempfile.TemporaryDirectory() as home:
+            for name in ("wikem_en_all_maxi_2025-01.zim.part", "zimgit-water_en_2024-08.zim"):
+                open(os.path.join(home, name), "w").close()
+            library.remove_parts(home)
+            self.assertEqual(os.listdir(home), ["zimgit-water_en_2024-08.zim"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,12 +35,28 @@ THREE = [{"index": 0, "serial": "00000001", "name": "Realtek RTL2838UHIDIR"},
 class Picking(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.old = adsb.CONFIG
+        self.old = adsb.CONFIG, adsb.SDR_LOCK
         adsb.CONFIG = os.path.join(self.tmp.name, "adsb.json")
+        adsb.SDR_LOCK = os.path.join(self.tmp.name, "sdr.json")
 
     def tearDown(self):
-        adsb.CONFIG = self.old
+        adsb.CONFIG, adsb.SDR_LOCK = self.old
         self.tmp.cleanup()
+
+    def test_writing_the_mark_leaves_another_apps_lock_alone(self):
+        with open(adsb.SDR_LOCK, "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getppid(), "app": "Scanner"}, f)  # a process that is running
+        real_which = adsb.shutil.which
+        adsb.shutil.which = lambda _name: "/usr/bin/rtl_eeprom"
+        try:
+            self.assertIn("Scanner", adsb.write_mark(0))
+        finally:
+            adsb.shutil.which = real_which
+        with open(adsb.SDR_LOCK, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["app"], "Scanner")
+        with open(adsb.SDR_LOCK, "w", encoding="utf-8") as f:
+            json.dump({"pid": 2 ** 22 - 1, "app": "Scanner"}, f)  # one that has gone
+        self.assertIsNone(adsb.lock_holder())
 
     def test_default_is_the_usual_adsb_serial(self):
         self.assertEqual(adsb.adsb_serial(), "00001090")

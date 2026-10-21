@@ -29,6 +29,7 @@ CHUNK = RATE // 10 * 2          # 100 ms of 16-bit mono
 PRE_ROLL = 5                     # chunks kept from before the signal (0.5 s)
 HANG = 30                        # chunks of quiet before a file ends (3 s)
 MAX_CHUNKS = 3600 * 10           # an hour per file
+MAX_BYTES = 2 * 1024 ** 3        # the oldest recordings go once ~/Recordings passes this (2 GB)
 RIGCTLD = ("127.0.0.1", 4532)
 CARD_KEYS = ("api.alsa.card", "api.alsa.pcm.card", "alsa.card")
 
@@ -91,6 +92,37 @@ def file_name(now=None, freq=None, mode=None):
     return os.path.join(folder, " ".join(parts) + ".wav")
 
 
+def prune(folder=RECORDINGS, limit=MAX_BYTES):
+    """Delete the oldest recordings until the folder holds at most `limit` bytes, so
+    recording everything can't fill the disk. Returns how many went."""
+    found = []
+    for day in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        day_path = os.path.join(folder, day)
+        if os.path.isdir(day_path):
+            for name in sorted(os.listdir(day_path)):
+                if name.endswith((".wav", ".wav.part")):
+                    path = os.path.join(day_path, name)
+                    try:
+                        found.append((path, os.path.getsize(path)))
+                    except OSError:
+                        pass
+    total, gone = sum(size for _path, size in found), 0
+    for path, size in found:  # day folders, then names, sort oldest first
+        if total <= limit:
+            break
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        total -= size
+        gone += 1
+        try:
+            os.rmdir(os.path.dirname(path))  # the day's folder, once it's empty
+        except OSError:
+            pass
+    return gone
+
+
 def write_status(**status):
     os.makedirs(os.path.dirname(STATUS), exist_ok=True)
     with open(STATUS + ".tmp", "w", encoding="utf-8") as f:
@@ -116,28 +148,41 @@ def run(everything=False, threshold=-40.0):
                              recording=False)
                 return 1
             action, chunks = seg.feed(chunk)
-            if action == "start":
-                path = file_name(freq=rig_query("f"), mode=rig_query("m"))
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                out = wave.open(path + ".part", "wb")
-                out.setnchannels(1)
-                out.setsampwidth(2)
-                out.setframerate(RATE)
-                since = time.time()
-            if out:
-                out.writeframes(b"".join(chunks))
-            if action == "stop" and out:
-                out.close()
-                os.replace(path + ".part", path)
-                out = None
+            try:
+                if action == "start":
+                    prune()
+                    path = file_name(freq=rig_query("f"), mode=rig_query("m"))
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    out = wave.open(path + ".part", "wb")
+                    out.setnchannels(1)
+                    out.setsampwidth(2)
+                    out.setframerate(RATE)
+                    since = time.time()
+                if out:
+                    out.writeframes(b"".join(chunks))
+                if action == "stop" and out:
+                    out.close()
+                    os.replace(path + ".part", path)
+                    out = None
+            except OSError as exc:  # the disk is full, or the folder went away
+                failed, out = True, None
+                try:
+                    write_status(mode=mode_name, error=f"Stopped: couldn't write the recording ({exc.strerror or exc}).",
+                                 recording=False)
+                except OSError:
+                    pass
+                return 1
             if time.time() - last_status >= 0.5:
                 last_status = time.time()
                 write_status(mode=mode_name, level=round(level_db(chunk), 1), recording=bool(out),
                              file=os.path.basename(path) if out else None, since=since if out else None)
     finally:
         if out:
-            out.close()
-            os.replace(path + ".part", path)
+            try:
+                out.close()
+                os.replace(path + ".part", path)
+            except OSError:
+                pass
         parec.terminate()
         if not failed:  # an error stays for the Recorder page to show
             try:

@@ -65,7 +65,7 @@ def clean_match(value, what):
         if raw in (None, ""):
             continue
         text = str(raw).lower() if key in ("vendor", "product") else str(raw)
-        if not MATCH_FIELDS[key][0].match(text):
+        if not MATCH_FIELDS[key][0].fullmatch(text):
             raise SettingsError(f"{what}: {key} {raw!r} isn't valid")
         match[key] = text
     if "vendor" not in match or "product" not in match:
@@ -73,19 +73,34 @@ def clean_match(value, what):
     return match
 
 
+def zone_exists(name):
+    """A real zone file under zoneinfo. Links are followed only inside zoneinfo: "localtime"
+    points at /etc/localtime, and setting that would make the clock chase its tail."""
+    path = os.path.join(ZONEINFO, name)
+    for _ in range(8):
+        if not os.path.islink(path):
+            return os.path.isfile(path)
+        path = os.path.normpath(os.path.join(os.path.dirname(path), os.readlink(path)))
+        if not path.startswith(ZONEINFO + "/"):
+            return False
+    return False
+
+
 def validate(raw):
     """Return cleaned settings, or raise SettingsError."""
+    if not isinstance(raw, dict):
+        raise SettingsError("settings should be a JSON object")
     callsign = str(raw.get("callsign", "")).strip().upper()
-    if not CALLSIGN_RE.match(callsign):
+    if not CALLSIGN_RE.fullmatch(callsign):
         raise SettingsError(f"callsign doesn't look valid: {callsign!r}")
 
     grid = str(raw.get("grid", "")).strip()
     grid = grid[:4].upper() + grid[4:].lower()
-    if not GRID_RE.match(grid.upper()):
+    if not GRID_RE.fullmatch(grid.upper()):
         raise SettingsError(f"grid square should look like FN31 or FN31pr: {grid!r}")
 
     radio_name = str(raw.get("radio_name", "")).strip()
-    if not NAME_RE.match(radio_name):
+    if not NAME_RE.fullmatch(radio_name):
         raise SettingsError("pick a radio")
 
     try:
@@ -129,7 +144,7 @@ def validate(raw):
     timezone = raw.get("timezone") or None
     if timezone is not None:
         timezone = str(timezone)
-        if not ZONE_RE.match(timezone) or not os.path.isfile(os.path.join(ZONEINFO, timezone)):
+        if not ZONE_RE.fullmatch(timezone) or not zone_exists(timezone):
             raise SettingsError(f"unknown time zone: {timezone!r}")
 
     return {"callsign": callsign, "grid": grid, "timezone": timezone,

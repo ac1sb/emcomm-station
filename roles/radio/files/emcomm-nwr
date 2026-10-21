@@ -80,6 +80,8 @@ def parse_header(line, now=None):
     now = now or time.time()
     year = time.gmtime(now).tm_year
     day, hour, minute = int(issued[:3]), int(issued[3:5]), int(issued[5:7])
+    if not (1 <= day <= 366 and hour <= 23 and minute <= 59):
+        return None  # a garbled burst (the header is sent three times; another copy may decode)
     start = None
     for y in (year, year - 1):  # an alert issued on 31 December, heard on 1 January
         start = calendar.timegm(time.strptime(f"{y} {day:03d} {hour:02d} {minute:02d}", "%Y %j %H %M"))
@@ -221,6 +223,20 @@ def set_status(error=None, listening=None):
     save_record(record)
 
 
+def stop(proc):
+    """End a decoder process. rtl_fm can hang in libusb after the dongle is unplugged,
+    so it's killed if it hasn't gone in ten seconds."""
+    if proc is None:
+        return
+    if proc.poll() is None:
+        proc.terminate()
+    try:
+        proc.wait(10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def run():
     while True:
         freq, codes, ppm = load_config()
@@ -238,21 +254,32 @@ def run():
             set_status("The only RTL-SDR is the ADS-B receiver. Plug in another for weather alerts.")
             time.sleep(10)
             continue
-        stamp = os.path.getmtime(CONFIG)
-        rtl = subprocess.Popen(["rtl_fm", "-d", str(dongle), "-f", f"{freq}M", "-M", "fm", "-s", "22050",
-                                "-E", "dc", "-p", str(ppm), "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        mm = subprocess.Popen(["multimon-ng", "-t", "raw", "-a", "EAS", "-q", "/dev/stdin"],
-                              stdin=rtl.stdout, stdout=subprocess.PIPE, text=True, bufsize=1)
+        rtl = mm = None
+        try:
+            stamp = os.path.getmtime(CONFIG)
+            rtl = subprocess.Popen(["rtl_fm", "-d", str(dongle), "-f", f"{freq}M", "-M", "fm", "-s", "22050",
+                                    "-E", "dc", "-p", str(ppm), "-"], stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL)
+            mm = subprocess.Popen(["multimon-ng", "-t", "raw", "-a", "EAS", "-q", "/dev/stdin"],
+                                  stdin=rtl.stdout, stdout=subprocess.PIPE, text=True, bufsize=1)
+        except OSError as exc:  # the config went away, or rtl_fm / multimon-ng isn't installed
+            stop(rtl)
+            set_status(f"Couldn't start the weather radio listener: {exc}")
+            time.sleep(30)
+            continue
         rtl.stdout.close()
         set_status(None, freq)
 
         def read(lines=mm.stdout, codes=codes, freq=freq):
             for line in lines:
-                header = parse_header(line)
-                if header:
-                    record = load_record()
-                    keep(record, header, codes, freq)
-                    save_record(record)
+                try:
+                    header = parse_header(line)
+                    if header:
+                        record = load_record()
+                        keep(record, header, codes, freq)
+                        save_record(record)
+                except Exception as exc:  # one garbled burst, or a full disk, mustn't end the listening
+                    print(f"emcomm-nwr: couldn't handle {line.strip()!r}: {exc}", file=sys.stderr, flush=True)
 
         threading.Thread(target=read, daemon=True).start()
         while rtl.poll() is None:
@@ -260,10 +287,8 @@ def run():
                 break
             time.sleep(2)
         failed = rtl.poll() is not None and not sdr_claimed()
-        for proc in (rtl, mm):
-            if proc.poll() is None:
-                proc.terminate()
-            proc.wait()
+        stop(rtl)
+        stop(mm)
         if failed:
             set_status("No RTL-SDR receiver found. Plug one in with an antenna for 162 MHz.")
             time.sleep(30)
