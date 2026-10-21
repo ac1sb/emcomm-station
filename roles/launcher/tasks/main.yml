@@ -3,6 +3,7 @@
   ansible.builtin.apt:
     name:
       - python3-gi
+      - python3-gi-cairo  # draws the ICS-213 form on screen (the draw signal's cairo context)
       - gir1.2-gtk-3.0
       - librsvg2-common  # draws the .svg tile icons
       - udisks2  # lets the kiosk user open USB sticks, e.g. to pick a tile icon

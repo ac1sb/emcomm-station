@@ -5003,7 +5003,8 @@ class Launcher(Gtk.Window):
         self.f213e_path = path
         self.f213e_title.set_text("Edit ICS-213")
         self.f213e_status.set_text("Saved " + time.strftime("%H:%MZ", time.gmtime()) + ". It's in the Forms list.")
-        self.forms_listed = None  # list it next time the Forms page shows
+        self.forms_listed = None  # list it next time the Forms page shows, picked and ready to send
+        self.forms_item = {"kind": "213", "path": path}
         return path
 
     def _ics213_editor_send(self):
