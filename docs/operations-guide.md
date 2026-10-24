@@ -1,49 +1,203 @@
 # Emcomm-CNC operations guide
 
-*How to operate the station: what each app is for, which apps work together, what
-to open first, and the radio, rig and audio settings for each one.*
+*How to operate the Emcomm-CNC station for ARES/RACES work and everyday
+preparedness: what each app is for, which apps work together, what to open first,
+and the radio, rig and audio settings for each one.*
 
-This guide is for an operator who knows radio but has never used this station.
-Nothing is assumed about Linux. Building and installing the station are covered in
-the [README](../README.md); this guide starts with the station already set up.
+## How to use this guide
 
-> **Draft.** Sections marked ⚠ **Not yet tested on this station** describe
-> features that work in the build but have not yet been run with real radios.
-> Treat the steps as right, and the results as unconfirmed.
+- **Never used this station?** Read [Part 1: Cold start](#part-1-cold-start). It
+  gets you from power-on to a logged net check-in, a sent ICS-213 and a Winlink
+  email, with nothing else assumed. Keep a printed copy of Part 1 in the go-kit.
+- **Know the station?** [Part 2](#part-2-operating-the-station) is the reference,
+  one chapter per app: what it's for, what to open first, its rig and audio
+  settings, and how to tell it's working.
+  [Part 3](#part-3-ares-and-races-walkthroughs) walks through whole jobs during an
+  activation, and [Part 4](#part-4-radio-settings-troubleshooting-and-files) has
+  the radios' own menu settings, troubleshooting and where files are kept.
+
+Building and installing the station are covered in the
+[README](https://github.com/ac1sb/emcomm-station#readme). This guide starts with the
+station already set up. On the station, the **Guide** tile on Home shows this guide,
+and its **Print** button prints it or saves a PDF to a USB stick.
+
+> ⚠ **Not yet tested on this station** marks features that work in the build but
+> haven't yet been run with real radios here. Treat the steps as right and the
+> results as unconfirmed.
 
 Every time and date the station writes (forms, logs, recordings, net logs) is in
 **UTC**. The top bar shows local time and UTC side by side.
 
 ## Contents
 
-1. [The station at a glance](#1-the-station-at-a-glance)
-2. [Before you operate: the start-up check](#2-before-you-operate-the-start-up-check)
-3. [How the pieces fit together](#3-how-the-pieces-fit-together)
-4. [Which apps work together, and in what order](#4-which-apps-work-together-and-in-what-order)
-5. [Winlink email: Pat with VARA, ARDOP or packet](#5-winlink-email-pat-with-vara-ardop-or-packet)
-6. [WSJT-X (FT8)](#6-wsjt-x-ft8)
-7. [JS8Call](#7-js8call)
-8. [fldigi, flamp and flmsg](#8-fldigi-flamp-and-flmsg)
-9. [Forms: ICS-213 messages, nets, ICS-309 and ICS-205](#9-forms-ics-213-messages-nets-ics-309-and-ics-205)
-10. [Logs](#10-logs)
-11. [Recorder and Broadcastify](#11-recorder-and-broadcastify)
-12. [Reference and the Winlink gateway finder](#12-reference-and-the-winlink-gateway-finder)
-13. [Scanner](#13-scanner)
-14. [Gqrx](#14-gqrx)
-15. [NOAA radio (weather alerts with no internet)](#15-noaa-radio-weather-alerts-with-no-internet)
-16. [APRS and the iGate](#16-aprs-and-the-igate)
-17. [Meshtastic and MeshCore](#17-meshtastic-and-meshcore)
-18. [Map](#18-map)
-19. [Online, Browser and Library](#19-online-browser-and-library)
-20. [CHIRP](#20-chirp)
-21. [Settings](#21-settings)
-22. [Diagnostics](#22-diagnostics)
-23. [Troubleshooting](#23-troubleshooting)
-24. [Where things are kept](#24-where-things-are-kept)
+**Part 1: Cold start**
+
+- [Turn it on](#turn-it-on)
+- [Is it working? The top bar](#is-it-working-the-top-bar)
+- [What do you need to do?](#what-do-you-need-to-do)
+- [Check in to a voice net and log it](#check-in-to-a-voice-net-and-log-it)
+- [Write an ICS-213 and send it by radio](#write-an-ics-213-and-send-it-by-radio)
+- [Send a Winlink email](#send-a-winlink-email)
+- [Five rules](#five-rules)
+- [Shut down](#shut-down)
+
+**Part 2: Operating the station**
+
+- [The station at a glance](#the-station-at-a-glance)
+- [Before you operate: the start-up check](#before-you-operate-the-start-up-check)
+- [How the pieces fit together](#how-the-pieces-fit-together)
+- [Which apps work together, and in what order](#which-apps-work-together-and-in-what-order)
+- [Winlink email: Pat with VARA, ARDOP or packet](#winlink-email-pat-with-vara-ardop-or-packet)
+- [WSJT-X (FT8)](#wsjt-x-ft8)
+- [JS8Call](#js8call)
+- [fldigi, flamp and flmsg](#fldigi-flamp-and-flmsg)
+- [Forms: ICS-213 messages, nets, ICS-309 and ICS-205](#forms-ics-213-messages-nets-ics-309-and-ics-205)
+- [Logs](#logs)
+- [Recorder and Broadcastify](#recorder-and-broadcastify)
+- [Reference and the Winlink gateway finder](#reference-and-the-winlink-gateway-finder)
+- [Scanner](#scanner)
+- [Gqrx](#gqrx)
+- [NOAA radio (weather alerts with no internet)](#noaa-radio-weather-alerts-with-no-internet)
+- [APRS and the iGate](#aprs-and-the-igate)
+- [Meshtastic and MeshCore](#meshtastic-and-meshcore)
+- [Map](#map)
+- [Online, Browser and Library](#online-browser-and-library)
+- [CHIRP](#chirp)
+- [Settings](#settings)
+- [Diagnostics](#diagnostics)
+
+**Part 3: ARES and RACES walkthroughs**
+
+- [Activation: the first 15 minutes](#activation-the-first-15-minutes)
+- [Run a net as net control](#run-a-net-as-net-control)
+- [Pass formal traffic: which way to send it](#pass-formal-traffic-which-way-to-send-it)
+- [Send an ICS-213 by Winlink](#send-an-ics-213-by-winlink)
+- [Watch public safety and the weather while you operate](#watch-public-safety-and-the-weather-while-you-operate)
+- [No internet: what still works](#no-internet-what-still-works)
+- [Shift change and end of activation](#shift-change-and-end-of-activation)
+- [Preparedness: the monthly check](#preparedness-the-monthly-check)
+
+**Part 4: Radio settings, troubleshooting and files**
+
+- [The radios' own menu settings](#the-radios-own-menu-settings)
+- [Troubleshooting](#troubleshooting)
+- [Where things are kept](#where-things-are-kept)
 
 ---
 
-## 1. The station at a glance
+# Part 1: Cold start
+
+For an operator who has never used this station. Follow it top to bottom. You don't
+need to change any settings: the station is already set up for its radio.
+
+## Turn it on
+
+1. **Turn the radio on** and make sure its USB cable goes to the station computer.
+   (The FT-710 needs one USB cable; the FT-891 has two, the radio's own and the
+   Digirig's.)
+2. **Turn the station on.** It starts straight into the Home screen below.
+
+> **Desktop mode** (Emcomm-CNC on an everyday Ubuntu or Debian computer): log in,
+> then open **Emcomm-CNC** from the app menu.
+
+![Home screen](guide/home.png)
+
+Each square is a **tile**: tap it to open that app. Tiles with several small
+pictures, such as **Email** and **Mesh & APRS**, are folders: tap to open, **‹ Home**
+or Esc to close. A mouse and keyboard work as well as touch.
+
+## Is it working? The top bar
+
+Look across the top of the screen:
+
+| You see | It means | If not |
+| --- | --- | --- |
+| ● **Rig 14.074.000** (green dot and a frequency) | The station is talking to the radio | Radio off, or its USB cable is out. Turn it on, plug it in, wait 10 seconds |
+| ● **Radio audio** (green dot) | The radio's sound card is plugged in | Same: check the USB cable |
+| **UTC** time | Times on everything are UTC | If it's wrong, tell whoever runs the station: digital modes need the right time |
+| ▲ **weather alerts** (red) | Weather alerts in force near you | Tap it to read them |
+
+If both dots are green, the station is ready.
+
+## What do you need to do?
+
+| To | Open | Section |
+| --- | --- | --- |
+| Talk on voice | Nothing: use the radio's microphone | [Check in to a voice net](#check-in-to-a-voice-net-and-log-it) |
+| Run or log a net | **Forms** > **New ▾ > Net log** (or F8) | [Run a net](#run-a-net-as-net-control) |
+| Write a formal message (ICS-213) | **Forms** > **New ▾ > ICS-213 message** | [Write an ICS-213](#write-an-ics-213-and-send-it-by-radio) |
+| Send email over the radio (Winlink) | **Email** folder | [Send a Winlink email](#send-a-winlink-email) |
+| Find a frequency, or put the radio on one | **Reference** (F5) | [Reference](#reference-and-the-winlink-gateway-finder) |
+| Hear police, fire and EMS | **Scanner** | [Scanner](#scanner) |
+| Get weather alerts | **NOAA radio** (no internet) or **Online** | [NOAA radio](#noaa-radio-weather-alerts-with-no-internet) |
+| Record what's heard on the radio | **Rec** at the top of the screen | [Recorder](#recorder-and-broadcastify) |
+| Read first-aid and how-to books | **Library** | [Library](#library) |
+
+## Check in to a voice net and log it
+
+1. Tap **Reference** (or press F5). Find the net's frequency (your own nets and
+   repeaters are under **My frequencies**) and tap **Tune**. The radio goes there.
+2. Talk on the radio's microphone as usual. The station doesn't need to be involved
+   in voice.
+3. To keep a record, tap **Logs** (F4). Type the callsign of the station you worked
+   (net control, for a check-in) and a note such as "checked in, no traffic", then
+   tap **Add note**. The UTC time, frequency and mode are filled in from the radio.
+
+## Write an ICS-213 and send it by radio
+
+1. Tap **Forms** (F9), then **New ▾ > ICS-213 message**.
+2. The FEMA form opens with a box on each line. Tap a box and type: To (name and
+   position), From, Subject, Message. Date and time (UTC) are already filled in.
+3. Tap **Save**. Your message is kept even if you stop here.
+4. To send it over the air, agree a frequency and mode with the receiving station
+   (MT63-2000L is the usual choice), put the radio on that frequency, and tap
+   **Send by radio**.
+5. If it says fldigi isn't running, tap **Start fldigi** and wait for its window,
+   then come back to Forms (⌂ Home > Forms) and tap **Send by radio** again.
+6. Check the modem, then tap **Send**. The radio transmits; the window says when
+   it's finished.
+
+![Writing an ICS-213](guide/ics213-edit.png)
+
+## Send a Winlink email
+
+Winlink sends email over the radio through a gateway station. On HF, use VARA HF:
+
+1. Open the **Email** folder and tap **VARA HF**. Wait for its window to open.
+2. Go back Home (**⌂ Home** in the bar at the top) and tap **Email > Winlink mail**.
+3. Start a new message (Pat's compose button), write it and send it. It waits in
+   Pat's **Outbox** until you connect.
+4. Tap **Connect**, pick **VARA HF** and a gateway (Reference > **Nearest Winlink
+   gateways** lists the closest; within about 300 miles, pick one on 80 m or 40 m).
+   The radio moves to the gateway's frequency and the message goes out. Any mail
+   waiting for you comes in.
+
+The rule: **open the modem (VARA HF) first, then Winlink mail.**
+
+## Five rules
+
+1. **One app transmits at a time.** There's one radio.
+2. **Everything is in UTC.** Forms, logs and recordings all use it.
+3. **Identify** as you would on voice. The digital apps send your callsign; on
+   voice, you do.
+4. **Esc (or ⌂ Home) always gets you back** to the Home screen. Nothing is lost:
+   open apps stay open in the bar at the top.
+5. **Don't change Settings** unless you're asked to. The station is already set up
+   for its radio.
+
+## Shut down
+
+Tap **⏻ ▾** (top right) > **Power…** > **Shut down**. Close the apps first so they
+save their settings. Turn the radio off after the station.
+
+> **Desktop mode:** **⏻ ▾ > Power… > Exit Emcomm-CNC** leaves Emcomm-CNC and gives
+> your computer its own speaker and microphone back.
+
+---
+
+# Part 2: Operating the station
+
+## The station at a glance
 
 ### The screen
 
@@ -61,7 +215,7 @@ Every time and date the station writes (forms, logs, recordings, net logs) is in
 
 Tapping a tile whose app is already open brings it to the front; it does not start
 a second copy. While an app starts, its tile shows **Opening…**. If it shows
-**Didn't start** or **No window yet**, see [Troubleshooting](#23-troubleshooting).
+**Didn't start** or **No window yet**, see [Troubleshooting](#troubleshooting).
 
 ### Keys (when a keyboard is plugged in)
 
@@ -105,7 +259,7 @@ The biggest difference is sound: see [Sound](#sound-one-card-for-the-radio-one-s
 
 ---
 
-## 2. Before you operate: the start-up check
+## Before you operate: the start-up check
 
 Do this at the start of every session. It takes two minutes and catches almost
 every problem before you go on the air.
@@ -115,7 +269,7 @@ every problem before you go on the air.
    control starts by itself once the radio is plugged in.
 2. **Diagnostics (F2) > Read frequency.** It should show the frequency on the
    radio's display. If it doesn't, rig control isn't reaching the radio: see
-   [Troubleshooting](#23-troubleshooting).
+   [Troubleshooting](#troubleshooting).
 3. **Time.** Check UTC in the top bar against a known source. FT8, JS8Call and VARA
    all fail if the clock is off by more than about a second. With a GPS plugged
    in, Diagnostics shows whether the clock is following it.
@@ -130,7 +284,7 @@ You're ready to operate.
 
 ---
 
-## 3. How the pieces fit together
+## How the pieces fit together
 
 ### One radio, one rig control
 
@@ -196,6 +350,8 @@ unplugged, their sound goes to a silent output rather than to a speaker.
 - **From radio** (receive audio into the radio apps). Set it so the meter sits about
   a third of the way up on band noise.
 
+![Settings > Audio levels](guide/audio.png)
+
 Set them once per radio and band; they're kept. **Diagnostics > Audio levels** opens
 the same page.
 
@@ -218,7 +374,7 @@ VARA HF and VARA FM share port 8300, so only one of them can run at a time.
 
 ---
 
-## 4. Which apps work together, and in what order
+## Which apps work together, and in what order
 
 ### Order to open things
 
@@ -264,7 +420,7 @@ tap Connect; if the modem isn't running, the connect fails.
 
 ---
 
-## 5. Winlink email: Pat with VARA, ARDOP or packet
+## Winlink email: Pat with VARA, ARDOP or packet
 
 **Winlink mail** (Pat) is the station's email client for the Winlink system. It
 opens in its own window. Pat doesn't make sound itself; it hands each message to a
@@ -351,7 +507,7 @@ control). For your own settings, copy `~/.config/emcomm/direwolf.conf` to
 
 ---
 
-## 6. WSJT-X (FT8)
+## WSJT-X (FT8)
 
 **What it's for:** FT8 and the other weak-signal modes. At an emcomm station it's
 mostly a band check: which bands are open, and from where (the map shows stations
@@ -393,7 +549,7 @@ WSJT-X show on the station's Logs page.
 
 ---
 
-## 7. JS8Call
+## JS8Call
 
 **What it's for:** keyboard messaging on HF that gets through in poor conditions,
 with store-and-forward through other stations (relay and inbox). Good for passing
@@ -414,7 +570,7 @@ band are in Reference.
 
 ---
 
-## 8. fldigi, flamp and flmsg
+## fldigi, flamp and flmsg
 
 ### fldigi
 
@@ -459,7 +615,9 @@ window.
 
 ---
 
-## 9. Forms: ICS-213 messages, nets, ICS-309 and ICS-205
+## Forms: ICS-213 messages, nets, ICS-309 and ICS-205
+
+![Forms](guide/forms.png)
 
 **Forms** (tile or F9) is one page for everything written down during an event. The
 list on the left holds every ICS-213 message (written here or received by fldigi),
@@ -519,7 +677,7 @@ can also save a PDF to a USB stick.
 
 ---
 
-## 10. Logs
+## Logs
 
 **Logs** (tile or F4) shows in one place:
 
@@ -535,9 +693,11 @@ The **Forms** button goes to Forms (F9) and **Recorder** to the Recorder.
 
 ---
 
-## 11. Recorder and Broadcastify
+## Recorder and Broadcastify
 
 ### Recorder
+
+![Recorder](guide/recorder.png)
 
 Records the radio's receive audio to `~/Recordings`, each file named with the UTC
 time, frequency and mode. Open it with **Rec** in the top bar.
@@ -564,7 +724,9 @@ reconnects by itself if the internet drops.
 
 ---
 
-## 12. Reference and the Winlink gateway finder
+## Reference and the Winlink gateway finder
+
+![Reference](guide/reference.png)
 
 **Reference** (tile or F5) holds the frequency lists:
 
@@ -600,7 +762,7 @@ the nearest gateway on a higher band.
 
 ---
 
-## 13. Scanner
+## Scanner
 
 The Scanner is the station's own scanning receiver. It uses an **RTL-SDR dongle**
 (or another SDR), not the radio, so it runs alongside anything else, and it plays on
@@ -649,7 +811,7 @@ closes whatever is holding a dongle.
 
 ---
 
-## 14. Gqrx
+## Gqrx
 
 A waterfall receiver for listening anywhere a receiver reaches, HF included. Modes:
 FM, AM, SSB, CW. The Scanner's channel list is loaded as its bookmarks.
@@ -665,7 +827,7 @@ Gqrx is receive only and never touches the radio.
 
 ---
 
-## 15. NOAA radio (weather alerts with no internet)
+## NOAA radio (weather alerts with no internet)
 
 Decodes the SAME alert bursts from NOAA Weather Radio with an RTL-SDR dongle and a
 162 MHz antenna.
@@ -680,7 +842,7 @@ so you can see the receiver is working.
 
 ---
 
-## 16. APRS and the iGate
+## APRS and the iGate
 
 ### APRS tile
 
@@ -713,7 +875,7 @@ page shows the APRS-IS connection and how many packets were heard and passed.
 
 ---
 
-## 17. Meshtastic and MeshCore
+## Meshtastic and MeshCore
 
 LoRa text messaging on their own small radios, separate from the station's radio.
 
@@ -731,7 +893,7 @@ settings. MeshCore opens `meshcore-cli`; type `?` for its commands.
 
 ---
 
-## 18. Map
+## Map
 
 An offline map with grid squares, your station, Winlink gateways (blue HF, green
 VHF/UHF; tap for frequencies, modes and hours), stations heard on JS8Call and
@@ -750,7 +912,7 @@ offline.
 
 ---
 
-## 19. Online, Browser and Library
+## Online, Browser and Library
 
 ### Online (tile or F7)
 
@@ -775,7 +937,7 @@ internet; any `.zim` on a USB stick shows up too.
 
 ---
 
-## 20. CHIRP
+## CHIRP
 
 Programs handhelds and mobiles over their programming cable. The station keeps
 `~/My frequencies for CHIRP.csv` up to date with the FM channels from My
@@ -784,9 +946,11 @@ file, then upload to the radio.
 
 ---
 
-## 21. Settings
+## Settings
 
-**Settings** (⏻ > Settings, or F3) is a page of tiles:
+![Settings](guide/settings.png)
+
+**Settings** (⏻ ▾ > Settings, or F3) is a page of tiles:
 
 | Tile | What's there |
 | --- | --- |
@@ -812,11 +976,11 @@ file, then upload to the radio.
 
 Set the radio's own CAT RATE menu to the same baud rate.
 
-<!-- TODO: radio menu settings (FT-710, FT-891, ID-5100), pending the user's answer. -->
+The radios' own menu settings are in [Part 4](#the-radios-own-menu-settings).
 
 ---
 
-## 22. Diagnostics
+## Diagnostics
 
 **Diagnostics** (⏻ > Diagnostics, or F2): USB devices, radio ports, sound cards,
 services, recent USB events and GPS.
@@ -831,7 +995,182 @@ The same report is available over SSH with `emcomm-diag`.
 
 ---
 
-## 23. Troubleshooting
+---
+
+# Part 3: ARES and RACES walkthroughs
+
+Whole jobs, start to finish, for an activation. Under RACES, operate only as the
+served agency's RACES plan and its radio officer authorise.
+
+## Activation: the first 15 minutes
+
+1. **Start-up check** ([Before you operate](#before-you-operate-the-start-up-check)):
+   radio on, Rig and Radio audio green, UTC right, PTT test.
+2. **Weather and alerts:** read any alert in the top bar; check **NOAA radio** has
+   your counties.
+3. **Tune the net:** Reference > **My frequencies** > **Tune** on the ARES net
+   frequency.
+4. **Start recording:** **Rec** > **Record when there's a signal**, so the whole net
+   is kept with UTC times.
+5. **Open the net log:** Forms > **New ▾ > Net log** if you're net control, or keep
+   **Logs** open to note your own check-in and traffic.
+6. **Scanner** on the local public-safety groups, on the listening speaker, if you
+   need the picture on the ground.
+7. **Winlink ready:** Reference > **Nearest Winlink gateways** > **Update list** while
+   there's still internet, and note two or three HF gateways (one on 80 m, one on
+   40 m) for NVIS.
+
+## Run a net as net control
+
+![Net control](guide/net.png)
+
+1. Forms > **New ▾ > Net log** (or F8). Type the **net name**, the **incident**
+   (it goes on the ICS forms) and **your name**, then tap **Start net**.
+2. Take check-ins: type each callsign in **From** and press Enter (or **Check in**).
+   A note on the check-in (location, "mobile", "no traffic") goes in **Message**.
+3. Log traffic: **From**, **To** (blank means you, net control) and **Message**, then
+   **Log**. **Undo** removes the last entry.
+4. Hand a formal message to an ICS-213: Forms > **New ▾ > ICS-213 message**; the
+   incident name is filled in while the net is open.
+5. At the end, tap **Close net**, then **ICS-309 log**. It opens the ICS-309 with
+   every entry, ready to **Print** or save as a PDF.
+
+**ICS-205 plan** on the same page prints the radio plan from My frequencies (keep
+each row's note as its assignment, for example "ARES command net").
+
+## Pass formal traffic: which way to send it
+
+| Situation | Send by | How |
+| --- | --- | --- |
+| Short message, other station on the same voice net | Voice | Read it in ICS-213 order; log it in Net control |
+| ICS-213 to another fldigi/flmsg station on VHF/UHF or HF | fldigi (MT63-2000L) | Forms > pick it > **Send by radio** |
+| Message to an agency email address, or out of the area | Winlink | [Send an ICS-213 by Winlink](#send-an-ics-213-by-winlink) |
+| Long list or file (shelter roster, spreadsheet) | flamp through fldigi | Open fldigi, then flamp |
+| Short text when HF is poor | JS8Call | Directed message to the station's callsign |
+
+Received ICS-213s from fldigi appear on the Forms page by themselves. Pick one and
+**More ▾ > Print** to hand a paper copy to the served agency.
+
+## Send an ICS-213 by Winlink
+
+1. Write the ICS-213 in Forms and **Save** it.
+2. Start the modem, then Winlink mail ([order](#which-apps-work-together-and-in-what-order)).
+3. Start a new message in Pat. **To:** the recipient's email address or Winlink
+   callsign. **Subject:** "ICS-213: " and the message's subject.
+4. Copy the ICS-213's fields into the body in form order (Incident, To, From,
+   Subject, Date, Time, Message, Approved by). Plain text is smallest and fastest
+   over HF.
+5. If the recipient needs the form itself, attach the PDF: in Forms, **More ▾ >
+   Print** and save as PDF (a copy also lands in `~/ICS forms`). A PDF takes much
+   longer to send on HF than text; on VARA FM or packet it's fine.
+6. **Connect** through the modem as usual.
+
+## Watch public safety and the weather while you operate
+
+All of these use RTL-SDR dongles, not the radio, so they run alongside any radio
+app and never transmit:
+
+- **Scanner** on the local groups and a distance that covers your area. Its sound
+  goes to the listening speaker, never to the radio.
+- **NOAA radio** decodes weather alerts for your counties. It needs its own dongle
+  while the Scanner runs; with one dongle, alerts pause until the Scanner closes.
+- **Map > Warnings** shows NWS warning areas (fetched while online, kept after).
+- **Recorder** keeps the radio's receive audio, with times, for the after-action
+  report.
+
+## No internet: what still works
+
+| Works with no internet | Needs the internet |
+| --- | --- |
+| Every radio app (Winlink by radio, fldigi, JS8Call, WSJT-X, APRS on RF) | Online page (it shows the last saved answers) |
+| Forms, Net control, ICS-309 and ICS-205, printing | Map backgrounds Streets, Satellite, Topo (**Map** works) |
+| Logs, Recorder, Reference, gateway finder (from the saved list) | Updating the gateway list |
+| Scanner, Gqrx, NOAA radio alerts, ADS-B aircraft | Broadcastify, the APRS iGate |
+| Map (offline), Library (books already downloaded) | Library downloads, Update station |
+| GPS position and time | Callsign lookup (earlier lookups still show) |
+
+Without GPS or internet, the clock drifts. Check UTC against WWV (2.5, 5, 10, 15
+MHz) before digital work.
+
+## Shift change and end of activation
+
+1. Log the handover in Net control ("NCS handed to …").
+2. Hand over: open apps, the open net, any messages not yet sent (Forms list).
+3. At the end: **Close net**, **ICS-309 log** > Print or PDF to a USB stick.
+4. **Rec > Stop**. Recordings are in `~/Recordings`, named with the UTC time.
+5. **Settings > Backup** to a USB stick: settings, lists, nets and forms.
+6. Shut down from **⏻ ▾ > Power…**.
+
+## Preparedness: the monthly check
+
+With internet:
+
+1. **Settings > Update station.** Read Logs > **Station updates** if anything
+   failed.
+2. **Reference > Nearest Winlink gateways > Update list.**
+3. **Library:** download any new books; check the ones you rely on open.
+4. **Online:** check alerts and propagation load.
+
+On the air:
+
+5. Start-up check, including the PTT test.
+6. Send yourself a Winlink message over VARA HF or ARDOP, and check it arrives.
+7. Check in to a local net, logged in Logs.
+8. Run the Scanner and check NOAA radio heard the weekly test (Online page).
+
+Then:
+
+9. **Settings > Backup** to the go-kit's USB stick.
+10. Print this guide (Guide tile > **Print**) if it changed, for the go-kit.
+
+---
+
+# Part 4: Radio settings, troubleshooting and files
+
+## The radios' own menu settings
+
+⚠ **Not yet checked on these radios.** Menu names below are as Yaesu and Icom
+describe them; firmware updates move and rename items. Check each against the
+radio's manual before relying on it.
+
+### Yaesu FT-710 (one USB cable)
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| CAT RATE (CAT-1) | 38400 bps | Must match Settings > Radio |
+| CAT time-out timer | 100 ms or longer | Avoids missed CAT replies |
+| Data mode for digital | **DATA-U** (the station's apps pick it through CAT) | Data/Pkt in WSJT-X and JS8Call |
+| Data modulation source | **USB** (the rear USB port, not the mic) | Transmit audio comes from the computer |
+| USB audio levels (USB MOD GAIN, USB OUT LEVEL) | Middle of the range to start | Fine-tune with Settings > Audio > Levels |
+| VOX | Off | The apps key the radio by CAT |
+| Speech processor, DNR/NB on transmit | Off for digital | Distort data signals |
+
+### Yaesu FT-891 with a Digirig
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| 05-06 CAT RATE | 38400 bps | Must match Settings > Radio |
+| DATA MODE | OTHERS | DATA-U behaves as plain USB data |
+| DATA IN SELECT | REAR | Audio comes in on the rear DATA jack (the Digirig) |
+| DATA PTT SELECT | DAKY | The Digirig keys the radio on the DATA jack |
+| DATA OUT LEVEL | About 50 to start | Receive audio to the Digirig |
+| VOX | Off | |
+
+Settings > Radio: preset **Yaesu FT-891 + Digirig** (PTT is RTS on the Digirig's
+serial port).
+
+### Icom ID-5100 for APRS (Digirig Mobile, ICOM RJ-45 cable)
+
+| Setting | Value |
+| --- | --- |
+| Mode and frequency | FM, 144.390 MHz (North America), on the band the Digirig uses |
+| VOX | Off |
+| Squelch | Just closed on band noise |
+| Volume | Fairly low; set From radio so packets decode |
+| Hand mic | Unplugged while the APRS radio is in use |
+| Time-out timer | Long enough for a beacon (any setting over a few seconds) |
+
+## Troubleshooting
 
 | Problem | Check |
 | --- | --- |
@@ -850,7 +1189,7 @@ The same report is available over SSH with `emcomm-diag`.
 
 ---
 
-## 24. Where things are kept
+## Where things are kept
 
 | What | Where |
 | --- | --- |
