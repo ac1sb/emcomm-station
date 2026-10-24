@@ -873,9 +873,18 @@ so you can see the receiver is working.
 
 ### APRS tile
 
-Tap **APRS** (Mesh & APRS folder). It starts Direwolf and opens **Xastir** with your
-callsign and the position at the centre of your grid square. Direwolf stops when
-Xastir closes.
+Tap **APRS** (Mesh & APRS folder). It starts Direwolf and opens **Xastir**. Direwolf
+stops when Xastir closes.
+
+With the Settings > Radio box ticked
+([Letting the station set up the apps](#letting-the-station-set-up-the-apps)),
+Xastir gets your callsign, the position at the centre of your grid square, and its
+radio connection. Otherwise set them once in Xastir:
+
+| Xastir menu | Setting |
+| --- | --- |
+| File > Configure > Station | Callsign, latitude and longitude |
+| Interface > Interface Control > Add | **Networked AGWPE**, host **localhost**, port **8000** (main radio) or **8010** (APRS radio), transmit enabled, activate on startup |
 
 - With no APRS radio set up, APRS uses the main radio, which must be on 144.390 MHz
   FM (North America), and the FT-710 and FT-891 can't reach it.
@@ -1000,8 +1009,9 @@ file, then upload to the radio.
 
 Each radio you use is a **profile**, kept with its own settings. Pick one in
 **Profile** and tap **Save and use this radio** to switch the station to it. **New…**
-starts a profile from a preset or a copy of another; **Rename…** and **Delete**
-manage them.
+starts a profile from a preset, a copy of another profile, or any other radio Hamlib
+supports (picked in the lists); **Rename…** and **Delete** manage them. The profile
+in use can't be deleted.
 
 | Field | What to pick |
 | --- | --- |
