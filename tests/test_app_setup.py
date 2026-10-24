@@ -6,6 +6,8 @@ Run: python3 tests/test_app_setup.py
 
 import json
 import os
+import socketserver
+import threading
 import subprocess
 import sys
 import tempfile
@@ -174,6 +176,38 @@ class AppSetupTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.run_helper("wsjtx")))
         # Emcomm-CNC's own Direwolf file and flmsg's UTC times aren't rig settings in another app.
         self.assertIn("MYCALL AC1SB", self.read(self.run_helper("direwolf")))
+
+    def fake_rigctld(self, mode):
+        commands = []
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                for raw in self.rfile:
+                    cmd = raw.decode().strip()
+                    commands.append(cmd)
+                    self.wfile.write((f"{mode}\n2400\n" if cmd == "m" else "RPRT 0\n").encode())
+
+        server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"127.0.0.1:{server.server_address[1]}", commands
+
+    def test_fldigi_puts_the_radio_in_data_mode(self):
+        rig, commands = self.fake_rigctld("USB")
+        self.run_helper("fldigi", EMCOMM_RIGCTLD=rig)
+        self.assertEqual(commands, ["m", "M PKTUSB 0"])
+        rig, commands = self.fake_rigctld("PKTUSB")  # already there: left alone
+        self.run_helper("fldigi", EMCOMM_RIGCTLD=rig)
+        self.assertEqual(commands, ["m"])
+        self.set_station(callsign="AC1SB", grid="FN31", data_mode="none")
+        rig, commands = self.fake_rigctld("FM")
+        self.run_helper("fldigi", EMCOMM_RIGCTLD=rig)
+        self.assertEqual(commands, [])
+        self.set_station(callsign="AC1SB", grid="FN31", data_mode="data")
+        self.allow(False)
+        self.run_helper("fldigi", EMCOMM_RIGCTLD=rig)
+        self.assertEqual(commands, [])
 
     def test_radio_skips_an_open_app(self):
         # A program named wsjtx that's running: it would write its own settings back on closing.

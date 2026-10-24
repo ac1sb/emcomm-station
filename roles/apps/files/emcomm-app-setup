@@ -10,7 +10,8 @@
                              first run only: APRS through Direwolf's AGW port
   emcomm-app-setup js8call   callsign, grid and rig control
   emcomm-app-setup wsjtx     callsign, grid and rig control
-  emcomm-app-setup fldigi    callsign, grid and rig control
+  emcomm-app-setup fldigi    callsign, grid and rig control, and the radio put in the
+                             mode for digital apps (DATA-U or USB), which fldigi doesn't set
   emcomm-app-setup flmsg     dates and times in UTC (2026-10-21, 1356Z), the full
                              window with flmsg's own forms, and the callsign if
                              flmsg has none yet
@@ -37,12 +38,13 @@ import json
 import os
 import re
 import shutil
+import socket
 import sys
 import time
 
 STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 HOME = os.path.expanduser("~")
-RIGCTLD = "127.0.0.1:4532"
+RIGCTLD = os.environ.get("EMCOMM_RIGCTLD", "127.0.0.1:4532")
 # The radio's sound card through PipeWire, which emcomm-audio-default makes the
 # default, so Direwolf can share it with JS8Call, fldigi and the recorder.
 # Opening the card directly (plughw:CARD=rigaudio) would lock the others out.
@@ -349,6 +351,31 @@ SETUP = {"wsjtx": lambda st: setup_qt_ini(st, "WSJT-X.ini"), "js8call": lambda s
          "fldigi": lambda st: setup_fldigi(st), "pat": lambda st: setup_pat(st), "xastir": lambda st: setup_xastir(st)}
 
 
+# Hamlib's names for the mode for digital apps; "none" leaves the radio as it is.
+RIG_MODES = {"data": "PKTUSB", "usb": "USB"}
+
+
+def rigctld(command, timeout=3):
+    """One rigctld command; the first line of its answer, or None."""
+    host, port = RIGCTLD.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(command.encode() + b"\n")
+            data = s.recv(256).decode(errors="replace")
+    except OSError:
+        return None
+    return data.splitlines()[0].strip() if data else None
+
+
+def set_rig_mode(station):
+    """Put the radio in the mode for digital apps, unless it's there already. True if changed."""
+    want = RIG_MODES.get(station.get("data_mode") or "data")
+    if not want or rigctld("m") in (want, None):
+        return False
+    return rigctld(f"M {want} 0") == "RPRT 0"
+
+
 def setup_radio(station):
     """Write the radio into every installed app's settings. [(app, name, state, backup)],
     state being updated, unchanged, open, left alone, not installed or not allowed."""
@@ -420,6 +447,8 @@ def main(argv):
             path = os.path.join(HOME, RADIO_APPS[app][2])
         else:
             path = SETUP[app](station)[0]
+            if app == "fldigi":
+                set_rig_mode(station)
     elif app == "direwolf":
         path = setup_direwolf(station)
     elif app == "flmsg":

@@ -49,6 +49,7 @@ PRESETS_DIR = os.environ.get("EMCOMM_PRESETS", "/usr/share/emcomm/radios")
 FAKE_DEVICES = os.environ.get("EMCOMM_FAKE_DEVICES")  # JSON file of devices, for testing without hardware
 BACKUP_CMD = os.environ.get("EMCOMM_BACKUP", "emcomm-backup")
 APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply-settings").split()
+FIND_CMD = os.environ.get("EMCOMM_FIND", "sudo -n /usr/local/sbin/emcomm-find-radio").split()
 UPDATE_CMD = os.environ.get("EMCOMM_UPDATE", "sudo -n /usr/local/sbin/emcomm-update").split()
 SPLASH_CMD = os.environ.get("EMCOMM_SPLASH", "sudo -n /usr/local/sbin/emcomm-splash").split()
 SPLASH_PATH = os.environ.get("EMCOMM_SPLASH_SETTINGS", "/etc/emcomm/splash.json")
@@ -531,6 +532,47 @@ def detect_devices():
             name = props.get("ID_MODEL", "").replace("_", " ") or os.path.basename(path)
             cards.append((f"{describe_match(match)} · {name}", match))
     return ports, cards
+
+
+def serial_link(match):
+    """The /dev/serial/by-id link of the plugged-in port a match describes, or None."""
+    if FAKE_DEVICES:
+        for m, link in read_json(FAKE_DEVICES, {}).get("serial_links", []):
+            if isinstance(match, dict) and match.items() <= m.items():
+                return link
+        return None
+    for link in sorted(glob.glob("/dev/serial/by-id/*")):
+        found = usb_match(udev_props(["-n", link]), with_interface=True)
+        if found and isinstance(match, dict) and match.items() <= found.items():
+            return link
+    return None
+
+
+def devices_signature():
+    """Changes whenever a USB serial port or sound card comes or goes (cheap: no udev queries)."""
+    if FAKE_DEVICES:
+        try:
+            return str(os.path.getmtime(FAKE_DEVICES))
+        except OSError:
+            return ""
+    return "|".join(sorted(os.listdir("/dev/serial/by-id")) if os.path.isdir("/dev/serial/by-id") else []) + \
+        "#" + "|".join(sorted(glob.glob("/sys/class/sound/card[0-9]*")))
+
+
+def plugged_profiles(profiles, ports, cards):
+    """Saved radios whose CAT port is plugged in, best match first: [(name, score)]. The score
+    counts which of its CAT port, PTT port and sound card are plugged in."""
+    def present(match, devices):
+        return isinstance(match, dict) and any(match.items() <= m.items() for _label, m in devices)
+
+    found = []
+    for name, p in profiles.items():
+        if not present(p.get("cat_match"), ports):
+            continue
+        score = 1 + present(p.get("ptt_match"), ports) + present(p.get("audio_match"), cards) \
+            + bool(isinstance(p.get("cat_match"), dict) and p["cat_match"].get("serial"))
+        found.append((name, score))
+    return sorted(found, key=lambda f: -f[1])
 
 
 def aprs_sound_cards():
@@ -2092,6 +2134,9 @@ class Launcher(Gtk.Window):
         # from the desktop's menu rather than a tile (open apps are skipped).
         threading.Thread(target=set_up_apps, daemon=True).start()
         self.choices = {}
+        self._devices_seen = None  # devices_signature() at the last look
+        self._switch_declined = set()  # radios the operator said not now to, until they're unplugged
+        self._switch_dialog = None
         self._filling = False
         self.default_audio_card = None
         self.audio_router = None  # emcomm-audio watch
@@ -2378,6 +2423,11 @@ class Launcher(Gtk.Window):
                 net = self._network_summary()
                 gps = gps_fix() if os.path.exists(GPS_DEV) else "absent"
                 GLib.idle_add(self._show_status, freq, audio, net, gps)
+                signature = devices_signature()
+                if signature != self._devices_seen:
+                    self._devices_seen = signature
+                    ports, cards = detect_devices()
+                    GLib.idle_add(lambda: self._radio_plugged(ports, cards) and False)
             finally:
                 self._poll_lock.release()
 
@@ -4441,9 +4491,13 @@ class Launcher(Gtk.Window):
         self.test_cat_btn.set_tooltip_text("Read the frequency and mode from the radio")
         self.test_ptt_btn = self._navbtn("Test PTT", lambda *_: self._test_ptt())
         self.test_ptt_btn.set_tooltip_text("Key the transmitter for 2 seconds, then release it")
-        rescan = self._navbtn("Rescan devices", lambda *_: self._rescan_devices())
+        rescan = self._navbtn("Rescan", lambda *_: self._rescan_devices())
+        rescan.set_tooltip_text("Look again for USB serial ports and sound cards")
+        self.find_radio_btn = self._navbtn("Find radio", lambda *_: self._find_radio())
+        self.find_radio_btn.set_tooltip_text("Ask the radio on the CAT port which model it is and what baud rate it uses")
         strip.pack_end(self.test_ptt_btn, False, False, 0)
         strip.pack_end(self.test_cat_btn, False, False, 0)
+        strip.pack_end(self.find_radio_btn, False, False, 0)
         strip.pack_end(rescan, False, False, 0)
         body.pack_start(strip, False, False, 0)
         self.rig_transmitting = False
@@ -4656,6 +4710,143 @@ class Launcher(Gtk.Window):
             self._set_message("Saved. " + ("Every app follows the radio." if not leave else
                               "Left alone: " + ", ".join(dict(RADIO_APPS)[k].split(" (")[0] for k in leave) + "."),
                               True)
+
+    # ---- Find radio, and switching when a saved radio is plugged in ----
+
+    def _find_radio(self):
+        cat = self._chosen(self.cat_combo)
+        link = serial_link(cat) if isinstance(cat, dict) else None
+        if not link:
+            self._set_message("Pick the radio's CAT port first (plug the radio in and tap Rescan).", False)
+            return
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                   buttons=Gtk.ButtonsType.NONE, text="Find the radio on this CAT port?")
+        dialog.format_secondary_text(
+            "Rig control stops for up to a minute while each baud rate is tried, so apps using the radio lose "
+            "it meanwhile. The radio is only asked who it is: nothing transmits. Turn the radio on first.")
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Find radio", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        model = self.model_combo.get_active_id()
+        self.find_radio_btn.set_sensitive(False)
+        self._set_message("Asking the radio at each baud rate…", None)
+
+        def work():
+            try:
+                out = subprocess.run(FIND_CMD + [link] + ([model] if model else []), capture_output=True,
+                                     text=True, timeout=120, check=False).stdout
+                found = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                found = {}
+            GLib.idle_add(lambda: self._radio_found(found) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _radio_found(self, found):
+        self.find_radio_btn.set_sensitive(True)
+        if not found:
+            self._set_message("Find radio isn't installed yet. Run Update station.", False)
+            return
+        if not found.get("found"):
+            self._set_message(found.get("why") or "No radio answered.", False)
+            return
+        if found.get("model") and found["model"] != (int(self.model_combo.get_active_id() or 0)):
+            mfg = next((m for m, models in self.models.items() if any(n == found["model"] for n, _ in models)), None)
+            self._model_to_select = found["model"]
+            self.mfg_combo.set_active_id(mfg)
+            if self._model_to_select is not None:
+                self._mfg_changed(self.mfg_combo)
+        self.baud_combo.set_active_id(str(found["baud"]))
+        where = f", on {format_freq(found['freq'])} MHz" if found.get("freq") else ""
+        if found.get("model"):
+            self._set_message(f"Found {found['name']} at {found['baud']} baud{where}. Model and baud rate are filled "
+                              "in: Save to use them.", True)
+        else:
+            self._set_message(f"Found a radio ({found['name']}) at {found['baud']} baud{where}, but Hamlib doesn't "
+                              "know it by that name: pick its model in the lists, then Save.", True)
+
+    def _radio_plugged(self, ports, cards):
+        """A saved radio other than the one in use is plugged in, and the one in use isn't: offer to switch."""
+        if not hasattr(self, "profiles"):
+            return
+        names = [n for n, _score in plugged_profiles(self.profiles, ports, cards)]
+        self._switch_declined &= set(names)  # unplugged: ask again next time
+        active = self.station.get("radio_name")
+        if not names or active in names or self._switch_dialog is not None:
+            return
+        best = plugged_profiles(self.profiles, ports, cards)
+        choices = [n for n, score in best if score == best[0][1] and n not in self._switch_declined]
+        if not choices:
+            return
+        dialog = Gtk.MessageDialog(transient_for=self, modal=False, message_type=Gtk.MessageType.QUESTION,
+                                   buttons=Gtk.ButtonsType.NONE,
+                                   text=(f"{choices[0]} is plugged in" if len(choices) == 1 else
+                                         "A saved radio is plugged in"))
+        detail = (f"The radio in use, {active}, isn't. " if active else "") + \
+            "Switch to it? Rig control restarts for it" + \
+            (", and the apps are set up for it." if read_json(APP_RADIO_PATH, {}).get("allowed") is True else ".")
+        dialog.format_secondary_text(detail)
+        pick = None
+        if len(choices) > 1:
+            pick = PickList()
+            for name in choices:
+                pick.append(name, name)
+            pick.set_active(0)
+            dialog.get_message_area().pack_start(pick, False, False, 0)
+        dialog.add_buttons("Not now", Gtk.ResponseType.CANCEL, "Switch", Gtk.ResponseType.OK)
+
+        def answered(d, response):
+            name = pick.get_active_id() if pick else choices[0]
+            d.destroy()
+            self._switch_dialog = None
+            if response == Gtk.ResponseType.OK:
+                self._switch_profile(name)
+            else:
+                self._switch_declined.update(choices)
+
+        dialog.connect("response", answered)
+        dialog.show_all()
+        self._switch_dialog = dialog
+
+    def _switch_profile(self, name):
+        """Make a saved radio the one in use, as Save on the Radio page does."""
+        profile = self.profiles.get(name)
+        if not profile:
+            return
+        st = self.station
+        new = {"callsign": st.get("callsign", ""), "grid": st.get("grid", ""), "radio_name": name,
+               **{k: profile.get(k) for k in PROFILE_FIELDS}, "gps_match": st.get("gps_match")}
+        if st.get("timezone"):
+            new["timezone"] = st["timezone"]
+
+        def work():
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump(new, f)
+                path = f.name
+            try:
+                result = subprocess.run(APPLY_CMD + [path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        text=True, timeout=60)
+                ok, text = result.returncode == 0, result.stdout.strip()
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                ok, text = False, f"Couldn't switch: {exc}"
+            finally:
+                os.unlink(path)
+            if ok:
+                text = f"{text} {apps_summary(set_up_apps())}".strip()
+            GLib.idle_add(lambda: self._switched(ok, text) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _switched(self, ok, text):
+        if ok:
+            self.station = load_station()
+            self._show_station()
+            self._fill_settings()
+        self._set_message(text, ok)
+        if self.stack.get_visible_child_name() != "station-radio":
+            self._message(text)
 
     # ---- rig control: status light, Test CAT, Test PTT ----------------
 

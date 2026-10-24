@@ -180,6 +180,13 @@ def main():
                 "echo '{\"app\": \"js8call\", \"name\": \"JS8Call\", \"state\": \"open\", \"backup\": null}'\n")
     for path in (fake_apply, fake_setup):
         os.chmod(path, 0o755)
+    fake_find = os.path.join(tmp.name, "emcomm-find-radio")
+    with open(fake_find, "w", encoding="utf-8") as f:
+        f.write("#!/bin/sh\necho \"$@\" > " + os.path.join(tmp.name, "find-args") + "\n"
+                "echo '{\"found\": true, \"model\": 1036, \"name\": \"FT-891\", \"baud\": 38400, "
+                "\"freq\": \"7074000\"}'\n")
+    os.chmod(fake_find, 0o755)
+    os.environ["EMCOMM_FIND"] = fake_find
     os.environ.update({"EMCOMM_APPLY": fake_apply, "EMCOMM_APP_SETUP": fake_setup,
                        "EMCOMM_RIG_CAT": os.path.join(tmp.name, "rig-cat")})
     loader = importlib.machinery.SourceFileLoader("emcomm_launcher", os.path.join(FILES, "emcomm-launcher"))
@@ -550,6 +557,46 @@ def main():
     check("Set up for this radio: WSJT-X and fldigi." in message and "Not changed while open: JS8Call" in message,
           f"Save says what it did to the apps: {message}")
     check(json.load(open(L.PROFILES_PATH))["profiles"]["FT-710"]["data_mode"] == "usb", "profile updated on Save")
+
+    # ---- Find radio: the radio on the CAT port names itself; its model and baud rate are filled in ----
+    ft891_port = {"vendor": "10c4", "product": "ea70", "serial": "FT891", "interface": "00"}
+    devices = os.environ["EMCOMM_FAKE_DEVICES"]
+    with open(devices, "w", encoding="utf-8") as f:
+        json.dump({"serial": [["USB 10c4:ea70 port 0 · ttyUSB0 · CP2105", ft891_port]], "sound": [],
+                   "aprs_sound": [], "serial_links": [[ft891_port, "/dev/serial/by-id/usb-Silicon_Labs_FT891-if00"]]}, f)
+    win._rescan_devices()
+    win.cat_combo.set_active_id("d0")
+    answer_dialog(lambda d: Gtk.ResponseType.OK)
+    win._find_radio()
+    pump(1.5)
+    message = win.settings_messages[0].get_text()
+    args = open(os.path.join(tmp.name, "find-args")).read().split()
+    check(args[0] == "/dev/serial/by-id/usb-Silicon_Labs_FT891-if00", f"Find radio asks about the CAT port: {args}")
+    check(message.startswith("Found FT-891 at 38400 baud, on 7.074.000"), f"Find radio: {message}")
+    check(win.baud_combo.get_active_id() == "38400", "baud rate filled in")
+    check(win.model_combo.get_active_id() == "1036" or not win.models, "model filled in")
+    win._fill_settings()
+
+    # ---- A saved radio plugged in while another is in use: offer to switch ----
+    win.profiles["FT-710"]["cat_match"] = {"vendor": "10c4", "product": "ea70", "serial": "FT710", "interface": "00"}
+    win.profiles["FT-891 home"] = {"rig_model": 1036, "cat_baud": 38400, "cat_match": ft891_port, "ptt_method": "RTS",
+                                   "ptt_match": None, "audio_match": None, "data_mode": "data"}
+    with open(devices, "a", encoding="utf-8"):
+        os.utime(devices, None)
+    win._devices_seen = "before"
+    win._poll_status()
+    pump(2)
+    offer = win._switch_dialog
+    check(offer is not None and "FT-891 home is plugged in" in (offer.get_property("text") or ""),
+          "offered to switch to the radio plugged in")
+    if offer is not None:
+        offer.response(Gtk.ResponseType.OK)
+        pump(2.5)
+        check(json.load(open(os.environ["EMCOMM_STATION"]))["radio_name"] == "FT-891 home", "switched to it")
+        check(win.profile_combo.get_active_id() == "FT-891 home", "Radio page shows it in use")
+    for d in dialogs():
+        d.response(Gtk.ResponseType.OK)  # the note shown when switching away from the Radio page
+    pump(0.3)
     rigctld.shutdown()
     rigctld.server_close()
     pump(3)

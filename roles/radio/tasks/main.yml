@@ -42,6 +42,12 @@
     dest: /usr/local/sbin/emcomm-apply-settings
     mode: "0755"
 
+- name: Install the radio finder (which radio is on the CAT port, at what baud rate)
+  ansible.builtin.copy:
+    src: emcomm-find-radio
+    dest: /usr/local/sbin/emcomm-find-radio
+    mode: "0755"
+
 - name: Install the default-audio helper (makes the radio every app's sound card)
   ansible.builtin.copy:
     src: emcomm-audio-default
@@ -59,7 +65,9 @@
 
 - name: Let the station user save settings from the Settings screen
   ansible.builtin.copy:
-    content: "{{ station_user }} ALL=(root) NOPASSWD: /usr/local/sbin/emcomm-apply-settings\n"
+    content: |
+      {{ station_user }} ALL=(root) NOPASSWD: /usr/local/sbin/emcomm-apply-settings
+      {{ station_user }} ALL=(root) NOPASSWD: /usr/local/sbin/emcomm-find-radio
     dest: /etc/sudoers.d/emcomm-settings
     mode: "0440"
     validate: visudo -cf %s
