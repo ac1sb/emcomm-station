@@ -43,6 +43,37 @@ class ApplySettingsTest(unittest.TestCase):
         with open(os.path.join(self.root, rel)) as f:
             return f.read()
 
+    def test_second_radio(self):
+        self.assertEqual(self.run_helper(preset("ft-710", cat_match={"vendor": "10c4", "product": "ea70",
+                                                                     "serial": "A1", "interface": "00"})).returncode, 0)
+        radio2 = preset("ft-891-digirig", cat_match={"vendor": "10c4", "product": "ea70", "serial": "B2",
+                                                     "interface": "00"})
+        r = self.run_helper(radio2, "--radio2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rules = self.read("etc/udev/rules.d/99-emcomm-radio2.rules")
+        self.assertIn('ENV{ID_SERIAL_SHORT}=="B2"', rules)
+        self.assertIn('SYMLINK+="rig2-cat", TAG+="systemd", ENV{SYSTEMD_WANTS}+="rigctld2.service"', rules)
+        self.assertIn('SYMLINK+="rig2-ptt"', rules)
+        self.assertIn('ATTR{id}="rig2audio"', rules)
+        env = self.read("etc/emcomm/rigctld2.env")
+        self.assertIn("--model=1036 --rig-file=/dev/rig2-cat --serial-speed=38400 --ptt-type=RTS "
+                      "--ptt-file=/dev/rig2-ptt", env)
+        self.assertEqual(json.loads(self.read("etc/emcomm/radio2.json"))["radio_name"], "Yaesu FT-891 + Digirig")
+        # The first radio's settings are untouched.
+        self.assertIn("--model=1049", self.read("etc/emcomm/rigctld.env"))
+        # Off: the files go.
+        r = self.run_helper({"radio_name": ""}, "--radio2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "etc/udev/rules.d/99-emcomm-radio2.rules")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "etc/emcomm/rigctld2.env")))
+
+    def test_second_radio_cant_share_the_first_ones_port(self):
+        self.assertEqual(self.run_helper(preset("ft-710", cat_match={"vendor": "10c4", "product": "ea70",
+                                                                     "interface": "00"})).returncode, 0)
+        r = self.run_helper(preset("ft-891-digirig"), "--radio2")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("radio 2's CAT port is radio 1's", r.stderr)
+
     def test_data_mode(self):
         r = self.run_helper(preset("ft-710"))
         self.assertEqual(r.returncode, 0, r.stderr)

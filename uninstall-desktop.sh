@@ -24,12 +24,12 @@ packages=false
 [ "${1:-}" = --packages ] && packages=true
 
 echo "== Stopping Emcomm-CNC's services =="
-for unit in emcomm-nwr emcomm-adsb rigctld; do
+for unit in emcomm-nwr emcomm-adsb emcomm-igate rigctld rigctld2; do
   systemctl disable --now "$unit" 2>/dev/null
   rm -f "/etc/systemd/system/$unit.service"
 done
 systemctl daemon-reload
-rm -f /etc/udev/rules.d/99-emcomm-radio.rules
+rm -f /etc/udev/rules.d/99-emcomm-radio.rules /etc/udev/rules.d/99-emcomm-radio2.rules /etc/udev/rules.d/99-emcomm-vhf.rules
 udevadm control --reload 2>/dev/null
 
 echo "== Putting back settings it changed =="

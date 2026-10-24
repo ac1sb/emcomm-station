@@ -27,9 +27,15 @@ The APRS radio's sound card ("aprsaudio") belongs to Direwolf, which opens it
 directly; its udev rule hides it from PipeWire, and if PipeWire has it anyway
 (the rule not applied yet), nothing is let play through it.
 
+A second radio running alongside the first (Settings > Radio > Radio 2, ALSA card
+"rig2audio") gets the radio apps picked for it in Settings > Radio > Apps…: their sound
+and microphone are moved to its card, and silenced while it's unplugged. Nothing else
+plays through it.
+
 Settings come from ~/.config/emcomm/audio.json, which the launcher writes:
   listen_sink   the listening speaker's PipeWire name, or "" to pick one
   radio_apps    more apps (as "status" names them) allowed to play through the radio
+  radio2_apps   the apps on radio 2, by the names in RADIO2_APPS
 """
 
 import json
@@ -43,6 +49,13 @@ import time
 SETTINGS = os.path.expanduser("~/.config/emcomm/audio.json")
 RADIO_CARD = os.environ.get("EMCOMM_RADIO_CARD", "/proc/asound/rigaudio")
 APRS_CARD = os.environ.get("EMCOMM_APRS_CARD", "/proc/asound/aprsaudio")
+RADIO2_CARD = os.environ.get("EMCOMM_RADIO2_CARD", "/proc/asound/rig2audio")
+# Apps that can be put on radio 2 -> what their sound is known by (app name or program,
+# matched as part of the name: Wine calls VARA FM "VARAFM.exe").
+RADIO2_APPS = {
+    "wsjtx": ("wsjt-x", "wsjtx"), "js8call": ("js8call",), "fldigi": ("fldigi", "flamp"),
+    "direwolf": ("direwolf",), "varafm": ("varafm",), "ardop": ("ardop",),
+}
 SILENT = "emcomm_silent"
 # PipeWire versions put the ALSA card number under different keys.
 CARD_KEYS = ("api.alsa.card", "alsa.card", "api.alsa.pcm.card")
@@ -81,8 +94,10 @@ def load_settings(path=None):
     if not isinstance(saved, dict):
         saved = {}
     apps = saved.get("radio_apps")
+    radio2 = saved.get("radio2_apps")
     return {"listen_sink": str(saved.get("listen_sink") or ""),
-            "radio_apps": [str(a).lower() for a in apps] if isinstance(apps, list) else []}
+            "radio_apps": [str(a).lower() for a in apps] if isinstance(apps, list) else [],
+            "radio2_apps": [a for a in radio2 if a in RADIO2_APPS] if isinstance(radio2, list) else []}
 
 
 def card_number(link):
@@ -172,20 +187,41 @@ def is_radio_app(stream, extra=()):
     return any(n.endswith(".exe") or n.startswith("wine") for n in names if n)
 
 
-def plan(sinks, inputs, settings, radio_card, aprs_card, silent_ok=True):
+def on_radio2(stream, settings):
+    """A radio app picked for radio 2."""
+    props = stream.get("properties") or {}
+    binary = os.path.basename(str(props.get("application.process.binary") or "")).lower()
+    names = [n for n in (app_key(stream), binary) if n]
+    return any(word in name for app in settings.get("radio2_apps", []) for word in RADIO2_APPS[app]
+               for name in names)
+
+
+def plan(sinks, inputs, settings, radio_card, aprs_card, silent_ok=True, radio2_card=None):
     """[(stream index, sink name or None for mute, why)] for the streams in the wrong place."""
     by_index = {s.get("index"): s for s in sinks}
-    radio_cards = [c for c in (radio_card, aprs_card) if c is not None]
+    radio_cards = [c for c in (radio_card, aprs_card, radio2_card) if c is not None]
     speaker = listening_speaker(sinks, radio_cards, settings["listen_sink"])
     target = speaker["name"] if speaker else (SILENT if silent_ok else None)
     radio_sink = next((s["name"] for s in sinks if on_card(s, radio_card) and not is_monitor(s)), None)
+    radio2_sink = next((s["name"] for s in sinks if on_card(s, radio2_card) and not is_monitor(s)), None)
     moves = []
     for stream in inputs:
         sink = by_index.get(stream.get("sink"))
         if sink is None:
             continue
+        radio_app = is_radio_app(stream, settings["radio_apps"])
         if on_card(sink, aprs_card):
             moves.append((stream["index"], target, "on the APRS radio"))
+        elif radio_app and on_radio2(stream, settings):
+            if radio2_sink and sink.get("name") != radio2_sink:
+                moves.append((stream["index"], radio2_sink, "a radio 2 app"))
+            elif not radio2_sink and sink.get("name") != SILENT:
+                moves.append((stream["index"], SILENT if silent_ok else None, "a radio 2 app, radio 2 unplugged"))
+        elif on_card(sink, radio2_card):
+            if radio_app:
+                moves.append((stream["index"], radio_sink or (SILENT if silent_ok else None), "a radio 1 app"))
+            else:
+                moves.append((stream["index"], target, "not a radio app"))
         elif on_card(sink, radio_card) and not is_radio_app(stream, settings["radio_apps"]):
             moves.append((stream["index"], target, "not a radio app"))
         elif is_radio_app(stream, settings["radio_apps"]):
@@ -201,19 +237,24 @@ def plan(sinks, inputs, settings, radio_card, aprs_card, silent_ok=True):
     return moves
 
 
-def plan_sources(sources, outputs, settings, radio_card):
+def plan_sources(sources, outputs, settings, radio_card, radio2_card=None):
     """[(stream index, source name, why)]: radio apps listening to the computer's own
-    microphone instead of the radio. Recording apps that aren't radio apps are left alone."""
+    microphone (or the other radio) instead of their radio. Recording apps that aren't
+    radio apps are left alone."""
     radio = next((s["name"] for s in sources if on_card(s, radio_card) and not is_monitor(s)), None)
-    if radio is None:
-        return []
+    radio2 = next((s["name"] for s in sources if on_card(s, radio2_card) and not is_monitor(s)), None)
     by_index = {s.get("index"): s for s in sources}
     moves = []
     for stream in outputs:
         source = by_index.get(stream.get("source"))
-        if source is None or is_monitor(source) or on_card(source, radio_card):
+        if source is None or is_monitor(source) or not is_radio_app(stream, settings["radio_apps"]):
             continue
-        if is_radio_app(stream, settings["radio_apps"]) and speaker_kind(source) != "usb":
+        if on_radio2(stream, settings):
+            if radio2 and source.get("name") != radio2:
+                moves.append((stream["index"], radio2, "a radio 2 app"))
+        elif radio and on_card(source, radio2_card):
+            moves.append((stream["index"], radio, "a radio 1 app"))
+        elif radio and not on_card(source, radio_card) and speaker_kind(source) != "usb":
             moves.append((stream["index"], radio, "a radio app"))
     return moves
 
@@ -237,10 +278,10 @@ class Router:
             return []
         inputs = pactl_list("sink-inputs")
         settings = load_settings()
-        radio, aprs = card_number(RADIO_CARD), card_number(APRS_CARD)
-        moves = plan(sinks, inputs, settings, radio, aprs, silent_ok=False)
+        radio, aprs, radio2 = card_number(RADIO_CARD), card_number(APRS_CARD), card_number(RADIO2_CARD)
+        moves = plan(sinks, inputs, settings, radio, aprs, silent_ok=False, radio2_card=radio2)
         if any(target is None for _i, target, _w in moves) and silent_sink(sinks):
-            moves = plan(pactl_list("sinks"), inputs, settings, radio, aprs)
+            moves = plan(pactl_list("sinks"), inputs, settings, radio, aprs, radio2_card=radio2)
         done = []
         for index, target, why in moves:
             if target is None:
@@ -255,7 +296,7 @@ class Router:
         live = {i.get("index") for i in inputs}
         self.muted &= live
         for index, source, why in plan_sources(pactl_list("sources"), pactl_list("source-outputs"),
-                                               settings, radio):
+                                               settings, radio, radio2):
             if pactl("move-source-output", str(index), source) is not None:
                 done.append((index, source, why))
         return done
@@ -305,14 +346,15 @@ def status():
     sources = pactl_list("sources")
     inputs = pactl_list("sink-inputs")
     settings = load_settings()
-    radio, aprs = card_number(RADIO_CARD), card_number(APRS_CARD)
-    cards = [c for c in (radio, aprs) if c is not None]
+    radio, aprs, radio2 = card_number(RADIO_CARD), card_number(APRS_CARD), card_number(RADIO2_CARD)
+    cards = [c for c in (radio, aprs, radio2) if c is not None]
     speaker = listening_speaker(sinks, cards, settings["listen_sink"])
     by_index = {s.get("index"): s for s in sinks}
     streams = []
     for stream in inputs:
         sink = by_index.get(stream.get("sink")) or {}
-        place = ("radio" if on_card(sink, radio) else "silent" if sink.get("name") == SILENT
+        place = ("radio" if on_card(sink, radio) else "radio2" if on_card(sink, radio2)
+                 else "silent" if sink.get("name") == SILENT
                  else "aprs" if on_card(sink, aprs) else "speaker")
         streams.append({"index": stream.get("index"), "app": app_label(stream), "key": app_key(stream),
                         "radio_app": is_radio_app(stream, settings["radio_apps"]), "place": place,

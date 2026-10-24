@@ -1,0 +1,18 @@
+# Managed by the emcomm-station playbook.
+# Rig control for a second radio running alongside the first (Settings > Radio >
+# Radio 2). Its arguments come from /etc/emcomm/rigctld2.env, which
+# emcomm-apply-settings --radio2 writes.
+[Unit]
+Description=Hamlib rig control (radio 2)
+BindsTo=dev-rig2\x2dcat.device
+After=dev-rig2\x2dcat.device
+
+[Service]
+User={{ station_user }}
+EnvironmentFile=/etc/emcomm/rigctld2.env
+ExecStart=/usr/bin/rigctld $RIGCTLD_ARGS --listen-addr=127.0.0.1 --port=4533
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

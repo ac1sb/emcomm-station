@@ -35,11 +35,12 @@ jobs:
           roles/launcher/files/emcomm-ics roles/radio/files/emcomm-nwr roles/radio/files/emcomm-adsb roles/apps/files/emcomm-library
           roles/launcher/files/emcomm-backup roles/radio/files/emcomm-recorder roles/radio/files/emcomm-stream roles/kiosk/files/emcomm-display
           roles/apps/files/emcomm-scanner roles/apps/files/emcomm-mesh-nodes roles/radio/files/emcomm-igate
-          roles/kiosk/files/emcomm-splash roles/launcher/files/emcomm-guide
+          roles/kiosk/files/emcomm-splash roles/radio/files/emcomm-find-radio roles/launcher/files/emcomm-guide
       - name: Helper tests
         run: |
           python tests/test_apply_settings.py
           python tests/test_app_setup.py
+          python tests/test_find_radio.py
           python tests/test_online.py
           python tests/test_ics.py
           python tests/test_nwr.py
