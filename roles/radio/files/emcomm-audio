@@ -13,6 +13,11 @@ The radio's sound card (ALSA card "rigaudio") is every app's default speaker,
 so the digital-mode apps reach it with no settings of their own. Anything else
 that plays sound (the Scanner, Gqrx, the browser, the Library, a recording) would
 then go out over the air: into a digital transmission, a PTT test, or by VOX.
+The other way round, a radio app found on the computer's own speaker or microphone
+(the default isn't the radio, or the radio's card dropped off the USB for a moment)
+is moved to the radio, or silenced while the radio is unplugged, so its tones never
+come out of the computer. Radio apps on another USB card are left there: it may be
+a second radio.
 So only radio apps may play through the radio. Everything else is moved, as it
 starts, to the listening speaker picked in Settings > Audio (the computer's own
 speaker or headphone jack, a Bluetooth speaker, HDMI, or a USB headset picked by
@@ -173,6 +178,7 @@ def plan(sinks, inputs, settings, radio_card, aprs_card, silent_ok=True):
     radio_cards = [c for c in (radio_card, aprs_card) if c is not None]
     speaker = listening_speaker(sinks, radio_cards, settings["listen_sink"])
     target = speaker["name"] if speaker else (SILENT if silent_ok else None)
+    radio_sink = next((s["name"] for s in sinks if on_card(s, radio_card) and not is_monitor(s)), None)
     moves = []
     for stream in inputs:
         sink = by_index.get(stream.get("sink"))
@@ -182,8 +188,33 @@ def plan(sinks, inputs, settings, radio_card, aprs_card, silent_ok=True):
             moves.append((stream["index"], target, "on the APRS radio"))
         elif on_card(sink, radio_card) and not is_radio_app(stream, settings["radio_apps"]):
             moves.append((stream["index"], target, "not a radio app"))
+        elif is_radio_app(stream, settings["radio_apps"]):
+            # A radio app on the computer's own speaker: the default isn't the radio
+            # (desktop "Never"), or the radio's card dropped off the USB for a moment.
+            # USB cards are left alone: one may be a second radio the app was set to.
+            if radio_sink and (sink.get("name") == SILENT or speaker_kind(sink) != "usb"):
+                moves.append((stream["index"], radio_sink, "a radio app"))
+            elif not radio_sink and sink.get("name") != SILENT and speaker_kind(sink) != "usb":
+                moves.append((stream["index"], SILENT if silent_ok else None, "a radio app, radio unplugged"))
         elif sink.get("name") == SILENT and speaker:
             moves.append((stream["index"], speaker["name"], "a speaker is connected now"))
+    return moves
+
+
+def plan_sources(sources, outputs, settings, radio_card):
+    """[(stream index, source name, why)]: radio apps listening to the computer's own
+    microphone instead of the radio. Recording apps that aren't radio apps are left alone."""
+    radio = next((s["name"] for s in sources if on_card(s, radio_card) and not is_monitor(s)), None)
+    if radio is None:
+        return []
+    by_index = {s.get("index"): s for s in sources}
+    moves = []
+    for stream in outputs:
+        source = by_index.get(stream.get("source"))
+        if source is None or is_monitor(source) or on_card(source, radio_card):
+            continue
+        if is_radio_app(stream, settings["radio_apps"]) and speaker_kind(source) != "usb":
+            moves.append((stream["index"], radio, "a radio app"))
     return moves
 
 
@@ -223,12 +254,16 @@ class Router:
                     self.muted.discard(index)
         live = {i.get("index") for i in inputs}
         self.muted &= live
+        for index, source, why in plan_sources(pactl_list("sources"), pactl_list("source-outputs"),
+                                               settings, radio):
+            if pactl("move-source-output", str(index), source) is not None:
+                done.append((index, source, why))
         return done
 
     def watch(self):
         """Route at once, then again whenever an app starts playing or a speaker comes or goes."""
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-        event = re.compile(r"Event '(new|change|remove)' on (sink-input|sink|server|card)")
+        event = re.compile(r"Event '(new|change|remove)' on (sink-input|source-output|sink|source|server|card)")
         while True:
             self.route()
             try:

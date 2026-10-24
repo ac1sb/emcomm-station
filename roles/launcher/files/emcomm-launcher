@@ -108,8 +108,9 @@ AUDIO_CHOICES = [
      "With Emcomm-CNC closed, nothing keeps other sound off the radio: every sound the computer "
      "makes goes to it."),
     ("never", "Never",
-     "Your computer's sound is left alone. Set each radio app to the radio's sound card in its own "
-     "settings (VARA, fldigi, WSJT-X, JS8Call, Direwolf)."),
+     "Your computer's speaker and microphone stay the defaults. While Emcomm-CNC is open, radio apps "
+     "(VARA, fldigi, WSJT-X, JS8Call, Direwolf, ARDOP) are still moved onto the radio's sound card; "
+     "with it closed, set each one to the radio's sound card in its own settings."),
 ]
 EXIT_LOG_OUT = 10  # exit status that ends the Emcomm-CNC login session (see emcomm-session)
 KEYBOARD_CMD = os.environ.get("EMCOMM_KEYBOARD", "onboard").split()

@@ -113,8 +113,37 @@ class Routing(unittest.TestCase):
                          [BUILTIN["name"], BUILTIN["name"]])
 
     def test_streams_elsewhere_are_left_alone(self):
-        inputs = [stream(70, 5, "Scanner", "pacat"), stream(71, 4, "WSJT-X", "wsjtx")]
+        # The Scanner on a headset; WSJT-X on another USB card, which may be a second radio.
+        inputs = [stream(70, 5, "Scanner", "pacat"), stream(71, 5, "WSJT-X", "wsjtx")]
         self.assertEqual(self.moves([RADIO, BUILTIN, HDMI, HEADSET], inputs), [])
+
+    def test_radio_apps_on_the_computers_speaker_go_to_the_radio(self):
+        # Desktop "Never": Direwolf and ARDOP open "pipewire", which is the default speaker.
+        inputs = [stream(72, 3, "ALSA plug-in [direwolf]", "direwolf"), stream(73, 4, "WSJT-X", "wsjtx"),
+                  stream(74, 7, "ardopcf", "ardopcf")]
+        self.assertEqual([(i, t) for i, t, _w in self.moves([RADIO, BUILTIN, HDMI, SILENT], inputs)],
+                         [(72, RADIO["name"]), (73, RADIO["name"]), (74, RADIO["name"])])
+
+    def test_radio_apps_go_silent_while_the_radio_is_unplugged(self):
+        # The radio's card dropped off the USB: its tones mustn't come out of the PC speaker.
+        inputs = [stream(75, 3, "WSJT-X", "wsjtx"), stream(76, 7, "WSJT-X", "wsjtx")]
+        self.assertEqual(audio.plan([BUILTIN, SILENT], inputs, SETTINGS, None, None),
+                         [(75, audio.SILENT, "a radio app, radio unplugged")])
+
+    def test_radio_apps_listen_to_the_radio_not_the_computers_mic(self):
+        radio_in = sink(11, "alsa_input.usb-FT-710", card=2, bus="usb")
+        pc_mic = sink(12, "alsa_input.pci-0000_00_1f.3.analog-stereo", card=0, bus="pci")
+        usb_in = sink(13, "alsa_input.usb-Digirig-vhf", card=5, bus="usb")
+        monitor = sink(14, "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor", card=0, bus="pci")
+        outputs = [{"index": 80, "source": 12, "properties": {"application.name": "WSJT-X"}},
+                   {"index": 81, "source": 12, "properties": {"application.name": "Recorder"}},
+                   {"index": 82, "source": 13, "properties": {"application.name": "fldigi"}},
+                   {"index": 83, "source": 14, "properties": {"application.name": "fldigi"}},
+                   {"index": 84, "source": 11, "properties": {"application.name": "JS8Call"}}]
+        sources = [radio_in, pc_mic, usb_in, monitor]
+        self.assertEqual(audio.plan_sources(sources, outputs, SETTINGS, "2"),
+                         [(80, radio_in["name"], "a radio app")])
+        self.assertEqual(audio.plan_sources([pc_mic], outputs, SETTINGS, None), [])
 
     def test_without_a_radio_nothing_moves(self):
         inputs = [stream(80, 3, "Scanner", "pacat")]
