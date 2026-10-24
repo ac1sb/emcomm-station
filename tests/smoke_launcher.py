@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+import socketserver
 import xmlrpc.server
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -55,7 +56,9 @@ def make_station(root):
     with open(os.path.join(etc, "launcher.json"), "w", encoding="utf-8") as f:
         json.dump({"apps": g["launcher_apps"], "folders": g["launcher_folders"]}, f)
     with open(os.path.join(etc, "station.json"), "w", encoding="utf-8") as f:
-        json.dump({"callsign": "AC1SB", "grid": "FN31", "radio_name": "FT-710"}, f)
+        json.dump({"callsign": "AC1SB", "grid": "FN31", "radio_name": "FT-710", "rig_model": 1049, "cat_baud": 38400,
+                   "cat_match": {"vendor": "10c4", "product": "ea70", "interface": "00"}, "ptt_method": "CAT",
+                   "ptt_match": None, "audio_match": None, "data_mode": "data"}, f)
     with open(os.path.join(etc, "mode"), "w", encoding="utf-8") as f:
         f.write("desktop\n")
     with open(os.path.join(etc, "fake-devices.json"), "w", encoding="utf-8") as f:
@@ -104,13 +107,42 @@ def fake_fldigi(calls):
     return server
 
 
+def fake_rigctld(commands):
+    """A TCP server answering as rigctld does for a radio on 14.074 MHz; `commands` records each line."""
+    state = {"ptt": "0"}
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self):
+            for raw in self.rfile:
+                cmd = raw.decode().strip()
+                commands.append(cmd)
+                if cmd == "f":
+                    reply = "14074000"
+                elif cmd == "m":
+                    reply = "PKTUSB\n3000"
+                elif cmd == "v":
+                    reply = "VFOA"
+                elif cmd == "t":
+                    reply = state["ptt"]
+                elif cmd.startswith("T "):
+                    state["ptt"], reply = cmd[2:], "RPRT 0"
+                else:
+                    reply = "RPRT -11"
+                self.wfile.write((reply + "\n").encode())
+
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 def main():
     if not os.environ.get("DISPLAY"):
         skip("no X display (run under xvfb-run)")
     try:
         import gi
         gi.require_version("Gtk", "3.0")
-        from gi.repository import Gtk
+        from gi.repository import GLib, Gtk
     except (ImportError, ValueError) as exc:
         skip(f"GTK's Python bindings aren't installed ({exc})")
 
@@ -132,6 +164,24 @@ def main():
                 "  target|speaker) echo alsa_output.pci-analog ;;\n  watch) exec sleep 20 ;;\nesac\n")
     os.chmod(fake_audio, 0o755)
     os.environ["EMCOMM_AUDIO"] = fake_audio
+    # Rig control: a fake rigctld, Save through a fake emcomm-apply-settings that installs the
+    # settings as given, and a fake emcomm-app-setup reporting what it set up.
+    rig_commands = []
+    rigctld = fake_rigctld(rig_commands)
+    os.environ["EMCOMM_RIGCTLD"] = f"127.0.0.1:{rigctld.server_address[1]}"
+    fake_apply = os.path.join(tmp.name, "emcomm-apply-settings")
+    with open(fake_apply, "w", encoding="utf-8") as f:
+        f.write(f"#!/bin/sh\ncp \"$1\" {os.environ['EMCOMM_STATION']} && echo Saved.\n")
+    fake_setup = os.path.join(tmp.name, "emcomm-app-setup")
+    with open(fake_setup, "w", encoding="utf-8") as f:
+        f.write("#!/bin/sh\n[ \"$1\" = radio ] || exit 2\n"
+                "echo '{\"app\": \"wsjtx\", \"name\": \"WSJT-X\", \"state\": \"updated\", \"backup\": null}'\n"
+                "echo '{\"app\": \"fldigi\", \"name\": \"fldigi\", \"state\": \"unchanged\", \"backup\": null}'\n"
+                "echo '{\"app\": \"js8call\", \"name\": \"JS8Call\", \"state\": \"open\", \"backup\": null}'\n")
+    for path in (fake_apply, fake_setup):
+        os.chmod(path, 0o755)
+    os.environ.update({"EMCOMM_APPLY": fake_apply, "EMCOMM_APP_SETUP": fake_setup,
+                       "EMCOMM_RIG_CAT": os.path.join(tmp.name, "rig-cat")})
     loader = importlib.machinery.SourceFileLoader("emcomm_launcher", os.path.join(FILES, "emcomm-launcher"))
     spec = importlib.util.spec_from_loader("emcomm_launcher", loader)
     L = importlib.util.module_from_spec(spec)
@@ -407,6 +457,104 @@ def main():
     check(L.band_hint("") .startswith("Set your grid"), "hint without a grid")
     check((L.gateway_open("00-23"), L.gateway_open("?"), L.gateway_open("22-04", now=1750510800)) == ("open now", "", "opens 2200Z"),
           "gateway hours")
+
+    # ---- Settings > Radio: profiles, the rig control light, Test CAT, Test PTT, Save ----
+    def answer_dialog(fill):
+        """Answer the next modal dialog (its run() blocks the test): fill(dialog) returns a response."""
+        def look():
+            if not dialogs():
+                return True
+            dialog = dialogs()[0]
+            dialog.response(fill(dialog))
+            return False
+        GLib.timeout_add(300, look)
+
+    def dialog_widgets(dialog, kind):
+        found = []
+
+        def walk(widget):
+            if isinstance(widget, kind):
+                found.append(widget)
+            if isinstance(widget, Gtk.Container):
+                widget.foreach(walk)
+        walk(dialog.get_content_area())
+        return found
+
+    win.stack.set_visible_child_name("station-radio")
+    pump(2.5)
+    check(win.profile_combo.get_active_id() == "FT-710", f"profile in use shown: {win.profile_combo.get_active_id()}")
+    check(win.model_combo.get_active_id() == "1049" or not win.models, "FT-710's Hamlib model picked")
+    check("Rig control working" in win.rig_line.get_text() and "14.074.000" in win.rig_line.get_text(),
+          f"light: {win.rig_line.get_text()}")
+    check(win.test_ptt_btn.get_sensitive(), "Test PTT offered while the radio answers")
+    fits("Settings > Radio")
+    # The window is taller than the virtual screen here; on the station the page gets 600 px less the top bar.
+    room = 600 - (win.get_allocated_height() - win.stack.get_allocated_height())
+    height = win.stack.get_child_by_name("station-radio").get_preferred_height()[0]
+    check(height <= room, f"Settings > Radio: fits 1024x600 (needs {height} px of {room})")
+    win._test_cat()
+    pump(1.5)
+    message = win.settings_messages[0].get_text()
+    check(message.startswith("CAT works") and "14.074.000, PKTUSB on VFOA" in message, f"Test CAT: {message}")
+
+    answer_dialog(lambda d: Gtk.ResponseType.CANCEL)
+    win._test_ptt()
+    pump(0.5)
+    check(not any(c.startswith("T ") for c in rig_commands), "Test PTT cancelled: nothing keyed")
+    answer_dialog(lambda d: Gtk.ResponseType.OK)
+    win._test_ptt()
+    pump(0.6)
+    check("Transmitting" in win.rig_line.get_text(), f"light while keyed: {win.rig_line.get_text()}")
+    pump(2.5)
+    message = win.settings_messages[0].get_text()
+    keys = [c for c in rig_commands if c.startswith("T ")]
+    check(keys == ["T 1", "T 0"] and message.startswith("PTT works"), f"Test PTT: {keys} {message}")
+
+    def new_from_id5100(dialog):
+        dialog_widgets(dialog, Gtk.Entry)[0].set_text("ID-5100 mobile")
+        start = dialog_widgets(dialog, L.PickList)[0]
+        start.set_active_id("preset:id-5100-digirig")
+        return Gtk.ResponseType.OK
+    answer_dialog(new_from_id5100)
+    win._new_profile()
+    pump(0.5)
+    check(win.profile_combo.get_active_id() == "ID-5100 mobile", "new profile picked")
+    check(win.model_combo.get_active_id() == "3071" or not win.models, "ID-5100's Hamlib model filled in")
+    check(win.data_mode_combo.get_active_id() == "none" and win.ptt_combo.get_active_id() == "RTS",
+          "ID-5100: FM mode left alone, PTT by RTS")
+    saved = json.load(open(L.PROFILES_PATH))["profiles"]
+    check(sorted(saved) == ["FT-710", "ID-5100 mobile"], f"profiles saved: {sorted(saved)}")
+    check(not win.delete_profile_btn.get_sensitive() or win.profile_combo.get_active_id() != "FT-710",
+          "the profile in use can't be deleted")
+    win.profile_combo.set_active_id("FT-710")
+    pump(0.3)
+    check(win.ptt_combo.get_active_id() == "CAT" and win.data_mode_combo.get_active_id() == "data",
+          "switching back shows the FT-710")
+    check(not win.allow_apps_check.get_active(), "other apps aren't changed until allowed")
+    answer_dialog(lambda d: Gtk.ResponseType.CANCEL)
+    win.allow_apps_check.set_active(True)
+    pump(0.6)
+    check(not win.allow_apps_check.get_active() and not os.path.exists(L.APP_RADIO_PATH),
+          "notice declined: still not allowed")
+    answer_dialog(lambda d: Gtk.ResponseType.OK)
+    win.allow_apps_check.set_active(True)
+    pump(0.6)
+    check(win.allow_apps_check.get_active() and json.load(open(L.APP_RADIO_PATH))["allowed"] is True,
+          "notice accepted: allowed")
+    win.data_mode_combo.set_active_id("usb")
+    win._save_settings()
+    pump(2)
+    message = win.settings_messages[0].get_text()
+    station = json.load(open(os.environ["EMCOMM_STATION"]))
+    check(station["data_mode"] == "usb" and station["radio_name"] == "FT-710", "Save installs the radio")
+    check("Set up for this radio: WSJT-X and fldigi." in message and "Not changed while open: JS8Call" in message,
+          f"Save says what it did to the apps: {message}")
+    check(json.load(open(L.PROFILES_PATH))["profiles"]["FT-710"]["data_mode"] == "usb", "profile updated on Save")
+    rigctld.shutdown()
+    rigctld.server_close()
+    pump(3)
+    check("No rig control" in win.rig_line.get_text(), f"light with rigctld gone: {win.rig_line.get_text()}")
+    check(not win.test_ptt_btn.get_sensitive(), "no Test PTT without rig control")
 
     # ---- Settings > Audio: levels, the listening speaker, what's playing where ----
     win.stack.set_visible_child_name("audio")

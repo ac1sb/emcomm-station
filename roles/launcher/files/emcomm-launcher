@@ -54,7 +54,18 @@ SPLASH_CMD = os.environ.get("EMCOMM_SPLASH", "sudo -n /usr/local/sbin/emcomm-spl
 SPLASH_PATH = os.environ.get("EMCOMM_SPLASH_SETTINGS", "/etc/emcomm/splash.json")
 SPLASH_STYLES = [("logo", "Emcomm-CNC logo and callsign"), ("picture", "A picture of your own…"),
                  ("spinner", "Plain spinner"), ("text", "Start-up messages (text)")]
-RIGCTLD = ("127.0.0.1", 4532)
+_rig = os.environ.get("EMCOMM_RIGCTLD", "127.0.0.1:4532").rsplit(":", 1)  # tests use their own
+RIGCTLD = (_rig[0], int(_rig[1]))
+APP_SETUP_CMD = os.environ.get("EMCOMM_APP_SETUP", "emcomm-app-setup")
+# Saved radios (Settings > Radio > Profile). The one in use is also in station.json.
+PROFILES_PATH = os.path.expanduser("~/.config/emcomm/radio-profiles.json")
+PROFILE_FIELDS = ("rig_model", "cat_baud", "cat_match", "ptt_method", "ptt_match", "audio_match", "data_mode")
+PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9 +/()._-]{1,60}$")  # as emcomm-apply-settings checks radio_name
+# Apps whose rig settings Save writes (emcomm-app-setup radio), and where the operator can opt out.
+APP_RADIO_PATH = os.path.expanduser("~/.config/emcomm/app-radio.json")
+RADIO_APPS = [("wsjtx", "WSJT-X"), ("js8call", "JS8Call"), ("fldigi", "fldigi"), ("pat", "Pat (Winlink, VARA, ARDOP)"),
+              ("xastir", "Xastir (APRS)")]
+DATA_MODE_CHOICES = [("data", "Data / Pkt (DATA-U)"), ("usb", "USB"), ("none", "Leave the radio's mode (FM)")]
 BAUD_RATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
 GPS_FIXED = [("", "Automatic (u-blox USB GPS)")]
 PTT_CHOICES = [("CAT", "CAT command"), ("RTS", "RTS line (Digirig)"), ("DTR", "DTR line"), ("NONE", "VOX / none")]
@@ -179,6 +190,7 @@ entry, combobox button, .picklist { background: $bg; color: $text; border: 1px s
 .primary { background: $accent_fill; color: $on_accent; border: none; font-weight: 600; }
 .primary:hover, .primary:active { background: $accent_fill; color: $on_accent; opacity: 0.85; }
 .navbtn:disabled { opacity: 0.4; }
+.rig-strip { background: $surface; border: 1px solid $line; border-radius: 8px; padding: 4px 10px; }
 levelbar trough { background: $bar; border: 1px solid $line; border-radius: 4px; min-height: 10px; }
 levelbar block.filled { background: $ok; border: none; border-radius: 4px; }
 levelbar block.empty { background: transparent; border: none; }
@@ -425,6 +437,23 @@ def load_station():
     return read_json(STATION_PATH, {"callsign": "N0CALL", "grid": "", "radio": ""})
 
 
+def load_profiles(station):
+    """Saved radios as {name: settings}. The first time, the radio in station.json becomes one."""
+    saved = read_json(PROFILES_PATH, None)
+    profiles = saved.get("profiles") if isinstance(saved, dict) else None
+    if not isinstance(profiles, dict):
+        profiles = {}
+    profiles = {n: p for n, p in profiles.items() if isinstance(p, dict) and PROFILE_NAME_RE.fullmatch(n)}
+    name = station.get("radio_name")
+    if name and name not in profiles and station.get("rig_model"):
+        profiles[name] = {k: station.get(k) for k in PROFILE_FIELDS}
+    return profiles
+
+
+def save_profiles(profiles):
+    write_json(PROFILES_PATH, {"profiles": profiles})
+
+
 def load_presets():
     """Radio presets as (id, preset), sorted by display name."""
     presets = []
@@ -665,6 +694,111 @@ def rigctld_query(host, port, command, timeout=1.0):
             return data.splitlines()[0].strip() if data else None
     except OSError:
         return None
+
+
+RIG_CAT_DEV = os.environ.get("EMCOMM_RIG_CAT", "/dev/rig-cat")
+
+
+def rig_state(timeout=1.5):
+    """Whether rig control works now: {"ok": True, "freq", "mode"}, or {"ok": False, "kind", "why"},
+    kind being "no-rigctld" (rig control isn't running) or "no-answer" (it runs, the radio is silent)."""
+    try:
+        with socket.create_connection(RIGCTLD, timeout=timeout) as s:
+            s.settimeout(timeout + 2)  # rigctld waits for the radio before it answers
+            s.sendall(b"f\n")
+            reply = s.recv(256).decode(errors="replace").strip()
+    except ConnectionRefusedError:
+        reply = None
+    except OSError:
+        return {"ok": False, "kind": "no-answer",
+                "why": "Rig control didn't answer in time. Check the radio is on and its CAT RATE matches."}
+    if reply is None:
+        if not os.path.exists(RIG_CAT_DEV):
+            why = "No rig control: the radio's CAT port isn't plugged in (or isn't the one picked here)."
+        else:
+            why = "No rig control: rigctld isn't running. Save here to restart it, or see Diagnostics."
+        return {"ok": False, "kind": "no-rigctld", "why": why}
+    first = reply.splitlines()[0] if reply else ""
+    if not first.isdigit():
+        return {"ok": False, "kind": "no-answer",
+                "why": "The radio isn't answering. Check it's on, and its CAT RATE matches the baud rate here."}
+    mode = rigctld_query(*RIGCTLD, "m", timeout=timeout)
+    return {"ok": True, "freq": first, "mode": mode if mode and not mode.startswith("RPRT") else None}
+
+
+def ptt_test(seconds):
+    """Key the radio for a moment through rigctld, as emcomm-ptt-test does. (ok, message)."""
+    if rigctld_query(*RIGCTLD, "T 1", timeout=3) != "RPRT 0":
+        rigctld_query(*RIGCTLD, "T 0", timeout=3)
+        return False, ("PTT test failed: the radio wouldn't key. Check PTT and the PTT port here "
+                       "(RTS for a Digirig, CAT for a radio's own USB).")
+    keyed = rigctld_query(*RIGCTLD, "t", timeout=3)
+    time.sleep(seconds)
+    released = False
+    for _ in range(3):  # never leave it transmitting
+        if rigctld_query(*RIGCTLD, "T 0", timeout=3) == "RPRT 0":
+            released = True
+            break
+        time.sleep(0.5)
+    if not released:
+        return False, ("PTT test: the radio may still be transmitting, the unkey wasn't accepted. "
+                       "Check it now and unkey it by hand.")
+    if keyed == "0":
+        return False, ("PTT test: rig control took the command but the radio says it didn't transmit. "
+                       "With VOX / none, the radio keys only on audio.")
+    return True, f"PTT works: keyed for {seconds} seconds and released."
+
+
+RADIO_PROGRAMS = {"wsjtx": "wsjtx", "js8call": "js8call", "fldigi": "fldigi", "pat": "pat", "xastir": "xastir"}
+
+
+def app_open(key):
+    """True if that app's program is running (as emcomm-app-setup checks before writing its settings)."""
+    program = RADIO_PROGRAMS.get(key)
+    for comm in glob.glob("/proc/[0-9]*/comm"):
+        try:
+            with open(comm, encoding="utf-8") as f:
+                if f.read().strip() == program:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def set_up_apps():
+    """Write the radio into the apps (emcomm-app-setup radio): [{"app", "name", "state", "backup"}]."""
+    try:
+        out = subprocess.run([APP_SETUP_CMD, "radio"], capture_output=True, text=True, timeout=30,
+                             check=False).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    results = []
+    for line in out.splitlines():
+        try:
+            results.append(json.loads(line))
+        except ValueError:
+            continue
+    return results
+
+
+def apps_summary(results):
+    """One sentence on what Save did to the apps."""
+    def names(state):
+        return [r["name"] for r in results if r.get("state") == state]
+
+    def join(items):
+        return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+    parts = []
+    if results and all(r.get("state") == "not allowed" for r in results):
+        return "Other apps weren't changed (tick Let Emcomm-CNC set up… to have them follow this radio)."
+    done = names("updated") + names("unchanged")
+    if done:
+        parts.append(f"Set up for this radio: {join(done)}.")
+    if names("open"):
+        parts.append(f"Not changed while open: {join(names('open'))}. Close and Save again, or "
+                     "it's set up next time it starts from its tile.")
+    return " ".join(parts)
 
 
 GPS_DEV = os.environ.get("EMCOMM_GPS_DEV", "/dev/gps0")
@@ -1954,6 +2088,9 @@ class Launcher(Gtk.Window):
         self.station = load_station()
         self.presets = load_presets()
         self.models = load_hamlib_models()
+        # The radio in Settings into the apps' own settings, so they're right even when started
+        # from the desktop's menu rather than a tile (open apps are skipped).
+        threading.Thread(target=set_up_apps, daemon=True).start()
         self.choices = {}
         self._filling = False
         self.default_audio_card = None
@@ -4212,17 +4349,17 @@ class Launcher(Gtk.Window):
         self.zone_combo = None if self.desktop else PickList()
         for name in time_zones() if self.zone_combo else []:
             self.zone_combo.append(name, name.replace("_", " ").replace("/", " / "))
-        self.preset_combo = PickList()
-        self.preset_combo.append("", "None")
-        for preset_id, preset in self.presets:
-            self.preset_combo.append(preset_id, preset.get("radio_name", preset_id))
-        self.preset_combo.connect("changed", self._preset_changed)
+        self.profiles = load_profiles(self.station)
+        self.profile_combo = PickList()
+        self.profile_combo.connect("changed", self._profile_changed)
+        self.data_mode_combo = PickList()
+        for value, label in DATA_MODE_CHOICES:
+            self.data_mode_combo.append(value, label)
         self.mfg_combo = PickList()
         for mfg in sorted(self.models, key=str.lower):
             self.mfg_combo.append(mfg, mfg)
         self.mfg_combo.connect("changed", self._mfg_changed)
         self.model_combo = PickList()
-        self.model_combo.connect("changed", self._model_changed)
         self.cat_combo = PickList()
         self.baud_combo = PickList()
         for baud in BAUD_RATES:
@@ -4253,23 +4390,367 @@ class Launcher(Gtk.Window):
         return page
 
     def _station_radio_page(self):
-        page, body = self._station_subpage("Radio", "A preset fills in a known radio; any radio Hamlib knows can be "
-                                                    "picked by manufacturer and model. Diagnostics checks it after.",
-                                           "Save and restart rig control")
-        grid = Gtk.Grid(column_spacing=12, row_spacing=6, column_homogeneous=True)
-        grid.attach(self._field("Preset (fills in the radio)", self.preset_combo), 0, 0, 1, 1)
-        grid.attach(self._field("Manufacturer", self.mfg_combo), 1, 0, 1, 1)
-        grid.attach(self._field("Model (Hamlib)", self.model_combo), 2, 0, 1, 1)
-        grid.attach(self._field("CAT port", self.cat_combo), 0, 1, 1, 1)
-        grid.attach(self._field("Baud rate (match the radio)", self.baud_combo), 1, 1, 1, 1)
-        grid.attach(self._field("PTT", self.ptt_combo), 2, 1, 1, 1)
-        grid.attach(self._field("PTT port", self.ptt_port_combo), 0, 2, 1, 1)
-        grid.attach(self._field("Sound card", self.audio_combo), 1, 2, 1, 1)
-        rescan = self._navbtn("Rescan devices", lambda *_: self._rescan_devices())
-        rescan.set_valign(Gtk.Align.END)
-        grid.attach(rescan, 2, 2, 1, 1)
+        page, body = self._station_subpage("Radio", None, "Save and use this radio")
+        body.set_spacing(6)
+        top = Gtk.Box(spacing=8)
+        label = Gtk.Label(label="Profile", xalign=0)
+        label.get_style_context().add_class("field-label")
+        label.set_mnemonic_widget(self.profile_combo)
+        top.pack_start(label, False, False, 0)
+        top.pack_start(self.profile_combo, True, True, 0)
+        for label, handler, tip in (
+                ("New…", self._new_profile, "Add a radio, starting from a known one or a copy of this one"),
+                ("Rename…", self._rename_profile, "Give this profile another name"),
+                ("Delete", self._delete_profile, "Forget this profile (not the one in use)")):
+            btn = self._navbtn(label, lambda *_, h=handler: h())
+            btn.set_tooltip_text(tip)
+            top.pack_start(btn, False, False, 0)
+            if label == "Delete":
+                self.delete_profile_btn = btn
+        body.pack_start(top, False, False, 0)
+        grid = Gtk.Grid(column_spacing=12, row_spacing=4, column_homogeneous=True)
+        for i, (label, widget) in enumerate((
+                ("Manufacturer", self.mfg_combo), ("Model (Hamlib)", self.model_combo),
+                ("Baud (match the radio)", self.baud_combo), ("CAT port", self.cat_combo),
+                ("PTT", self.ptt_combo), ("PTT port", self.ptt_port_combo),
+                ("Sound card", self.audio_combo), ("Mode for digital apps", self.data_mode_combo))):
+            grid.attach(self._field(label, widget), i % 4, i // 4, 1, 1)
         body.pack_start(grid, False, False, 0)
+
+        # Permission to change other apps' settings: off until the operator ticks it.
+        allow_row = Gtk.Box(spacing=8)
+        self.allow_apps_check = Gtk.CheckButton(label="Let Emcomm-CNC set up WSJT-X, JS8Call, fldigi, Pat and Xastir "
+                                                      "for this radio")
+        self.allow_apps_check.set_tooltip_text("Off: Emcomm-CNC never changes another app's settings")
+        self.allow_apps_check.connect("toggled", self._allow_apps_toggled)
+        allow_row.pack_start(self.allow_apps_check, True, True, 0)
+        apps_btn = self._navbtn("Apps…", lambda *_: self._radio_apps_dialog())
+        apps_btn.set_tooltip_text("What is changed, and which apps")
+        allow_row.pack_start(apps_btn, False, False, 0)
+        body.pack_start(allow_row, False, False, 0)
+
+        # Rig control as it is now (the radio in use, through rigctld), and the two tests.
+        strip = Gtk.Box(spacing=10)
+        strip.get_style_context().add_class("rig-strip")
+        self.rig_light = Gtk.Label()
+        self.rig_light.get_style_context().add_class("rig-light")
+        strip.pack_start(self.rig_light, False, False, 0)
+        self.rig_line = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        strip.pack_start(self.rig_line, True, True, 0)
+        self.test_cat_btn = self._navbtn("Test CAT", lambda *_: self._test_cat())
+        self.test_cat_btn.set_tooltip_text("Read the frequency and mode from the radio")
+        self.test_ptt_btn = self._navbtn("Test PTT", lambda *_: self._test_ptt())
+        self.test_ptt_btn.set_tooltip_text("Key the transmitter for 2 seconds, then release it")
+        rescan = self._navbtn("Rescan devices", lambda *_: self._rescan_devices())
+        strip.pack_end(self.test_ptt_btn, False, False, 0)
+        strip.pack_end(self.test_cat_btn, False, False, 0)
+        strip.pack_end(rescan, False, False, 0)
+        body.pack_start(strip, False, False, 0)
+        self.rig_transmitting = False
+        self._rig_watch = None
+        page.connect("map", lambda *_: self._rig_watch_start())
+        page.connect("unmap", lambda *_: self._rig_watch_stop())
+        self._show_rig_state(None)
         return page
+
+    # ---- radio profiles ------------------------------------------------
+
+    def _fill_profiles(self, select):
+        self._filling_profiles = True
+        self.profile_combo.remove_all()
+        active = self.station.get("radio_name")
+        for name in sorted(self.profiles, key=str.lower):
+            self.profile_combo.append(name, f"{name}   (in use)" if name == active else name)
+        self.profile_combo.set_active_id(select if select in self.profiles else None)
+        self._filling_profiles = False
+        self.delete_profile_btn.set_sensitive(bool(select) and select != active)
+
+    def _profile_changed(self, combo):
+        name = combo.get_active_id()
+        if hasattr(self, "delete_profile_btn"):
+            self.delete_profile_btn.set_sensitive(bool(name) and name != self.station.get("radio_name"))
+        if getattr(self, "_filling_profiles", False) or self._filling or name not in self.profiles:
+            return
+        self._fill_radio(self.profiles[name])
+        if name != self.station.get("radio_name"):
+            self._set_message(f"Showing {name}. Save to use it: rig control restarts for it.", None)
+        else:
+            self._set_message("", None)
+
+    def _profile_dialog(self, title, name="", starts=None):
+        """Ask for a profile name (and, for a new one, what it starts from). (name, start) or None."""
+        dialog = Gtk.Dialog(title=title, transient_for=self, modal=True)
+        dialog.set_default_size(520, -1)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "OK", Gtk.ResponseType.OK)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        entry = Gtk.Entry(text=name, max_length=40, activates_default=True)
+        box.pack_start(self._field("Name (for example FT-891 portable)", entry), False, False, 0)
+        start = None
+        if starts:
+            start = PickList()
+            for value, label in starts:
+                start.append(value, label)
+            start.set_active(0)
+            box.pack_start(self._field("Start from", start), False, False, 0)
+        note = Gtk.Label(xalign=0, wrap=True, max_width_chars=60)
+        note.get_style_context().add_class("error")
+        box.pack_start(note, False, False, 0)
+        dialog.get_content_area().add(box)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        dialog.show_all()
+        try:
+            while dialog.run() == Gtk.ResponseType.OK:
+                new = re.sub(r"\s+", " ", entry.get_text()).strip()
+                if not PROFILE_NAME_RE.fullmatch(new):
+                    note.set_text("Use letters, numbers, spaces and + / ( ) . _ - only.")
+                elif new != name and new in self.profiles:
+                    note.set_text(f"There's already a profile called {new}.")
+                else:
+                    return new, start.get_active_id() if start else None
+            return None
+        finally:
+            dialog.destroy()
+
+    def _form_radio(self):
+        """The radio fields as the page shows them now."""
+        return {"rig_model": int(self.model_combo.get_active_id()) if self.model_combo.get_active_id() else None,
+                "cat_baud": int(self.baud_combo.get_active_id() or 38400),
+                "cat_match": self._chosen(self.cat_combo),
+                "ptt_method": self.ptt_combo.get_active_id(),
+                "ptt_match": self._chosen(self.ptt_port_combo),
+                "audio_match": self._chosen(self.audio_combo) or None,
+                "data_mode": self.data_mode_combo.get_active_id() or "data"}
+
+    def _new_profile(self):
+        current = self.profile_combo.get_active_id()
+        starts = [(f"preset:{pid}", p.get("radio_name", pid)) for pid, p in self.presets]
+        if current:
+            starts.insert(0, ("copy", f"A copy of {current} as shown"))
+        starts.insert(1 if current else 0, ("blank", "Any other radio Hamlib supports: pick it in the lists"))
+        answer = self._profile_dialog("New radio profile", starts=starts)
+        if not answer:
+            return
+        name, start = answer
+        if start == "copy":
+            profile = self._form_radio()
+        elif start and start.startswith("preset:"):
+            preset = dict(self.presets)[start[7:]]
+            profile = {k: preset.get(k) for k in PROFILE_FIELDS}
+        else:
+            profile = {"cat_baud": 38400, "ptt_method": "CAT", "data_mode": "data"}
+        self.profiles[name] = profile
+        save_profiles(self.profiles)
+        self._fill_profiles(name)
+        self._fill_radio(profile)
+        self._set_message(f"Added {name}. Pick its ports, then Save to use it.", None)
+
+    def _rename_profile(self):
+        old = self.profile_combo.get_active_id()
+        if not old:
+            return
+        answer = self._profile_dialog("Rename radio profile", name=old)
+        if not answer or answer[0] == old:
+            return
+        new = answer[0]
+        self.profiles = {(new if n == old else n): p for n, p in self.profiles.items()}
+        save_profiles(self.profiles)
+        if old == self.station.get("radio_name"):
+            # The radio in use goes by its profile's name: saving records the new one.
+            self._fill_profiles(new)
+            self._set_message(f"Renamed to {new}. Save to use the new name everywhere.", None)
+        else:
+            self._fill_profiles(new)
+            self._set_message(f"Renamed to {new}.", True)
+
+    def _delete_profile(self):
+        name = self.profile_combo.get_active_id()
+        if not name or name == self.station.get("radio_name"):
+            return
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                   buttons=Gtk.ButtonsType.NONE, text=f"Delete the profile {name}?")
+        dialog.format_secondary_text("The radio itself and the apps' settings stay as they are.")
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Delete", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        self.profiles.pop(name, None)
+        save_profiles(self.profiles)
+        active = self.station.get("radio_name")
+        self._fill_profiles(active)
+        if active in self.profiles:
+            self._fill_radio(self.profiles[active])
+        self._set_message(f"Deleted {name}.", True)
+
+    def _app_radio(self):
+        saved = read_json(APP_RADIO_PATH, {})
+        return saved if isinstance(saved, dict) else {}
+
+    def _allow_apps_toggled(self, check):
+        if self._filling or getattr(self, "_allow_filling", False):
+            return
+        saved = self._app_radio()
+        if check.get_active() and not self._apps_notice():
+            self._allow_filling = True
+            check.set_active(False)
+            self._allow_filling = False
+            return
+        saved["allowed"] = check.get_active()
+        write_json(APP_RADIO_PATH, saved)
+        self._set_message("Allowed. Save to set up the apps for this radio now." if check.get_active() else
+                          "Emcomm-CNC won't change other apps' settings. What it set before stays as it is.",
+                          True)
+
+    def _apps_notice(self):
+        """Say what Emcomm-CNC would change in other apps, and ask. True if the operator agrees."""
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                   buttons=Gtk.ButtonsType.NONE,
+                                   text="Let Emcomm-CNC change other apps' radio settings?")
+        dialog.format_secondary_text(
+            "Each time you save here, start Emcomm-CNC, or open WSJT-X, JS8Call, fldigi, Pat or Xastir from its "
+            "tile, Emcomm-CNC writes into that app's own settings: rig control through Emcomm-CNC (Hamlib NET "
+            "rigctl, 127.0.0.1:4532), PTT by CAT (or VOX), the mode for digital apps and split, your callsign "
+            "and grid square. Nothing else in the app is changed. Sound cards are left as they are: Emcomm-CNC "
+            "moves radio apps onto the radio's sound card while it runs (Settings > Audio).\n\n"
+            "An app has to be closed for its settings to change: an open app writes its own settings back when "
+            "it closes. Open apps are skipped, and Save says which.\n\n"
+            "The file as it was is kept in ~/.local/state/emcomm/config-backups. Apps… leaves single apps alone, "
+            "and unticking this box stops all changes.")
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Allow", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        return response == Gtk.ResponseType.OK
+
+    def _radio_apps_dialog(self):
+        """Which apps Save writes the radio into. One left alone keeps whatever is set in it."""
+        saved = self._app_radio()
+        skip = set(saved.get("leave_alone", []))
+        dialog = Gtk.Dialog(title="Apps set up for the radio", transient_for=self, modal=True)
+        dialog.set_default_size(560, -1)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=16)
+        intro = Gtk.Label(xalign=0, wrap=True, max_width_chars=64, label=(
+            "Once allowed on the Radio page, ticked apps get the radio, callsign and grid square from "
+            "Emcomm-CNC each time you save there and each time they start from their tile. Only the rig control "
+            "settings are written; the rest of each app's settings stay yours, and the old file is kept in "
+            "~/.local/state/emcomm/config-backups. An app has to be closed for its settings to change."))
+        intro.get_style_context().add_class("muted")
+        box.pack_start(intro, False, False, 0)
+        checks = {}
+        for key, label in RADIO_APPS:
+            checks[key] = Gtk.CheckButton(label=label, active=key not in skip)
+            box.pack_start(checks[key], False, False, 0)
+        always = Gtk.Label(xalign=0, wrap=True, max_width_chars=64, label=(
+            "Packet and the APRS modem (Direwolf) and ARDOP always use the radio in Settings: they have no "
+            "settings of their own to keep."))
+        always.get_style_context().add_class("muted")
+        box.pack_start(always, False, False, 0)
+        dialog.get_content_area().add(box)
+        dialog.show_all()
+        response = dialog.run()
+        leave = [key for key, check in checks.items() if not check.get_active()]
+        dialog.destroy()
+        if response == Gtk.ResponseType.OK:
+            saved["leave_alone"] = leave
+            write_json(APP_RADIO_PATH, saved)
+            self._set_message("Saved. " + ("Every app follows the radio." if not leave else
+                              "Left alone: " + ", ".join(dict(RADIO_APPS)[k].split(" (")[0] for k in leave) + "."),
+                              True)
+
+    # ---- rig control: status light, Test CAT, Test PTT ----------------
+
+    def _rig_watch_start(self):
+        if self._rig_watch is None:
+            self._rig_check()
+            self._rig_watch = GLib.timeout_add_seconds(2, self._rig_check)
+
+    def _rig_watch_stop(self):
+        if self._rig_watch is not None:
+            GLib.source_remove(self._rig_watch)
+            self._rig_watch = None
+
+    def _rig_check(self):
+        if self.rig_transmitting or getattr(self, "_rig_checking", False):
+            return True
+        self._rig_checking = True
+
+        def work():
+            state = rig_state()
+            self._rig_checking = False
+            GLib.idle_add(lambda: self._show_rig_state(state) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def _show_rig_state(self, state, transmitting=False):
+        """The light: green (the radio answers), amber (rig control runs, the radio doesn't
+        answer), red (no rig control, or transmitting), grey (not checked yet)."""
+        name = GLib.markup_escape_text(self.station.get("radio_name") or "No radio")
+        if transmitting:
+            colour, text = self.colours["danger"], f"<b>{name}</b>  ·  Transmitting…"
+        elif state is None:
+            colour, text = self.colours["muted"], f"<b>{name}</b>  ·  Checking rig control…"
+        elif state["ok"]:
+            detail = format_freq(state["freq"]) + (f"  {state['mode']}" if state.get("mode") else "")
+            colour, text = self.colours["ok"], f"<b>{name}</b>  ·  Rig control working  ·  <tt>{detail}</tt>"
+        else:
+            colour = self.colours["accent" if state["kind"] == "no-answer" else "danger"]
+            text = f"<b>{name}</b>  ·  {GLib.markup_escape_text(state['why'])}"
+        self.rig_light.set_markup(f"<span foreground='{colour}' size='x-large'>●</span>")
+        self.rig_line.set_markup(text)
+        self.rig_line.set_tooltip_markup(text)
+        if not transmitting:
+            self.test_ptt_btn.set_sensitive(bool(state and state["ok"]))
+        return False
+
+    def _test_cat(self):
+        self._set_message("Asking the radio…", None)
+
+        def work():
+            started = time.monotonic()
+            state = rig_state(timeout=3)
+            took = round((time.monotonic() - started) * 1000)
+            if state["ok"]:
+                vfo = rigctld_query(*RIGCTLD, "v", timeout=2)
+                detail = f"{format_freq(state['freq'])}" + (f", {state['mode']}" if state.get("mode") else "")
+                if vfo and not vfo.startswith("RPRT"):
+                    detail += f" on {vfo}"
+                text, ok = f"CAT works: the radio says {detail} (answered in {took} ms).", True
+            else:
+                text, ok = f"CAT test failed: {state['why']}", False
+            GLib.idle_add(lambda: (self._show_rig_state(state), self._set_message(text, ok)) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _test_ptt(self):
+        if self._settings_form() != self._settings_filled[1] and \
+                self.profile_combo.get_active_id() != self.station.get("radio_name"):
+            self._set_message(f"The test uses the radio in use ({self.station.get('radio_name')}). "
+                              "Save first to test the one shown.", False)
+            return
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                                   buttons=Gtk.ButtonsType.NONE, text="Key the transmitter for 2 seconds?")
+        dialog.format_secondary_text(
+            "The radio transmits on its current frequency into whatever is connected: use a dummy load or a "
+            "clear frequency, at low power, and ID if you need to. Nothing is sent but a carrier or silence.")
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Transmit 2 seconds", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        self.rig_transmitting = True
+        self.test_ptt_btn.set_sensitive(False)
+        self.test_cat_btn.set_sensitive(False)
+        self._show_rig_state(None, transmitting=True)
+        self._set_message("Transmitting…", None)
+
+        def work():
+            ok, text = ptt_test(2)
+            self.rig_transmitting = False
+            GLib.idle_add(lambda: (self.test_cat_btn.set_sensitive(True), self._set_message(text, ok),
+                                   self._rig_check()) and False)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _station_devices_page(self):
         page, body = self._station_subpage("Devices")
@@ -4407,8 +4888,9 @@ class Launcher(Gtk.Window):
     def _settings_form(self):
         """What the Settings page shows now, to tell whether it's been edited."""
         return (self.callsign_entry.get_text(), self.grid_entry.get_text(),
-                self.zone_combo.get_active_id() if self.zone_combo else None, self.preset_combo.get_active_id(),
+                self.zone_combo.get_active_id() if self.zone_combo else None, self.profile_combo.get_active_id(),
                 self.model_combo.get_active_id(), self.baud_combo.get_active_id(), self.ptt_combo.get_active_id(),
+                self.data_mode_combo.get_active_id(),
                 *(self._chosen(c) for c in (self.cat_combo, self.ptt_port_combo, self.audio_combo, self.gps_combo)))
 
     def _settings_shown(self):
@@ -4452,7 +4934,8 @@ class Launcher(Gtk.Window):
         mfg = next((m for m, models in self.models.items() if any(n == model for n, _ in models)), None)
         self._model_to_select = model
         self.mfg_combo.set_active_id(mfg)
-        self._mfg_changed(self.mfg_combo)
+        if self._model_to_select is not None or not model:
+            self._mfg_changed(self.mfg_combo)  # same manufacturer: no "changed" filled in the models
         self.baud_combo.set_active_id(str(values.get("cat_baud", 38400)))
         self._fill_match_combo(self.cat_combo, self.serial_ports, values.get("cat_match"))
         self.ptt_combo.set_active_id(values.get("ptt_method", "CAT"))
@@ -4460,6 +4943,7 @@ class Launcher(Gtk.Window):
                                fixed=[("cat", "Same as CAT port")])
         self._fill_match_combo(self.audio_combo, self.sound_cards, values.get("audio_match") or "",
                                fixed=[("", "Choose later")])
+        self.data_mode_combo.set_active_id(values.get("data_mode") or "data")
         self._ptt_changed()
 
     def _fill_settings(self):
@@ -4469,9 +4953,9 @@ class Launcher(Gtk.Window):
         self.grid_entry.set_text(st.get("grid", ""))
         if self.zone_combo:
             self.zone_combo.set_active_id(current_time_zone())
-        preset_id = next((pid for pid, p in self.presets if p.get("radio_name") == st.get("radio_name")), "")
-        self.preset_combo.set_active_id(preset_id)
+        self._fill_profiles(st.get("radio_name"))
         self._fill_radio(st)
+        self.allow_apps_check.set_active(self._app_radio().get("allowed") is True)
         self._fill_match_combo(self.gps_combo, self.serial_ports, st.get("gps_match") or "", fixed=GPS_FIXED)
         self._filling = False
         self._settings_filled = (self.station, self._settings_form())
@@ -4492,11 +4976,6 @@ class Launcher(Gtk.Window):
         self._set_message(f"Found {len(self.serial_ports)} serial port(s) and {len(self.sound_cards)} USB sound card(s)."
                           if found else "No USB radio devices found. Plug in the radio and rescan.", found > 0)
 
-    def _preset_changed(self, combo):
-        preset = dict(self.presets).get(combo.get_active_id())
-        if preset and not self._filling:
-            self._fill_radio(preset)
-
     def _mfg_changed(self, combo):
         self.model_combo.remove_all()
         for number, name in sorted(self.models.get(combo.get_active_id(), []), key=lambda m: m[1].lower()):
@@ -4505,33 +4984,31 @@ class Launcher(Gtk.Window):
         self.model_combo.set_active_id(str(want) if want else None)
         self._model_to_select = None
 
-    def _model_changed(self, combo):
-        # Picking a model by hand means the setup no longer matches a preset.
-        preset = dict(self.presets).get(self.preset_combo.get_active_id())
-        if preset and combo.get_active_id() and int(combo.get_active_id()) != preset.get("rig_model"):
-            self.preset_combo.set_active_id("")
-
     def _ptt_changed(self):
         self.ptt_port_combo.set_sensitive(self.ptt_combo.get_active_id() in ("RTS", "DTR"))
 
     def _save_settings(self, *_):
-        preset = dict(self.presets).get(self.preset_combo.get_active_id())
-        model_id = self.model_combo.get_active_id()
-        if preset:
-            radio_name = preset["radio_name"]
-        else:
+        radio_name = self.profile_combo.get_active_id()
+        if not radio_name:
             radio_name = f"{self.mfg_combo.get_active_text() or ''} {self.model_combo.get_active_text() or ''}"
             radio_name = re.sub(r"[^A-Za-z0-9 +/()._-]", "", radio_name).strip()[:60]
+        radio = self._form_radio()
+        aprs = read_json(APRS_RADIO, {})
+        if radio["audio_match"] and isinstance(aprs, dict) and aprs.get("audio_match") and \
+                radio["audio_match"].items() <= aprs["audio_match"].items():
+            self._set_message("That sound card is the APRS iGate's radio (Settings > APRS iGate). One radio can't "
+                              "be both: pick another sound card, or take it off the iGate first.", False)
+            return
+        if self._app_radio().get("allowed") is True:
+            skip = set(self._app_radio().get("leave_alone", []))
+            busy = [name.split(" (")[0] for key, name in RADIO_APPS if key not in skip and app_open(key)]
+            if busy and not self._confirm_open_apps(busy):
+                return
         new = {
             "callsign": self.callsign_entry.get_text().strip().upper(),
             "grid": self.grid_entry.get_text().strip(),
             "radio_name": radio_name,
-            "rig_model": int(model_id) if model_id else None,
-            "cat_baud": int(self.baud_combo.get_active_id() or 38400),
-            "cat_match": self._chosen(self.cat_combo),
-            "ptt_method": self.ptt_combo.get_active_id(),
-            "ptt_match": self._chosen(self.ptt_port_combo),
-            "audio_match": self._chosen(self.audio_combo) or None,
+            **radio,
             "gps_match": self._chosen(self.gps_combo) or None,
         }
         if self.zone_combo and self.zone_combo.get_active_id():
@@ -4550,12 +5027,31 @@ class Launcher(Gtk.Window):
                 ok, text = False, f"Settings not saved: {exc}"
             finally:
                 os.unlink(path)
-            GLib.idle_add(self._saved, ok, text)
+            if ok:
+                text = f"{text} {apps_summary(set_up_apps())}".strip()
+            GLib.idle_add(self._saved, ok, text, radio_name, radio)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _saved(self, ok, text):
+    def _confirm_open_apps(self, busy):
+        names = busy[0] if len(busy) == 1 else ", ".join(busy[:-1]) + " and " + busy[-1]
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                                   buttons=Gtk.ButtonsType.NONE,
+                                   text=f"{names} {'is' if len(busy) == 1 else 'are'} open")
+        dialog.format_secondary_text(
+            f"An app's settings can only change while it's closed. Close {names} first, then Save. Or save now: "
+            f"{names} will keep the old radio until closed, and get the new one next time "
+            f"{'it starts' if len(busy) == 1 else 'they start'} from {'its tile' if len(busy) == 1 else 'their tiles'}.")
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save anyway", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        return response == Gtk.ResponseType.OK
+
+    def _saved(self, ok, text, radio_name=None, radio=None):
         self._set_message(text, ok)
+        if ok and radio_name:
+            self.profiles[radio_name] = radio
+            save_profiles(self.profiles)
         if ok:
             if self.zone_combo and self.zone_combo.get_active_id():
                 os.environ["TZ"] = self.zone_combo.get_active_id()  # the clock follows at once
@@ -4564,6 +5060,10 @@ class Launcher(Gtk.Window):
             self._show_station()
             self.callsign_entry.set_text(self.station.get("callsign", ""))
             self.grid_entry.set_text(self.station.get("grid", ""))
+            self._fill_profiles(self.station.get("radio_name"))
+            self._settings_filled = (self.station, self._settings_form())
+            self._show_rig_state(None)
+            GLib.timeout_add_seconds(3, lambda: self._rig_check() and False)  # rigctld restarting
         return False
 
     def _backup_dialog(self, *_):

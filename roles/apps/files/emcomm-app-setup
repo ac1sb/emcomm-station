@@ -1,26 +1,44 @@
 #!/usr/bin/env python3
 """Fill in an app's settings from the station settings before it starts.
 
+  emcomm-app-setup radio     write the radio in Settings > Radio into every app
+                             installed (WSJT-X, JS8Call, fldigi, Pat, Xastir), skipping
+                             any that's open; one JSON line per app
   emcomm-app-setup pat       callsign, grid and rig control in Pat's config
   emcomm-app-setup direwolf  write the Direwolf config and print its path
   emcomm-app-setup xastir    callsign and position from the grid in Xastir's config;
                              first run only: APRS through Direwolf's AGW port
-  emcomm-app-setup js8call   first run only: callsign, grid and rig control
-  emcomm-app-setup wsjtx     first run only: callsign, grid and rig control
+  emcomm-app-setup js8call   callsign, grid and rig control
+  emcomm-app-setup wsjtx     callsign, grid and rig control
+  emcomm-app-setup fldigi    callsign, grid and rig control
   emcomm-app-setup flmsg     dates and times in UTC (2026-10-21, 1356Z), the full
                              window with flmsg's own forms, and the callsign if
                              flmsg has none yet
 
 Every app reaches the radio through rigctld on 127.0.0.1:4532, which already
-handles PTT the way Settings says, so each app is told to key the radio by CAT
-through it. Callsign and grid follow Settings every time for Pat and Direwolf;
-JS8Call and WSJT-X keep their own settings once they exist, so changes made in
-those apps stick.
+handles PTT the way Settings says (CAT, or RTS/DTR on a Digirig), so each app is
+told to key the radio by CAT through it, or by VOX when the radio has no PTT.
+
+Only the settings that say how to reach the radio (and the callsign and grid) are
+written; everything else in an app's settings is the operator's and stays as it is.
+Sound cards are left alone too: emcomm-audio moves radio apps onto the radio's sound
+card. Before a file is changed, the old one is copied to
+~/.local/state/emcomm/config-backups (the last 5 of each).
+
+Nothing in WSJT-X, JS8Call, fldigi, Pat or Xastir is changed until the operator allows
+it (Settings > Radio, saved as "allowed": true in ~/.config/emcomm/app-radio.json), and
+an app listed there under "leave_alone" is never touched.
+An app that's open writes its own settings back when it closes, so it's skipped and
+gets the radio the next time it starts from its tile.
 """
 
+import glob
 import json
 import os
+import re
+import shutil
 import sys
+import time
 
 STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 HOME = os.path.expanduser("~")
@@ -30,6 +48,19 @@ RIGCTLD = "127.0.0.1:4532"
 # Opening the card directly (plughw:CARD=rigaudio) would lock the others out.
 RIG_AUDIO = "pipewire"
 APRS_CARD = os.environ.get("EMCOMM_APRS_CARD", "/proc/asound/aprsaudio")  # Settings > APRS iGate
+APP_RADIO = os.path.join(HOME, ".config/emcomm/app-radio.json")
+BACKUPS = os.path.join(HOME, ".local/state/emcomm/config-backups")
+KEEP_BACKUPS = 5
+# What the radio is put in for digital modes: WSJT-X and JS8Call's "Mode" setting.
+DATA_MODES = {"data": "data_mode_data", "usb": "data_mode_USB", "none": "data_mode_none"}
+# Apps whose rig settings are written: (name shown, program, settings file under HOME).
+RADIO_APPS = {
+    "wsjtx": ("WSJT-X", "wsjtx", ".config/WSJT-X.ini"),
+    "js8call": ("JS8Call", "js8call", ".config/JS8Call.ini"),
+    "fldigi": ("fldigi", "fldigi", ".fldigi/fldigi_def.xml"),
+    "pat": ("Pat", "pat", ".config/pat/config.json"),
+    "xastir": ("Xastir", "xastir", ".xastir/config/xastir.cnf"),
+}
 
 
 def load_station():
@@ -46,6 +77,72 @@ def write(path, text):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     os.replace(tmp, path)
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def back_up(path):
+    """Copy path to the backups folder before it's changed, keeping the last few. Returns the copy."""
+    if not os.path.exists(path):
+        return None
+    os.makedirs(BACKUPS, exist_ok=True)
+    name = os.path.basename(path)
+    copy = os.path.join(BACKUPS, f"{name}.{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
+    shutil.copy2(path, copy)
+    for old in sorted(glob.glob(os.path.join(BACKUPS, glob.escape(name) + ".*")))[:-KEEP_BACKUPS]:
+        os.remove(old)
+    return copy
+
+
+def write_changed(path, text):
+    """Write text to path if it differs, backing up the old file. (changed, backup path)."""
+    if read(path) == text:
+        return False, None
+    backup = back_up(path)
+    write(path, text)
+    return True, backup
+
+
+def app_radio():
+    try:
+        with open(APP_RADIO, encoding="utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def allowed():
+    """The operator has said Emcomm-CNC may change other apps' settings."""
+    return app_radio().get("allowed") is True
+
+
+def leave_alone():
+    names = app_radio().get("leave_alone", [])
+    return {str(n) for n in names} if isinstance(names, list) else set()
+
+
+def running(program):
+    """True if a process of that name is running for anyone (the station has one operator)."""
+    for comm in glob.glob("/proc/[0-9]*/comm"):
+        try:
+            with open(comm, encoding="utf-8") as f:
+                if f.read().strip() == program[:15]:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def ptt_by_vox(station):
+    """No PTT in Settings > Radio: the radio keys itself on the audio (VOX)."""
+    return str(station.get("ptt_method", "CAT")).upper() == "NONE"
 
 
 def setup_pat(station):
@@ -69,8 +166,8 @@ def setup_pat(station):
     # Packet goes through Direwolf's AGW port (emcomm-start packet).
     cfg.setdefault("ax25", {}).setdefault("engine", "agwpe")
     cfg.setdefault("agwpe", {"addr": "localhost:8000", "radio_port": 0})
-    write(path, json.dumps(cfg, indent=2) + "\n")
-    return path
+    changed, backup = write_changed(path, json.dumps(cfg, indent=2) + "\n")
+    return path, changed, backup
 
 
 def setup_direwolf(station):
@@ -85,8 +182,9 @@ def setup_direwolf(station):
         "CHANNEL 0",
         f"MYCALL {station.get('callsign', 'N0CALL')}",
         "MODEM 1200",
-        # Hamlib model 2 is "NET rigctl": key the radio through rigctld.
-        f"PTT RIG 2 {RIGCTLD.replace('127.0.0.1', 'localhost')}",
+        # Hamlib model 2 is "NET rigctl": key the radio through rigctld. VOX needs no PTT line.
+        "# PTT: none, the radio keys on the audio (VOX)" if ptt_by_vox(station)
+        else f"PTT RIG 2 {RIGCTLD.replace('127.0.0.1', 'localhost')}",
         "AGWPORT 8000",
         "KISSPORT 8001",
         "",
@@ -158,24 +256,118 @@ def setup_xastir(station):
             "DEVICE0_RECONN": "1",
         })
     kept = [line for line in lines if line.split(":", 1)[0] not in values]
-    write(path, "\n".join(kept + [f"{k}:{v}" for k, v in values.items()]) + "\n")
-    return path
+    changed, backup = write_changed(path, "\n".join(kept + [f"{k}:{v}" for k, v in values.items()]) + "\n")
+    return path, changed, backup
+
+
+def qt_ini_keys(station):
+    """The [Configuration] keys WSJT-X and JS8Call need to reach the radio through rigctld."""
+    mode = DATA_MODES.get(station.get("data_mode"), DATA_MODES["data"])
+    keys = {
+        "Rig": "Hamlib NET rigctl",
+        "CATNetworkPort": RIGCTLD,
+        "PTTMethod": "PTT_method_VOX" if ptt_by_vox(station) else "PTT_method_CAT",
+        "DataMode": mode,
+        # "Fake It": the transmit audio stays in the radio's passband by moving the
+        # radio rather than the tone. Off on a radio left in its own mode (VHF FM).
+        "SplitMode": "split_mode_none" if mode == DATA_MODES["none"] else "split_mode_emulate",
+    }
+    if station.get("callsign"):
+        keys["MyCall"] = station["callsign"]
+    if station.get("grid"):
+        keys["MyGrid"] = station["grid"]
+    return keys
+
+
+def merge_qt_ini(text, keys, section="Configuration"):
+    """Set keys in one [section] of a Qt settings file, keeping every other line."""
+    lines = (text or "").splitlines()
+    head = f"[{section}]"
+    if head not in lines:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(head)
+    start = lines.index(head) + 1
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("[")), len(lines))
+    todo = dict(keys)
+    for i in range(start, end):
+        key = lines[i].split("=", 1)[0]
+        if "=" in lines[i] and key in todo:
+            lines[i] = f"{key}={todo.pop(key)}"
+    while end > start and not lines[end - 1].strip():
+        end -= 1  # new keys go before the blank line that ends the section
+    lines[end:end] = [f"{k}={v}" for k, v in todo.items()]
+    return "\n".join(lines) + "\n"
 
 
 def setup_qt_ini(station, name):
     path = os.path.join(HOME, ".config", name)
-    if os.path.exists(path):
-        return path
-    write(path, "\n".join([
-        "[Configuration]",
-        f"MyCall={station.get('callsign', '')}",
-        f"MyGrid={station.get('grid', '')}",
-        "Rig=Hamlib NET rigctl",
-        f"CATNetworkPort={RIGCTLD}",
-        "PTTMethod=PTT_method_CAT",
-        "",
-    ]))
-    return path
+    changed, backup = write_changed(path, merge_qt_ini(read(path), qt_ini_keys(station)))
+    return path, changed, backup
+
+
+def fldigi_keys(station):
+    """fldigi_def.xml settings: rig control by Hamlib through rigctld (model 2, "NET
+    rigctl"), PTT by Hamlib's command, and not by its own RigCAT or flrig."""
+    keys = {
+        "CHKUSEHAMLIBIS": "1",
+        "CHKUSERIGCATIS": "0",
+        "CHKUSEXMLRPCIS": "0",
+        "HAMRIGMODEL": "2",
+        "HAMRIGNAME": "NET rigctl",
+        "HAMRIGDEVICE": RIGCTLD,
+        "HAMLIBCMDPTT": "0" if ptt_by_vox(station) else "1",
+    }
+    if station.get("callsign"):
+        keys["MYCALL"] = station["callsign"]
+    if station.get("grid"):
+        keys["MYLOC"] = station["grid"]
+    return keys
+
+
+def merge_fldigi(text, keys):
+    """Set <KEY>value</KEY> elements in fldigi_def.xml, keeping the rest. A new file holds
+    only these, which fldigi fills out with its defaults (and skips its first-run wizard)."""
+    if not text or "</FLDIGI_DEFS>" not in text:
+        text = '<?xml version="1.0" encoding="UTF-8"?>\n<FLDIGI_DEFS>\n</FLDIGI_DEFS>\n'
+    for key, value in keys.items():
+        value = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        element = f"<{key}>{value}</{key}>"
+        text, found = re.subn(rf"<{key}>.*?</{key}>", lambda _m: element, text, count=1, flags=re.S)
+        if not found:
+            text = text.replace("</FLDIGI_DEFS>", f"{element}\n</FLDIGI_DEFS>", 1)
+    return text
+
+
+def setup_fldigi(station):
+    path = os.path.join(HOME, ".fldigi/fldigi_def.xml")
+    changed, backup = write_changed(path, merge_fldigi(read(path), fldigi_keys(station)))
+    return path, changed, backup
+
+
+SETUP = {"wsjtx": lambda st: setup_qt_ini(st, "WSJT-X.ini"), "js8call": lambda st: setup_qt_ini(st, "JS8Call.ini"),
+         "fldigi": lambda st: setup_fldigi(st), "pat": lambda st: setup_pat(st), "xastir": lambda st: setup_xastir(st)}
+
+
+def setup_radio(station):
+    """Write the radio into every installed app's settings. [(app, name, state, backup)],
+    state being updated, unchanged, open, left alone, not installed or not allowed."""
+    skip = leave_alone()
+    results = []
+    for app, (name, program, rel) in RADIO_APPS.items():
+        if not allowed():
+            state, backup = "not allowed", None
+        elif app in skip:
+            state, backup = "left alone", None
+        elif not shutil.which(program) and not os.path.exists(os.path.join(HOME, rel)):
+            state, backup = "not installed", None
+        elif running(program):
+            state, backup = "open", None
+        else:
+            _path, changed, backup = SETUP[app](station)
+            state = "updated" if changed else "unchanged"
+        results.append((app, name, state, backup))
+    return results
 
 
 def setup_flmsg(station):
@@ -219,16 +411,17 @@ def main(argv):
         return 2
     station = load_station()
     app = argv[0]
-    if app == "pat":
-        path = setup_pat(station)
+    if app == "radio":
+        for key, name, state, backup in setup_radio(station):
+            print(json.dumps({"app": key, "name": name, "state": state, "backup": backup}))
+        return 0
+    if app in SETUP:
+        if not allowed() or app in leave_alone():  # the operator sets this app up by hand
+            path = os.path.join(HOME, RADIO_APPS[app][2])
+        else:
+            path = SETUP[app](station)[0]
     elif app == "direwolf":
         path = setup_direwolf(station)
-    elif app == "xastir":
-        path = setup_xastir(station)
-    elif app == "js8call":
-        path = setup_qt_ini(station, "JS8Call.ini")
-    elif app == "wsjtx":
-        path = setup_qt_ini(station, "WSJT-X.ini")
     elif app == "flmsg":
         path = setup_flmsg(station)
     else:

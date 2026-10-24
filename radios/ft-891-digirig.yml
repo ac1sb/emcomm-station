@@ -12,3 +12,5 @@ ptt_method: RTS
 ptt_match: { vendor: "10c4", product: "ea60" }
 # Digirig sound card (C-Media CM108).
 audio_match: { vendor: "0d8c", product: "0012" }
+# Digital apps put the radio in DATA-U, which takes its audio from the DATA jack.
+data_mode: data

@@ -1,0 +1,20 @@
+---
+# Preset: Icom ID-5100 (2 m / 70 cm) with a Digirig Mobile and Digirig's Icom RJ-45
+# cable (mic jack for transmit audio and PTT, SP1 jack for receive audio). Not yet
+# tried on the radio.
+# The ID-5100's own USB port carries no audio. CAT (CI-V) needs Icom's data cable
+# (OPC-2350LU) in the radio's DATA jack: pick it under CAT port once plugged in.
+# Radio menu: Set > Function > CI-V > CI-V Baud Rate to match cat_baud (or Auto).
+# If this ID-5100 is the APRS iGate's radio (Settings > APRS iGate), don't also use
+# it here: one radio can't do both.
+radio_name: Icom ID-5100 + Digirig
+rig_model: 3071            # Hamlib RIG_MODEL_ID5100
+cat_baud: 19200
+cat_match: null
+# PTT keyed by RTS on the Digirig's CP2102 serial port.
+ptt_method: RTS
+ptt_match: { vendor: "10c4", product: "ea60" }
+# Digirig sound card (C-Media CM108).
+audio_match: { vendor: "0d8c", product: "0012" }
+# FM: digital apps leave the radio's mode alone.
+data_mode: none
