@@ -267,9 +267,9 @@ every problem before you go on the air.
 1. **Radio on, then station.** Turn the radio on and connect its USB cable before
    starting the station (or before opening Emcomm-CNC in desktop mode). Rig
    control starts by itself once the radio is plugged in.
-2. **Diagnostics (F2) > Read frequency.** It should show the frequency on the
-   radio's display. If it doesn't, rig control isn't reaching the radio: see
-   [Troubleshooting](#troubleshooting).
+2. **Rig control.** The top bar shows **● Rig** and the radio's frequency. For a
+   fuller check, **Settings > Radio > Test CAT** reads the frequency and mode back
+   from the radio. If it fails, see [Troubleshooting](#troubleshooting).
 3. **Time.** Check UTC in the top bar against a known source. FT8, JS8Call and VARA
    all fail if the clock is off by more than about a second. With a GPS plugged
    in, Diagnostics shows whether the clock is following it.
@@ -277,8 +277,9 @@ every problem before you go on the air.
    radio's card (on the FT-710, the C-Media **USB Audio Device**). The **Listening
    speaker** should be the speaker or headphones you want to hear the Scanner and
    recordings on.
-5. **Diagnostics > PTT test (2 s)** into a dummy load, or on a clear frequency
-   after identifying. The radio should key for two seconds and drop.
+5. **Settings > Radio > Test PTT** (or Diagnostics > PTT test) into a dummy load,
+   or on a clear frequency after identifying. It asks first, then keys the radio
+   for two seconds.
 
 You're ready to operate.
 
@@ -290,7 +291,7 @@ You're ready to operate.
 
 All the radio apps reach the radio through one program, **rigctld** (Hamlib's rig
 control server, at `127.0.0.1:4532`). It owns the radio's CAT port and keys the
-radio. That's why rig control is set up once, in **Settings > Radio**, and every app
+radio. That's why the radio is set up once, in **Settings > Radio**, and every app
 is pointed at the same place:
 
 | In the app, choose | Value |
@@ -302,6 +303,27 @@ is pointed at the same place:
 Don't pick the radio's own model (FT-710, FT-891) inside an app, and don't pick
 **FLRig**: the station doesn't run flrig, and only one program can hold the CAT
 port. rigctld handles the radio model and PTT method chosen in Settings.
+
+### Letting the station set up the apps
+
+**Settings > Radio** has a box: **Let Emcomm-CNC set up WSJT-X, JS8Call, fldigi, Pat
+and Xastir for this radio**. It's off until you tick it (it explains what it changes
+and asks first). With it ticked, Emcomm-CNC writes the settings in the table above,
+plus the mode for digital apps, split, your callsign and grid, into each of those
+apps: when you tap **Save and use this radio**, when Emcomm-CNC starts, and each time
+the app is opened from its tile. Nothing else in the apps is changed, and sound
+cards are left alone (the station moves radio apps onto the radio's sound card while
+it runs).
+
+- An app has to be **closed** to be changed: an open app writes its own settings back
+  when it closes. Save says which apps it skipped.
+- **Apps…** next to the box leaves single apps alone.
+- The old settings file is kept in `~/.local/state/emcomm/config-backups`.
+- With the box unticked, Emcomm-CNC changes nothing in those apps. Set each one as in
+  its chapter below.
+
+So with the box ticked, the per-app settings tables in this guide are a **check**,
+not a job: open the settings once and confirm they match.
 
 **Transmit from one app at a time.** There is one radio. Any app can key it and
 change its frequency, so two transmitting apps will fight.
@@ -435,8 +457,10 @@ opens in its own window. Pat doesn't make sound itself; it hands each message to
 
 ### First-time setup (once)
 
-1. Open **Winlink mail**. Pat already has your callsign, grid and the rig control
-   address.
+1. Open **Winlink mail**. With the Settings > Radio box ticked
+   ([Letting the station set up the apps](#letting-the-station-set-up-the-apps)), Pat
+   already has your callsign, grid and the rig control address; otherwise, enter your
+   callsign and grid in Pat's configuration page too.
 2. Open Pat's configuration page and enter your **Winlink password**.
 
 ### Sending and receiving over VARA HF
@@ -513,11 +537,12 @@ control). For your own settings, copy `~/.config/emcomm/direwolf.conf` to
 mostly a band check: which bands are open, and from where (the map shows stations
 heard, and Online > Who heard me shows who heard you).
 
-Tap **WSJT-X**. The first time it's opened from the tile, your callsign, grid and
-rig control are filled in. Open it from the tile, not from the computer's own app
-menu, or those settings aren't filled in.
+Tap **WSJT-X**. With the Settings > Radio box ticked
+([Letting the station set up the apps](#letting-the-station-set-up-the-apps)), your
+callsign, grid and the Radio tab below are filled in each time it's opened from the
+tile. Open it from the tile, not from the computer's own app menu, or they aren't.
 
-### Settings (File > Settings), once
+### Settings (File > Settings): set once, or check
 
 **Radio tab**
 
@@ -555,10 +580,10 @@ WSJT-X show on the station's Logs page.
 with store-and-forward through other stations (relay and inbox). Good for passing
 short traffic when voice isn't working.
 
-Tap **JS8Call**. The first time it's opened from the tile, your callsign, grid and
-rig control are filled in.
+Tap **JS8Call**. As with WSJT-X, the Settings > Radio box fills in your callsign,
+grid and the Radio tab each time it's opened from the tile.
 
-### Settings (File > Settings), once
+### Settings (File > Settings): set once, or check
 
 **Radio tab:** the same as WSJT-X: Rig **Hamlib NET rigctl**, Network Server
 **127.0.0.1:4532**, PTT **CAT**, Mode **Data/Pkt**, Split **Fake It**.
@@ -577,7 +602,9 @@ band are in Reference.
 **What it's for:** the general digital-mode program: PSK, MT63, Olivia, RTTY, CW and
 the NBEMS modes used to pass ICS forms. Forms' **Send by radio** uses fldigi.
 
-fldigi gets no settings from the station, so set these once.
+With the Settings > Radio box ticked, the station fills in your callsign and the
+rig control below each time fldigi is opened from its tile. Otherwise, set these
+once. The Audio setting is yours either way.
 
 **Configure > Rig Control > Hamlib**
 
@@ -955,7 +982,7 @@ file, then upload to the radio.
 | Tile | What's there |
 | --- | --- |
 | User | Callsign, grid square (**From GPS** fills it in), time zone |
-| Radio | Preset, or manufacturer and model; CAT port and baud rate; PTT method and port; sound card. **Save and restart rig control** |
+| Radio | Radio profiles; manufacturer and model; baud rate, CAT port, PTT and PTT port; sound card; mode for digital apps; whether Emcomm-CNC sets up the apps; Test CAT and Test PTT. **Save and use this radio** |
 | Devices | GPS port, what's plugged in, **Free the SDR receiver**, **ADS-B receiver** |
 | Display | Colours (Amber dark, Light, Slate blue, Night red, Sunlight), resolution, text size, rotation, start-up screen |
 | Wi-Fi | Networks (also F6) |
@@ -967,14 +994,37 @@ file, then upload to the radio.
 | Power | Restart or shut down (desktop: exit) |
 | Home tiles | Arrange and group the apps |
 
-### Radio presets
+### Settings > Radio: radio profiles
 
-| Radio | Preset | CAT | PTT | Sound card |
-| --- | --- | --- | --- | --- |
-| Yaesu FT-710 | Yaesu FT-710 | Radio's USB (Enhanced port), 38400 | CAT | Radio's built-in **USB Audio Device** |
-| Yaesu FT-891 | Yaesu FT-891 + Digirig | Radio's USB (Enhanced port), 38400 | RTS on the Digirig's serial port | Digirig |
+![Settings > Radio](guide/radio.png)
 
-Set the radio's own CAT RATE menu to the same baud rate.
+Each radio you use is a **profile**, kept with its own settings. Pick one in
+**Profile** and tap **Save and use this radio** to switch the station to it. **New…**
+starts a profile from a preset or a copy of another; **Rename…** and **Delete**
+manage them.
+
+| Field | What to pick |
+| --- | --- |
+| Manufacturer, Model (Hamlib) | The radio (a preset fills these in) |
+| Baud (match the radio) | The same as the radio's CAT rate menu |
+| CAT port | The radio's USB serial port, listed by USB ID |
+| PTT, PTT port | **CAT command**, or **RTS line** on a Digirig's serial port |
+| Sound card | The radio's USB sound card or Digirig |
+| Mode for digital apps | **Data / Pkt (DATA-U)** for HF data, **USB**, or **Leave the radio's mode (FM)** for a VHF/UHF FM radio |
+
+The strip under the fields shows whether rig control is working, with the radio's
+frequency and mode, and has **Rescan devices** (after plugging something in),
+**Test CAT** and **Test PTT** (asks first, keys for two seconds).
+
+| Radio | Preset | CAT | PTT | Sound card | Mode for digital apps |
+| --- | --- | --- | --- | --- | --- |
+| Yaesu FT-710 | Yaesu FT-710 | Radio's USB (Enhanced port), 38400 | CAT | Radio's built-in **USB Audio Device** | Data / Pkt |
+| Yaesu FT-891 | Yaesu FT-891 + Digirig | Radio's USB (Enhanced port), 38400 | RTS on the Digirig's serial port | Digirig | Data / Pkt |
+| Icom ID-5100 | Icom ID-5100 + Digirig | Icom's OPC-2350LU data cable, 19200 | RTS on the Digirig's serial port | Digirig | Leave the radio's mode (FM) |
+
+Set the radio's own CAT rate menu to the same baud rate. One ID-5100 can't be both
+the main radio here and the APRS radio in Settings > APRS iGate. ⚠ The ID-5100
+preset is not yet tested on the radio.
 
 The radios' own menu settings are in [Part 4](#the-radios-own-menu-settings).
 
@@ -1174,8 +1224,8 @@ serial port).
 
 | Problem | Check |
 | --- | --- |
-| Read frequency fails | Radio on and USB plugged in; Settings > Radio baud rate matches the radio's CAT RATE menu; **Save and restart rig control** |
-| An app says it can't reach the radio | It's set to **Hamlib NET rigctl, 127.0.0.1:4532**, not FLRig or the radio's own model |
+| Test CAT or Read frequency fails | Radio on and USB plugged in; Settings > Radio baud rate matches the radio's CAT RATE menu; **Rescan devices**, then **Save and use this radio** |
+| An app says it can't reach the radio | It's set to **Hamlib NET rigctl, 127.0.0.1:4532**, not FLRig or the radio's own model. With the Settings > Radio box ticked, close the app and open it again from its tile |
 | Radio doesn't transmit | Diagnostics > PTT test; the app's PTT method is CAT |
 | Transmits but no audio goes out | Settings > Audio > Radio sound card names the radio; To radio level isn't at zero; Settings > Audio > Playing now shows the app on the radio |
 | Tones come out of the computer's speaker | Is Emcomm-CNC open? With it closed in desktop mode set to Never, pick the radio's **USB Audio Device** in the app. |
