@@ -4526,7 +4526,7 @@ class Launcher(Gtk.Window):
         starts = [(f"preset:{pid}", p.get("radio_name", pid)) for pid, p in self.presets]
         if current:
             starts.insert(0, ("copy", f"A copy of {current} as shown"))
-        starts.append(("blank", "Nothing: pick the radio in the lists"))
+        starts.insert(1 if current else 0, ("blank", "Any other radio Hamlib supports: pick it in the lists"))
         answer = self._profile_dialog("New radio profile", starts=starts)
         if not answer:
             return
