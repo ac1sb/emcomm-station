@@ -165,23 +165,26 @@ The station keeps two kinds of sound apart:
   is ever let onto the radio's sound card, so it can't be transmitted by VOX or
   mixed into a digital signal.
 
-On the dedicated station, the radio's sound card is the default speaker and
-microphone, so the radio apps reach it with no sound settings of their own. Leave
-their audio device on **default** (or **pulse**).
+While Emcomm-CNC is running, the radio apps reach the radio's sound card with no
+sound settings of their own: the station moves each one onto the radio as it
+starts. Leave their audio device on **default** (or **pulse**). If the radio is
+unplugged, their sound goes to a silent output rather than to a speaker.
 
-> **Desktop mode:** Settings > Audio > **When the radio is every app's speaker and
-> microphone** decides this.
+> **Desktop mode:** this holds whenever Emcomm-CNC is open, whatever Settings >
+> Audio > **When the radio is every app's speaker and microphone** is set to. That
+> setting only matters for radio apps you run **with Emcomm-CNC closed**:
 >
-> - **Only while Emcomm-CNC is open** (recommended): the same as the station while
->   Emcomm-CNC is open, and your own speaker and microphone come back when you exit.
+> - **Only while Emcomm-CNC is open** (recommended): the radio is the default only
+>   while Emcomm-CNC is open; your own speaker and microphone come back when you
+>   exit.
 > - **Always:** the radio is always the default.
-> - **Never:** your computer's own speaker stays the default, so **every radio app
->   must be set to the radio's sound card by name** (on the FT-710, the C-Media
->   **USB Audio Device**). Never pick "default" or "pipewire" in this setting: they
->   lead to the computer's speaker, so you hear the tones and nothing goes out.
-
-<!-- TODO(audio thread): confirm how Direwolf, ARDOP and VARA reach the radio when
-     desktop mode is set to "Never"; they don't have a by-name sound setting here. -->
+> - **Never:** your computer's own speaker stays the default. A radio app used with
+>   Emcomm-CNC closed must be set to the radio's sound card by name (on the FT-710,
+>   the C-Media **USB Audio Device**). "default" or "pipewire" would then lead to the
+>   computer's speaker: you hear the tones and nothing goes out.
+>
+> An app left set to a *different* USB sound card is left alone, since that may be a
+> second radio.
 
 ### Levels
 
@@ -300,7 +303,7 @@ opens in its own window. Pat doesn't make sound itself; it hands each message to
 
 | Setting | Value |
 | --- | --- |
-| SoundCard > Device Input / Output | The default device on the station, or the radio's card by name in desktop mode with Audio set to Never |
+| SoundCard > Device Input / Output | The default device. The station moves VARA onto the radio |
 | PTT | **None**. Pat keys the radio through rig control |
 | TCP ports | 8300 (the standard; Pat expects it) |
 | Licence key | Your key, if you have one |
@@ -376,7 +379,7 @@ Tap **Test CAT** (turns green) and **Test PTT** (keys the radio).
 
 | Setting | Value |
 | --- | --- |
-| Input | Station: **default**. Desktop mode with Audio set to Never: the radio's **USB Audio Device** |
+| Input | **default** (the station moves it to the radio). Used with Emcomm-CNC closed in desktop mode set to Never: the radio's **USB Audio Device** |
 | Output | The same as Input |
 | Channels | **Mono** |
 
@@ -404,8 +407,7 @@ rig control are filled in.
 **Radio tab:** the same as WSJT-X: Rig **Hamlib NET rigctl**, Network Server
 **127.0.0.1:4532**, PTT **CAT**, Mode **Data/Pkt**, Split **Fake It**.
 
-**Audio tab:** the same as WSJT-X: **default** on the station (or the radio's **USB
-Audio Device** in desktop mode set to Never), **Mono**.
+**Audio tab:** the same as WSJT-X: **default**, **Mono**.
 
 JS8Call's messages and activity show on the Logs page. Frequencies for JS8 on each
 band are in Reference.
@@ -436,8 +438,8 @@ Untick **Use flrig** and **Use RigCAT** if either is ticked. Tap **Initialize**.
 
 | Setting | Value |
 | --- | --- |
-| Station | **PulseAudio** (server string left blank) |
-| Desktop mode set to Never | **PortAudio**, Capture and Playback: the radio's **USB Audio Device** |
+| With Emcomm-CNC open | **PulseAudio** (server string left blank) |
+| Used with Emcomm-CNC closed, desktop mode set to Never | **PortAudio**, Capture and Playback: the radio's **USB Audio Device** |
 
 Save the configuration before closing the dialog.
 
@@ -836,8 +838,9 @@ The same report is available over SSH with `emcomm-diag`.
 | Read frequency fails | Radio on and USB plugged in; Settings > Radio baud rate matches the radio's CAT RATE menu; **Save and restart rig control** |
 | An app says it can't reach the radio | It's set to **Hamlib NET rigctl, 127.0.0.1:4532**, not FLRig or the radio's own model |
 | Radio doesn't transmit | Diagnostics > PTT test; the app's PTT method is CAT |
-| Transmits but no audio goes out | Settings > Audio > Radio sound card names the radio; To radio level isn't at zero; in desktop mode with Never, the app is set to the radio's card by name |
-| Tones come out of the computer's speaker | The app is on "default" or "pipewire" in desktop mode set to Never. Pick the radio's **USB Audio Device**, or set Audio to **Only while Emcomm-CNC is open** |
+| Transmits but no audio goes out | Settings > Audio > Radio sound card names the radio; To radio level isn't at zero; Settings > Audio > Playing now shows the app on the radio |
+| Tones come out of the computer's speaker | Is Emcomm-CNC open? With it closed in desktop mode set to Never, pick the radio's **USB Audio Device** in the app. |
+| The radio's sound card keeps disappearing and coming back | Diagnostics > recent USB events. Usually RF on the USB cable or a weak USB port: add clip-on ferrites at both ends, plug straight into the computer rather than a hub, and try another port |
 | ALC high, signal distorted | Lower **To radio** |
 | FT8 or JS8 decodes nothing | Clock (UTC in the top bar); From radio level; radio on the right dial frequency in USB/DATA |
 | Pat won't connect | Modem open first; one modem only; see [When it doesn't connect](#when-it-doesnt-connect) |
