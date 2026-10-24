@@ -428,13 +428,17 @@ tap Connect; if the modem isn't running, the connect fails.
 - **APRS on the APRS radio + anything on the main radio.** With a second radio set up
   in Settings > APRS iGate, APRS has its own radio and sound card.
 - **Meshtastic and MeshCore** use their own LoRa radios.
+- **An app on radio 1 + an app on radio 2** ([Two radios at once](#two-radios-at-once-radio-1-and-radio-2)),
+  for example JS8Call on the FT-710 while Packet or VARA FM runs on a VHF radio.
+  Each transmits on its own radio.
 
 ### Don't run together
 
 - **Two modems for Pat at once** (VARA HF and VARA FM can't both start; VARA and
   ARDOP would both hear and answer).
-- **Two apps that control the radio's frequency**, such as WSJT-X and JS8Call: each
-  moves the radio to its own frequency. Close one before opening the other.
+- **Two apps that control the same radio's frequency**, such as WSJT-X and JS8Call:
+  each moves the radio to its own frequency. Close one before opening the other, or
+  put one on radio 2.
 - **Packet and APRS on the main radio** when there's no APRS radio: they share one
   Direwolf on one frequency.
 - **Scanner and Gqrx on the same dongle.** Each SDR dongle serves one program. With
@@ -603,8 +607,9 @@ band are in Reference.
 the NBEMS modes used to pass ICS forms. Forms' **Send by radio** uses fldigi.
 
 With the Settings > Radio box ticked, the station fills in your callsign and the
-rig control below each time fldigi is opened from its tile. Otherwise, set these
-once. The Audio setting is yours either way.
+rig control below each time fldigi is opened from its tile, and puts the radio in the
+profile's mode for digital apps (DATA-U or USB). Otherwise, set these once. The Audio
+setting is yours either way.
 
 **Configure > Rig Control > Hamlib**
 
@@ -1005,7 +1010,7 @@ file, then upload to the radio.
 
 ### Settings > Radio: radio profiles
 
-![Settings > Radio](guide/radio.png)
+![Settings > Radio, Radio 2 picked](guide/radio.png)
 
 Each radio you use is a **profile**, kept with its own settings. Pick one in
 **Profile** and tap **Save and use this radio** to switch the station to it. **New…**
@@ -1023,8 +1028,19 @@ in use can't be deleted.
 | Mode for digital apps | **Data / Pkt (DATA-U)** for HF data, **USB**, or **Leave the radio's mode (FM)** for a VHF/UHF FM radio |
 
 The strip under the fields shows whether rig control is working, with the radio's
-frequency and mode, and has **Rescan devices** (after plugging something in),
-**Test CAT** and **Test PTT** (asks first, keys for two seconds).
+frequency and mode, and has:
+
+- **Rescan:** looks again for what's plugged in.
+- **Find radio:** asks the radio on the CAT port who it is at each baud rate and
+  fills in the model and baud. Nothing transmits, but rig control stops for up to a
+  minute while it tries, so apps lose the radio meanwhile. Turn the radio on first.
+- **Test CAT:** reads the frequency and mode back from the radio.
+- **Test PTT:** asks first, then keys the radio for two seconds.
+
+**Swapping radios.** When a radio you've saved as a profile is plugged in and the
+one in use isn't, the station asks "*(radio)* is plugged in… Switch to it?". **Switch**
+restarts rig control for it (and sets up the apps for it, if that box is ticked);
+**Not now** leaves things as they are.
 
 | Radio | Preset | CAT | PTT | Sound card | Mode for digital apps |
 | --- | --- | --- | --- | --- | --- |
@@ -1037,6 +1053,26 @@ the main radio here and the APRS radio in Settings > APRS iGate. ⚠ The ID-5100
 preset is not yet tested on the radio.
 
 The radios' own menu settings are in [Part 4](#the-radios-own-menu-settings).
+
+### Two radios at once: Radio 1 and Radio 2
+
+**Radio 1** and **Radio 2** at the top right of Settings > Radio each edit one radio.
+Radio 1 is the main radio. Radio 2 is a second radio running alongside it, with its
+own rig control (`127.0.0.1:4533`) and sound card, for example the FT-710 on HF and a
+VHF/UHF radio for packet or VARA FM. Radio 2 is **Off** until you pick a profile for it
+and tap **Save and use this radio**. Each radio has its own light, **Test CAT** and
+**Test PTT**. One profile can't be both radios.
+
+![Apps on radio 2](guide/radio2-apps.png)
+
+**Apps…** picks which apps use radio 2, under **On radio 2**: WSJT-X, JS8Call,
+fldigi, **Packet and APRS (Direwolf)** and **VARA FM**. A ticked app uses radio 2's rig
+control and sound card; the rest use radio 1. With the "set up the apps" box ticked,
+the station points those apps at radio 2 for you. Without it, set a radio-2 app's rig
+control to **127.0.0.1:4533** by hand (the rest of its settings are as in its chapter).
+
+Radio 2 is separate from the APRS radio in Settings > APRS iGate; one radio can't be
+both.
 
 ---
 
@@ -1234,7 +1270,7 @@ serial port).
 
 | Problem | Check |
 | --- | --- |
-| Test CAT or Read frequency fails | Radio on and USB plugged in; Settings > Radio baud rate matches the radio's CAT RATE menu; **Rescan devices**, then **Save and use this radio** |
+| Test CAT or Read frequency fails | Radio on and USB plugged in; Settings > Radio > **Rescan**, then **Find radio** to fill in the model and baud; **Save and use this radio** |
 | An app says it can't reach the radio | It's set to **Hamlib NET rigctl, 127.0.0.1:4532**, not FLRig or the radio's own model. With the Settings > Radio box ticked, close the app and open it again from its tile |
 | Radio doesn't transmit | Diagnostics > PTT test; the app's PTT method is CAT |
 | Transmits but no audio goes out | Settings > Audio > Radio sound card names the radio; To radio level isn't at zero; Settings > Audio > Playing now shows the app on the radio |
