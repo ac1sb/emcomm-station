@@ -4,8 +4,9 @@
   emcomm-find-radio PORT [MODEL]
 
 PORT is a /dev/serial/by-id/ link (the CAT port picked in Settings > Radio); MODEL is
-the Hamlib model shown there, if any. Rig control (rigctld) holds the radio's port, so
-it's stopped while the port is tried and started again after. Runs as root: the
+the Hamlib model shown there, if any. Rig control (rigctld, and rigctld2 for a second
+radio) holds the radio's port, so it's stopped while the port is tried and started again
+after. Runs as root: the
 launcher calls it through sudo.
 
 At each baud rate it asks the radio who it is, both ways radios answer:
@@ -165,9 +166,9 @@ def find(path, model=None):
                                    "the Enhanced or first one)."}
 
 
-def rigctld(action):
+def rigctld(action, unit="rigctld"):
     if not TESTING and shutil.which("systemctl"):
-        subprocess.run(["systemctl", action, "rigctld"], check=False, capture_output=True)
+        subprocess.run(["systemctl", action, unit], check=False, capture_output=True)
 
 
 def main(argv):
@@ -184,13 +185,16 @@ def main(argv):
     if not TESTING and (not PORT_RE.fullmatch(path) or not os.path.exists(path)):
         print(json.dumps({"found": False, "why": "That serial port isn't plugged in."}))
         return 1
-    rigctld("stop")
+    # Both radios' rig control: the port may be either one's.
+    for unit in ("rigctld", "rigctld2"):
+        rigctld("stop", unit)
     time.sleep(0 if TESTING else 0.5)  # let rigctld let go of the port
     try:
         result = find(path, model)
     finally:
-        if os.path.exists(os.environ.get("EMCOMM_RIG_CAT", "/dev/rig-cat")):
-            rigctld("start")
+        for unit, dev in (("rigctld", "/dev/rig-cat"), ("rigctld2", "/dev/rig2-cat")):
+            if os.path.exists(dev):
+                rigctld("start", unit)
     print(json.dumps(result))
     return 0 if result["found"] else 1
 

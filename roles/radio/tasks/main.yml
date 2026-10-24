@@ -97,6 +97,18 @@
     enabled: false
     daemon_reload: true
 
+- name: Install the rigctld service for a second radio
+  ansible.builtin.template:
+    src: rigctld2.service.j2
+    dest: /etc/systemd/system/rigctld2.service
+    mode: "0644"
+
+- name: Let udev start rigctld2 when the second radio is plugged in
+  ansible.builtin.systemd:
+    name: rigctld2
+    enabled: false
+    daemon_reload: true
+
 - name: Point gpsd at /dev/gps0 only, so it never opens the radio's ports
   ansible.builtin.copy:
     content: |
@@ -253,4 +265,10 @@
   ansible.builtin.command: /usr/local/sbin/emcomm-apply-settings --aprs /etc/emcomm/aprs-radio.json
   args:
     removes: /etc/emcomm/aprs-radio.json
+  changed_when: false
+
+- name: Apply the second radio's settings, if there is one
+  ansible.builtin.command: /usr/local/sbin/emcomm-apply-settings --radio2 /etc/emcomm/radio2.json
+  args:
+    removes: /etc/emcomm/radio2.json
   changed_when: false

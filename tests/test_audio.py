@@ -50,7 +50,7 @@ HDMI = sink(4, "alsa_output.pci-0000_00_1f.3.hdmi-stereo", card=0, bus="pci")
 HEADSET = sink(5, "alsa_output.usb-Logitech_headset", card=4, bus="usb")
 BLUETOOTH = sink(6, "bluez_output.AA_BB_CC_DD_EE_FF.1", bus="bluetooth")
 SILENT = sink(7, audio.SILENT)
-SETTINGS = {"listen_sink": "", "radio_apps": []}
+SETTINGS = {"listen_sink": "", "radio_apps": [], "radio2_apps": []}
 
 
 class Speaker(unittest.TestCase):
@@ -150,14 +150,52 @@ class Routing(unittest.TestCase):
         self.assertEqual(audio.plan([BUILTIN], inputs, SETTINGS, None, None), [])
 
 
+class SecondRadio(unittest.TestCase):
+    RADIO2 = sink(8, "alsa_output.usb-Digirig-radio2", card=5, bus="usb")
+    SET = dict(SETTINGS, radio2_apps=["direwolf", "varafm"])
+
+    def plan(self, sinks, inputs, radio2_card="5"):
+        return audio.plan(sinks, inputs, self.SET, "2", None, radio2_card=radio2_card)
+
+    def test_radio2_apps_go_to_radio2(self):
+        sinks = [RADIO, BUILTIN, self.RADIO2, SILENT]
+        inputs = [stream(90, 1, "direwolf", "direwolf"),          # on radio 1: moved to radio 2
+                  stream(91, 8, "direwolf", "direwolf"),          # already there
+                  stream(92, 3, "VARAFM.exe", "wine-preloader"),  # Wine's VARA FM on the PC speaker
+                  stream(93, 8, "WSJT-X", "wsjtx"),               # a radio 1 app on radio 2
+                  stream(94, 8, "Scanner", "pacat")]              # not a radio app
+        self.assertEqual(self.plan(sinks, inputs), [
+            (90, self.RADIO2["name"], "a radio 2 app"), (92, self.RADIO2["name"], "a radio 2 app"),
+            (93, RADIO["name"], "a radio 1 app"), (94, BUILTIN["name"], "not a radio app")])
+
+    def test_radio2_unplugged_silences_its_apps(self):
+        sinks = [RADIO, BUILTIN, SILENT]
+        self.assertEqual(self.plan(sinks, [stream(90, 1, "direwolf", "direwolf")], radio2_card=None),
+                         [(90, audio.SILENT, "a radio 2 app, radio 2 unplugged")])
+
+    def test_radio2_is_never_the_listening_speaker(self):
+        self.assertEqual(audio.listening_speaker([self.RADIO2, BUILTIN], ["2", "5"], "")["name"], BUILTIN["name"])
+
+    def test_sources(self):
+        radio_in = {"index": 11, "name": "alsa_input.usb-FT-710", "properties": {"api.alsa.card": "2", "device.bus": "usb"}}
+        radio2_in = {"index": 15, "name": "alsa_input.usb-Digirig", "properties": {"api.alsa.card": "5", "device.bus": "usb"}}
+        outputs = [{"index": 80, "source": 11, "properties": {"application.name": "direwolf"}},
+                   {"index": 81, "source": 15, "properties": {"application.name": "WSJT-X"}},
+                   {"index": 82, "source": 15, "properties": {"application.name": "direwolf"}}]
+        self.assertEqual(audio.plan_sources([radio_in, radio2_in], outputs, self.SET, "2", "5"),
+                         [(80, radio2_in["name"], "a radio 2 app"), (81, radio_in["name"], "a radio 1 app")])
+
+
 class Helpers(unittest.TestCase):
     def test_settings_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "audio.json")
             self.assertEqual(audio.load_settings(path), SETTINGS)
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({"listen_sink": "x", "radio_apps": ["QtTermTCP"], "quiet": True}, f)
-            self.assertEqual(audio.load_settings(path), {"listen_sink": "x", "radio_apps": ["qttermtcp"]})
+                json.dump({"listen_sink": "x", "radio_apps": ["QtTermTCP"], "quiet": True,
+                           "radio2_apps": ["direwolf", "nonsense"]}, f)
+            self.assertEqual(audio.load_settings(path), {"listen_sink": "x", "radio_apps": ["qttermtcp"],
+                                                         "radio2_apps": ["direwolf"]})
             with open(path, "w", encoding="utf-8") as f:
                 f.write("[1, 2]")
             self.assertEqual(audio.load_settings(path), SETTINGS)

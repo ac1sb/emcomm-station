@@ -45,6 +45,11 @@ import time
 STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 HOME = os.path.expanduser("~")
 RIGCTLD = os.environ.get("EMCOMM_RIGCTLD", "127.0.0.1:4532")
+# A second radio running alongside (Settings > Radio > Radio 2): its own rigctld, and the
+# apps picked for it in ~/.config/emcomm/app-radio.json under "radio2_apps".
+RIGCTLD2 = os.environ.get("EMCOMM_RIGCTLD2", "127.0.0.1:4533")
+RADIO2_PATH = os.environ.get("EMCOMM_RADIO2", "/etc/emcomm/radio2.json")
+RADIO2_APPS = ("wsjtx", "js8call", "fldigi", "direwolf", "varafm")
 # The radio's sound card through PipeWire, which emcomm-audio-default makes the
 # default, so Direwolf can share it with JS8Call, fldigi and the recorder.
 # Opening the card directly (plughw:CARD=rigaudio) would lock the others out.
@@ -142,6 +147,30 @@ def running(program):
     return False
 
 
+def radio2():
+    """The second radio's settings, or None when there isn't one."""
+    try:
+        with open(RADIO2_PATH, encoding="utf-8") as f:
+            radio = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return radio if isinstance(radio, dict) and radio.get("radio_name") else None
+
+
+def on_radio2(app):
+    names = app_radio().get("radio2_apps", [])
+    return isinstance(names, list) and app in names and radio2() is not None
+
+
+def for_app(station, app):
+    """The station settings as an app sees them: radio 2's rig control, PTT and mode for an
+    app picked for radio 2, else radio 1's. "rig" is the rigctld address."""
+    if on_radio2(app):
+        r2 = radio2()
+        return {**station, "ptt_method": r2.get("ptt_method"), "data_mode": r2.get("data_mode"), "rig": RIGCTLD2}
+    return {**station, "rig": RIGCTLD}
+
+
 def ptt_by_vox(station):
     """No PTT in Settings > Radio: the radio keys itself on the audio (VOX)."""
     return str(station.get("ptt_method", "CAT")).upper() == "NONE"
@@ -159,12 +188,20 @@ def setup_pat(station):
     if station.get("grid"):
         cfg["locator"] = station["grid"]
     cfg.setdefault("http_addr", "localhost:8080")
-    cfg.setdefault("hamlib_rigs", {})["radio"] = {"address": RIGCTLD, "network": "tcp"}
+    rigs = cfg.setdefault("hamlib_rigs", {})
+    rigs["radio"] = {"address": RIGCTLD, "network": "tcp"}
+    if radio2():
+        rigs["radio2"] = {"address": RIGCTLD2, "network": "tcp"}
     for modem, addr in (("ardop", "localhost:8515"), ("varahf", "localhost:8300"), ("varafm", "localhost:8300")):
         section = cfg.setdefault(modem, {})
         section.setdefault("addr", addr)
         section.setdefault("rig", "radio")
         section.setdefault("ptt_ctrl", True)
+    # VARA FM follows Settings > Radio > Apps… between the two radios.
+    if on_radio2("varafm"):
+        cfg["varafm"]["rig"] = "radio2"
+    elif cfg["varafm"].get("rig") == "radio2":
+        cfg["varafm"]["rig"] = "radio"
     # Packet goes through Direwolf's AGW port (emcomm-start packet).
     cfg.setdefault("ax25", {}).setdefault("engine", "agwpe")
     cfg.setdefault("agwpe", {"addr": "localhost:8000", "radio_port": 0})
@@ -173,6 +210,7 @@ def setup_pat(station):
 
 
 def setup_direwolf(station):
+    station = for_app(station, "direwolf")
     custom = os.path.join(HOME, ".config/emcomm/direwolf.custom.conf")
     if os.path.exists(custom):
         return custom
@@ -186,7 +224,7 @@ def setup_direwolf(station):
         "MODEM 1200",
         # Hamlib model 2 is "NET rigctl": key the radio through rigctld. VOX needs no PTT line.
         "# PTT: none, the radio keys on the audio (VOX)" if ptt_by_vox(station)
-        else f"PTT RIG 2 {RIGCTLD.replace('127.0.0.1', 'localhost')}",
+        else f"PTT RIG 2 {station['rig'].replace('127.0.0.1', 'localhost')}",
         "AGWPORT 8000",
         "KISSPORT 8001",
         "",
@@ -267,7 +305,7 @@ def qt_ini_keys(station):
     mode = DATA_MODES.get(station.get("data_mode"), DATA_MODES["data"])
     keys = {
         "Rig": "Hamlib NET rigctl",
-        "CATNetworkPort": RIGCTLD,
+        "CATNetworkPort": station.get("rig", RIGCTLD),
         "PTTMethod": "PTT_method_VOX" if ptt_by_vox(station) else "PTT_method_CAT",
         "DataMode": mode,
         # "Fake It": the transmit audio stays in the radio's passband by moving the
@@ -317,7 +355,7 @@ def fldigi_keys(station):
         "CHKUSEXMLRPCIS": "0",
         "HAMRIGMODEL": "2",
         "HAMRIGNAME": "NET rigctl",
-        "HAMRIGDEVICE": RIGCTLD,
+        "HAMRIGDEVICE": station.get("rig", RIGCTLD),
         "HAMLIBCMDPTT": "0" if ptt_by_vox(station) else "1",
     }
     if station.get("callsign"):
@@ -347,17 +385,18 @@ def setup_fldigi(station):
     return path, changed, backup
 
 
-SETUP = {"wsjtx": lambda st: setup_qt_ini(st, "WSJT-X.ini"), "js8call": lambda st: setup_qt_ini(st, "JS8Call.ini"),
-         "fldigi": lambda st: setup_fldigi(st), "pat": lambda st: setup_pat(st), "xastir": lambda st: setup_xastir(st)}
+SETUP = {"wsjtx": lambda st: setup_qt_ini(for_app(st, "wsjtx"), "WSJT-X.ini"),
+         "js8call": lambda st: setup_qt_ini(for_app(st, "js8call"), "JS8Call.ini"),
+         "fldigi": lambda st: setup_fldigi(for_app(st, "fldigi")), "pat": setup_pat, "xastir": setup_xastir}
 
 
 # Hamlib's names for the mode for digital apps; "none" leaves the radio as it is.
 RIG_MODES = {"data": "PKTUSB", "usb": "USB"}
 
 
-def rigctld(command, timeout=3):
+def rigctld(command, timeout=3, address=RIGCTLD):
     """One rigctld command; the first line of its answer, or None."""
-    host, port = RIGCTLD.rsplit(":", 1)
+    host, port = address.rsplit(":", 1)
     try:
         with socket.create_connection((host, int(port)), timeout=timeout) as s:
             s.settimeout(timeout)
@@ -371,9 +410,10 @@ def rigctld(command, timeout=3):
 def set_rig_mode(station):
     """Put the radio in the mode for digital apps, unless it's there already. True if changed."""
     want = RIG_MODES.get(station.get("data_mode") or "data")
-    if not want or rigctld("m") in (want, None):
+    address = station.get("rig", RIGCTLD)
+    if not want or rigctld("m", address=address) in (want, None):
         return False
-    return rigctld(f"M {want} 0") == "RPRT 0"
+    return rigctld(f"M {want} 0", address=address) == "RPRT 0"
 
 
 def setup_radio(station):
@@ -448,7 +488,7 @@ def main(argv):
         else:
             path = SETUP[app](station)[0]
             if app == "fldigi":
-                set_rig_mode(station)
+                set_rig_mode(for_app(station, "fldigi"))
     elif app == "direwolf":
         path = setup_direwolf(station)
     elif app == "flmsg":

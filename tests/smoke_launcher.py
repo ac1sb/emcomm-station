@@ -107,7 +107,7 @@ def fake_fldigi(calls):
     return server
 
 
-def fake_rigctld(commands):
+def fake_rigctld(commands, freq="14074000"):
     """A TCP server answering as rigctld does for a radio on 14.074 MHz; `commands` records each line."""
     state = {"ptt": "0"}
 
@@ -117,7 +117,7 @@ def fake_rigctld(commands):
                 cmd = raw.decode().strip()
                 commands.append(cmd)
                 if cmd == "f":
-                    reply = "14074000"
+                    reply = freq
                 elif cmd == "m":
                     reply = "PKTUSB\n3000"
                 elif cmd == "v":
@@ -169,9 +169,15 @@ def main():
     rig_commands = []
     rigctld = fake_rigctld(rig_commands)
     os.environ["EMCOMM_RIGCTLD"] = f"127.0.0.1:{rigctld.server_address[1]}"
+    rig2_commands = []
+    rigctld2 = fake_rigctld(rig2_commands, freq="146520000")
+    os.environ.update({"EMCOMM_RIGCTLD2": f"127.0.0.1:{rigctld2.server_address[1]}",
+                       "EMCOMM_RADIO2": os.path.join(tmp.name, "radio2.json"),
+                       "EMCOMM_RIG2_CAT": os.path.join(tmp.name, "rig2-cat")})
     fake_apply = os.path.join(tmp.name, "emcomm-apply-settings")
     with open(fake_apply, "w", encoding="utf-8") as f:
-        f.write(f"#!/bin/sh\ncp \"$1\" {os.environ['EMCOMM_STATION']} && echo Saved.\n")
+        f.write(f"#!/bin/sh\nif [ \"$1\" = --radio2 ]; then cp \"$2\" {tmp.name}/radio2.json && echo Saved radio 2.; "
+                f"exit; fi\ncp \"$1\" {os.environ['EMCOMM_STATION']} && echo Saved.\n")
     fake_setup = os.path.join(tmp.name, "emcomm-app-setup")
     with open(fake_setup, "w", encoding="utf-8") as f:
         f.write("#!/bin/sh\n[ \"$1\" = radio ] || exit 2\n"
@@ -597,6 +603,51 @@ def main():
     for d in dialogs():
         d.response(Gtk.ResponseType.OK)  # the note shown when switching away from the Radio page
     pump(0.3)
+
+    # ---- Radio 2: a second radio alongside, its own rig control, apps picked for it ----
+    win.radio_tabs[2].set_active(True)
+    pump(1)
+    check(win.profile_combo.get_active_id() == L.RADIO2_OFF and "Off: no second radio" in win.rig_line.get_text(),
+          f"radio 2 starts off: {win.rig_line.get_text()}")
+    check(not win.test_ptt_btn.get_sensitive(), "no Test PTT without a second radio")
+    win.profile_combo.set_active_id("FT-710")
+    pump(0.3)
+    win._save_settings()
+    pump(2)
+    radio2 = json.load(open(os.environ["EMCOMM_RADIO2"]))
+    check(radio2["radio_name"] == "FT-710", f"radio 2 saved: {win.settings_messages[0].get_text()}")
+    check(json.load(open(os.environ["EMCOMM_STATION"]))["radio_name"] == "FT-891 home", "radio 1 unchanged")
+    pump(3.5)
+    check("146.520.000" in win.rig_line.get_text(), f"radio 2's own rig control: {win.rig_line.get_text()}")
+    win._test_cat()
+    pump(1.5)
+    check(win.settings_messages[0].get_text().startswith("CAT works: the radio says 146.520.000"),
+          f"Test CAT on radio 2: {win.settings_messages[0].get_text()}")
+    check("v" in rig2_commands, "Test CAT asked radio 2's rigctld")
+
+    def tick_packet(d):
+        for c in dialog_widgets(d, Gtk.CheckButton):
+            if c.get_label().startswith("Packet and APRS"):
+                c.set_active(True)
+        return Gtk.ResponseType.OK
+    answer_dialog(tick_packet)
+    win._radio_apps_dialog()
+    pump(0.5)
+    check(json.load(open(L.APP_RADIO_PATH))["radio2_apps"] == ["direwolf"] and
+          json.load(open(L.AUDIO_PATH))["radio2_apps"] == ["direwolf"], "Packet and APRS put on radio 2")
+    win.radio_tabs[1].set_active(True)
+    pump(0.5)
+    check(win.profile_combo.get_active_id() == "FT-891 home", "radio 1 tab shows radio 1")
+    labels = [label for _id, label in win.profile_combo.items] if hasattr(win.profile_combo, "items") else []
+    check(any("(radio 2)" in str(x) for x in labels) or not labels, f"profiles marked by radio: {labels}")
+    win.profile_combo.set_active_id("FT-710")
+    pump(0.3)
+    win._save_settings()
+    pump(0.5)
+    check("radio 2's" in win.settings_messages[0].get_text(), "radio 2's profile can't also be radio 1")
+    win._fill_settings()
+    rigctld2.shutdown()
+    rigctld2.server_close()
     rigctld.shutdown()
     rigctld.server_close()
     pump(3)

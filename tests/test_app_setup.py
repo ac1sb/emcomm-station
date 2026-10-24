@@ -25,10 +25,10 @@ class AppSetupTest(unittest.TestCase):
         self.set_station(callsign="AC1SB", grid="FN31pr")
         self.allow(True)
 
-    def allow(self, allowed, leave_alone=()):
+    def allow(self, allowed, leave_alone=(), radio2_apps=()):
         os.makedirs(os.path.join(self.home, ".config/emcomm"), exist_ok=True)
         with open(os.path.join(self.home, ".config/emcomm/app-radio.json"), "w") as f:
-            json.dump({"allowed": allowed, "leave_alone": list(leave_alone)}, f)
+            json.dump({"allowed": allowed, "leave_alone": list(leave_alone), "radio2_apps": list(radio2_apps)}, f)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -38,7 +38,8 @@ class AppSetupTest(unittest.TestCase):
             json.dump(values, f)
 
     def run_helper(self, app, **extra):
-        env = dict(os.environ, HOME=self.home, EMCOMM_STATION=self.station, **extra)
+        env = dict(os.environ, HOME=self.home, EMCOMM_STATION=self.station,
+                   EMCOMM_RADIO2=os.path.join(self.home, "radio2.json"), **extra)
         result = subprocess.run([sys.executable, HELPER, app], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
@@ -208,6 +209,24 @@ class AppSetupTest(unittest.TestCase):
         self.allow(False)
         self.run_helper("fldigi", EMCOMM_RIGCTLD=rig)
         self.assertEqual(commands, [])
+
+    def test_apps_on_radio2(self):
+        self.allow(True, radio2_apps=["js8call", "direwolf", "varafm"])
+        # No second radio set up yet: everything stays on radio 1.
+        self.assertIn("CATNetworkPort=127.0.0.1:4532\n", self.read(self.run_helper("js8call")))
+        with open(os.path.join(self.home, "radio2.json"), "w") as f:
+            json.dump({"radio_name": "ID-5100", "ptt_method": "RTS", "data_mode": "none"}, f)
+        js8 = self.read(self.run_helper("js8call"))
+        self.assertIn("CATNetworkPort=127.0.0.1:4533\n", js8)
+        self.assertIn("DataMode=data_mode_none\n", js8)
+        self.assertIn("CATNetworkPort=127.0.0.1:4532\n", self.read(self.run_helper("wsjtx")))  # still radio 1
+        self.assertIn("PTT RIG 2 localhost:4533\n", self.read(self.run_helper("direwolf")))
+        pat = json.loads(self.read(self.run_helper("pat")))
+        self.assertEqual(pat["hamlib_rigs"]["radio2"]["address"], "127.0.0.1:4533")
+        self.assertEqual(pat["varafm"]["rig"], "radio2")
+        self.assertEqual(pat["varahf"]["rig"], "radio")
+        self.allow(True)  # VARA FM back on radio 1
+        self.assertEqual(json.loads(self.read(self.run_helper("pat")))["varafm"]["rig"], "radio")
 
     def test_radio_skips_an_open_app(self):
         # A program named wsjtx that's running: it would write its own settings back on closing.

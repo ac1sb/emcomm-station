@@ -45,8 +45,7 @@ class FindRadioTest(unittest.TestCase):
     def find(self, radio, *args):
         radio.start()
         tmp = tempfile.mkdtemp()
-        env = dict(os.environ, EMCOMM_FIND_TEST="1", EMCOMM_FIND_TIMEOUT="0.2", PATH=tmp,
-                   EMCOMM_RIG_CAT=os.path.join(tmp, "rig-cat"))
+        env = dict(os.environ, EMCOMM_FIND_TEST="1", EMCOMM_FIND_TIMEOUT="0.2", PATH=tmp)
         result = subprocess.run([sys.executable, HELPER, radio.path, *args], env=env, capture_output=True,
                                 text=True, timeout=30)
         return result.returncode, json.loads(result.stdout)
