@@ -48,6 +48,15 @@
     dest: /usr/local/bin/emcomm-audio-default
     mode: "0755"
 
+# The radio is every app's default speaker, so the launcher runs this to keep
+# everything that isn't a radio app (the Scanner, Gqrx, the browser, recordings)
+# off it: they play on the listening speaker from Settings > Audio, or nowhere.
+- name: Install the audio router (only radio apps play through the radio)
+  ansible.builtin.copy:
+    src: emcomm-audio
+    dest: /usr/local/bin/emcomm-audio
+    mode: "0755"
+
 - name: Let the station user save settings from the Settings screen
   ansible.builtin.copy:
     content: "{{ station_user }} ALL=(root) NOPASSWD: /usr/local/sbin/emcomm-apply-settings\n"
@@ -229,4 +238,11 @@
 
 - name: Apply the current settings (udev rules, rigctld arguments)
   ansible.builtin.command: /usr/local/sbin/emcomm-apply-settings
+  changed_when: false
+
+# Rewrites the APRS radio's udev rule in the current form (it hides the card from PipeWire).
+- name: Apply the APRS radio settings, if there is one
+  ansible.builtin.command: /usr/local/sbin/emcomm-apply-settings --aprs /etc/emcomm/aprs-radio.json
+  args:
+    removes: /etc/emcomm/aprs-radio.json
   changed_when: false

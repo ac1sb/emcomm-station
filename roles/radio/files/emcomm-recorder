@@ -31,7 +31,7 @@ HANG = 30                        # chunks of quiet before a file ends (3 s)
 MAX_CHUNKS = 3600 * 10           # an hour per file
 MAX_BYTES = 2 * 1024 ** 3        # the oldest recordings go once ~/Recordings passes this (2 GB)
 RIGCTLD = ("127.0.0.1", 4532)
-CARD_KEYS = ("api.alsa.card", "api.alsa.pcm.card", "alsa.card")
+AUDIO_CMD = os.environ.get("EMCOMM_AUDIO", "emcomm-audio")
 
 
 def level_db(chunk):
@@ -130,14 +130,41 @@ def write_status(**status):
     os.replace(STATUS + ".tmp", STATUS)
 
 
+def audio_helper(command):
+    """A line from emcomm-audio (the radio's receive audio, the listening speaker), or None."""
+    try:
+        result = subprocess.run([AUDIO_CMD, command], capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() or None if result.returncode == 0 else None
+
+
 def run(everything=False, threshold=-40.0):
-    parec = subprocess.Popen(["parec", "--raw", "--format=s16le", f"--rate={RATE}", "--channels=1",
-                              "--latency-msec=100"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     stopping = []
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
-    seg, out, path, since, last_status = Segmenter(threshold, everything), None, None, None, 0
     mode_name = "everything" if everything else "voice"
+    # The radio's own receive audio, named: the default microphone isn't always the
+    # radio (desktop mode, or the radio unplugged), and a room mic mustn't be recorded.
+    source = audio_helper("radio-source")
+    while source is None and not stopping:
+        write_status(mode=mode_name, recording=False, waiting=True,
+                     error="Waiting for the radio's sound card to be plugged in.")
+        for _ in range(10):
+            if stopping:
+                break
+            time.sleep(0.5)
+        source = audio_helper("radio-source")
+    if stopping:
+        try:
+            os.remove(STATUS)
+        except OSError:
+            pass
+        return 0
+    parec = subprocess.Popen(["parec", f"--device={source}", "--raw", "--format=s16le", f"--rate={RATE}",
+                              "--channels=1", "--latency-msec=100", "--client-name=Recorder"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    seg, out, path, since, last_status = Segmenter(threshold, everything), None, None, None, 0
     failed = False
     try:
         while not stopping:
@@ -192,30 +219,11 @@ def run(everything=False, threshold=-40.0):
     return 0
 
 
-def other_sink():
-    """The node name of a PipeWire speaker that isn't the radio, or None. pw-play's
-    --target takes a name or an object serial; a name can't be mistaken."""
-    try:
-        card = os.path.basename(os.readlink("/proc/asound/rigaudio")).removeprefix("card")
-    except OSError:
-        card = None
-    try:
-        dump = json.loads(subprocess.run(["pw-dump"], capture_output=True, text=True, check=True).stdout)
-    except (OSError, subprocess.CalledProcessError, ValueError):
-        return None
-    for obj in dump:
-        props = (obj.get("info") or {}).get("props") or {}
-        if obj.get("type") == "PipeWire:Interface:Node" and props.get("media.class") == "Audio/Sink":
-            if props.get("node.name") and (card is None or all(str(props.get(k)) != card for k in CARD_KEYS)):
-                return props["node.name"]
-    return None
-
-
 def play(path):
-    sink = other_sink()
+    sink = audio_helper("speaker")
     if sink is None:
-        print("Plug in headphones or a speaker. Recordings never play through the radio, "
-              "so they can't key it by VOX.", file=sys.stderr)
+        print("Plug in headphones or a speaker, or pick one in Settings > Audio. Recordings never "
+              "play through a radio, so they can't key it by VOX.", file=sys.stderr)
         return 1
     return subprocess.run(["pw-play", f"--target={sink}", path], check=False).returncode
 

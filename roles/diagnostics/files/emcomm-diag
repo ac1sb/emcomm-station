@@ -47,6 +47,8 @@ show_audio() {
     printf 'default %s: %s\n' "${dev#*:}" \
       "$(wpctl inspect "@DEFAULT_AUDIO_${dev%%:*}@" 2>/dev/null | sed -n 's/.*node.description = "\(.*\)"/\1/p')"
   done
+  # Everything that isn't a radio app plays here instead of the radio (Settings > Audio).
+  printf 'listening speaker: %s\n' "$(emcomm-audio speaker 2>/dev/null || echo 'none (other sound is silent)')"
 }
 
 show_services() {

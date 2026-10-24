@@ -116,6 +116,22 @@ def main():
 
     tmp = tempfile.TemporaryDirectory()
     home = make_station(tmp.name)
+    # emcomm-audio as it answers with the radio, a built-in speaker and two apps playing.
+    fake_audio = os.path.join(tmp.name, "emcomm-audio")
+    status = {"radio_sink": "alsa_output.usb-radio", "radio_source": "alsa_input.usb-radio",
+              "speaker": "alsa_output.pci-analog", "volumes": {"to_radio": 40, "from_radio": 55, "speaker": 70},
+              "speakers": [{"name": "alsa_output.pci-analog", "description": "Built-in Audio Analog Stereo",
+                            "kind": "builtin"},
+                           {"name": "alsa_output.usb-headset", "description": "USB Headset", "kind": "usb"}],
+              "streams": [{"index": 7, "app": "WSJT-X", "key": "wsjt-x", "radio_app": True, "place": "radio",
+                           "sink": "FT-710"},
+                          {"index": 8, "app": "Scanner", "key": "scanner", "radio_app": False, "place": "speaker",
+                           "sink": "Built-in Audio Analog Stereo"}]}
+    with open(fake_audio, "w", encoding="utf-8") as f:
+        f.write("#!/bin/sh\ncase \"$1\" in\n  status) cat <<'EOF'\n" + json.dumps(status) + "\nEOF\n;;\n"
+                "  target|speaker) echo alsa_output.pci-analog ;;\n  watch) exec sleep 20 ;;\nesac\n")
+    os.chmod(fake_audio, 0o755)
+    os.environ["EMCOMM_AUDIO"] = fake_audio
     loader = importlib.machinery.SourceFileLoader("emcomm_launcher", os.path.join(FILES, "emcomm-launcher"))
     spec = importlib.util.spec_from_loader("emcomm_launcher", loader)
     L = importlib.util.module_from_spec(spec)
@@ -391,6 +407,22 @@ def main():
     check(L.band_hint("") .startswith("Set your grid"), "hint without a grid")
     check((L.gateway_open("00-23"), L.gateway_open("?"), L.gateway_open("22-04", now=1750510800)) == ("open now", "", "opens 2200Z"),
           "gateway hours")
+
+    # ---- Settings > Audio: levels, the listening speaker, what's playing where ----
+    win.stack.set_visible_child_name("audio")
+    pump(2)
+    check(all(sc.get_sensitive() for sc in win.audio_sliders.values()), "audio level sliders usable")
+    check([round(win.audio_sliders[k].get_value()) for k in ("to_radio", "from_radio", "speaker")] == [40, 55, 70],
+          "audio levels read back")
+    check(win.audio_speaker_pick.get_active_text() == "Automatic (Built-in Audio Analog Stereo)",
+          f"listening speaker: {win.audio_speaker_pick.get_active_text()}")
+    check(len(win.audio_speaker_pick.items) == 3, "speakers listed, the USB headset among them")
+    rows_now = win.audio_streams_box.get_children()
+    check(len(rows_now) == 2, f"apps playing now: {len(rows_now)} rows")
+    fits("Settings > Audio")
+    win.stack.set_visible_child_name("home")
+    pump(0.3)
+    check(not win.audio_meter_procs, "level meters stop when the page closes")
 
     # ---- tapping a tile: a flash, then "Opening…" until the app's window appears ----
     win.stack.set_visible_child_name("home")

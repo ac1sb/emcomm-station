@@ -175,8 +175,11 @@ def validate_aprs(raw):
 def render_aprs(a):
     rules = ["# Written by emcomm-apply-settings. Change it in Settings > APRS iGate."]
     if a["audio_match"]:
-        rules += ['# APRS radio sound card -> ALSA card id "aprsaudio"',
-                  f'SUBSYSTEM=="sound", KERNEL=="card*", {udev_match(a["audio_match"])}, ATTR{{id}}="aprsaudio"']
+        # Hidden from PipeWire: Direwolf opens the card itself, and PipeWire holding it
+        # would lock Direwolf out, or make it a speaker other apps' sound goes out on.
+        rules += ['# APRS radio sound card -> ALSA card id "aprsaudio", for Direwolf only',
+                  f'SUBSYSTEM=="sound", KERNEL=="card*", {udev_match(a["audio_match"])}, ATTR{{id}}="aprsaudio", '
+                  'ENV{ACP_IGNORE}="1", ENV{PULSE_IGNORE}="1"']
     if a["ptt_match"]:
         rules += ["# APRS radio PTT serial port (RTS) -> /dev/aprs-ptt",
                   f'SUBSYSTEM=="tty", {udev_match(a["ptt_match"])}, SYMLINK+="aprs-ptt"']

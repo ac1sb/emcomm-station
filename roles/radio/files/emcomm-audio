@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+"""Keep each radio's sound card for that radio's own apps.
+
+  emcomm-audio watch          route every app's sound as it starts, until stopped
+  emcomm-audio route          route what's playing now, once
+  emcomm-audio target         where a listen-only app should play: the listening
+                              speaker, or a silent output when there's none
+  emcomm-audio speaker        the listening speaker (exits 1 if there's none)
+  emcomm-audio radio-source   the radio's receive audio (exits 1 if it isn't plugged in)
+  emcomm-audio status         speakers, the radio and what's playing, as JSON
+
+The radio's sound card (ALSA card "rigaudio") is every app's default speaker,
+so the digital-mode apps reach it with no settings of their own. Anything else
+that plays sound (the Scanner, Gqrx, the browser, the Library, a recording) would
+then go out over the air: into a digital transmission, a PTT test, or by VOX.
+So only radio apps may play through the radio. Everything else is moved, as it
+starts, to the listening speaker picked in Settings > Audio (the computer's own
+speaker or headphone jack, a Bluetooth speaker, HDMI, or a USB headset picked by
+name), and when there's no such speaker it plays into a silent output instead.
+
+The APRS radio's sound card ("aprsaudio") belongs to Direwolf, which opens it
+directly; its udev rule hides it from PipeWire, and if PipeWire has it anyway
+(the rule not applied yet), nothing is let play through it.
+
+Settings come from ~/.config/emcomm/audio.json, which the launcher writes:
+  listen_sink   the listening speaker's PipeWire name, or "" to pick one
+  radio_apps    more apps (as "status" names them) allowed to play through the radio
+"""
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+
+SETTINGS = os.path.expanduser("~/.config/emcomm/audio.json")
+RADIO_CARD = os.environ.get("EMCOMM_RADIO_CARD", "/proc/asound/rigaudio")
+APRS_CARD = os.environ.get("EMCOMM_APRS_CARD", "/proc/asound/aprsaudio")
+SILENT = "emcomm_silent"
+# PipeWire versions put the ALSA card number under different keys.
+CARD_KEYS = ("api.alsa.card", "alsa.card", "api.alsa.pcm.card")
+# Programs that send audio to a transmitter. Wine counts too: VARA, VarAC and
+# Winlink Express are Windows programs.
+RADIO_PROGRAMS = {
+    "ardop", "ardop1ofdm", "ardop2", "ardopc", "ardopcf", "direwolf", "flamp", "fldigi", "flrig",
+    "freedv", "js8call", "jtdx", "mshv", "qsstv", "qtsoundmodem", "soundmodem", "wsjtx",
+    "wsjt-x", "js8", "varac", "vara", "varafm", "winlink express",
+}
+
+
+def pactl(*args, timeout=5):
+    try:
+        result = subprocess.run(["pactl", *args], capture_output=True, text=True, timeout=timeout,
+                                check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def pactl_list(kind):
+    try:
+        items = json.loads(pactl("-f", "json", "list", kind) or "[]")
+    except ValueError:
+        return []
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def load_settings(path=None):
+    try:
+        with open(path or SETTINGS, encoding="utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        saved = {}
+    if not isinstance(saved, dict):
+        saved = {}
+    apps = saved.get("radio_apps")
+    return {"listen_sink": str(saved.get("listen_sink") or ""),
+            "radio_apps": [str(a).lower() for a in apps] if isinstance(apps, list) else []}
+
+
+def card_number(link):
+    try:
+        return os.path.basename(os.readlink(link)).removeprefix("card")
+    except OSError:
+        return None
+
+
+def on_card(node, card):
+    props = node.get("properties") or {}
+    return card is not None and any(str(props.get(k)) == card for k in CARD_KEYS)
+
+
+def is_monitor(node):
+    props = node.get("properties") or {}
+    return props.get("device.class") == "monitor" or str(node.get("name", "")).endswith(".monitor")
+
+
+def speaker_kind(sink):
+    """'usb', 'bluetooth', 'hdmi', 'builtin' (speaker or headphone jack), or 'other'."""
+    props = sink.get("properties") or {}
+    name = str(sink.get("name", "")).lower()
+    bus = str(props.get("device.bus", "")).lower()
+    if bus == "bluetooth" or name.startswith("bluez"):
+        return "bluetooth"
+    if bus == "usb":
+        return "usb"
+    if "hdmi" in name or "displayport" in name or "hdmi" in str(props.get("device.profile.name", "")).lower():
+        return "hdmi"
+    if bus == "pci" or props.get("api.alsa.card") or props.get("alsa.card"):
+        return "builtin"
+    return "other"
+
+
+# Picked when Settings > Audio says "Automatic". A USB sound device never is: a
+# radio's USB audio (a Digirig, an FT-710, an IC-7300) looks just like a USB
+# headset, so a second radio that isn't the main one could end up on the air.
+AUTO_ORDER = {"bluetooth": 0, "builtin": 1, "hdmi": 2}
+
+
+def speakers(sinks, cards):
+    """Sinks that can be a listening speaker: every one but the radios', the silent one and monitors."""
+    return [s for s in sinks if s.get("name") and s.get("name") != SILENT and not is_monitor(s)
+            and not any(on_card(s, c) for c in cards)]
+
+
+def listening_speaker(sinks, cards, choice):
+    """The sink listen-only apps play to, or None when there isn't one."""
+    found = speakers(sinks, cards)
+    for sink in found:
+        if choice and sink["name"] == choice:
+            return sink
+    auto = [s for s in found if speaker_kind(s) in AUTO_ORDER]
+    if not auto:
+        return None
+
+    def rank(sink):
+        props = sink.get("properties") or {}
+        try:
+            priority = int(props.get("priority.session") or 0)
+        except ValueError:
+            priority = 0
+        return AUTO_ORDER[speaker_kind(sink)], -priority
+    return min(auto, key=rank)
+
+
+def app_key(stream):
+    """The name an app's sound is known by: the name it gives, else its program's."""
+    props = stream.get("properties") or {}
+    binary = os.path.basename(str(props.get("application.process.binary") or "")).lower()
+    return str(props.get("application.name") or "").lower() or binary
+
+
+def app_label(stream):
+    props = stream.get("properties") or {}
+    return str(props.get("application.name") or props.get("application.process.binary")
+               or props.get("media.name") or "Unknown app")
+
+
+def is_radio_app(stream, extra=()):
+    props = stream.get("properties") or {}
+    binary = os.path.basename(str(props.get("application.process.binary") or "")).lower()
+    names = {app_key(stream), binary}
+    if names & set(extra) or names & RADIO_PROGRAMS:
+        return True
+    return any(n.endswith(".exe") or n.startswith("wine") for n in names if n)
+
+
+def plan(sinks, inputs, settings, radio_card, aprs_card, silent_ok=True):
+    """[(stream index, sink name or None for mute, why)] for the streams in the wrong place."""
+    by_index = {s.get("index"): s for s in sinks}
+    radio_cards = [c for c in (radio_card, aprs_card) if c is not None]
+    speaker = listening_speaker(sinks, radio_cards, settings["listen_sink"])
+    target = speaker["name"] if speaker else (SILENT if silent_ok else None)
+    moves = []
+    for stream in inputs:
+        sink = by_index.get(stream.get("sink"))
+        if sink is None:
+            continue
+        if on_card(sink, aprs_card):
+            moves.append((stream["index"], target, "on the APRS radio"))
+        elif on_card(sink, radio_card) and not is_radio_app(stream, settings["radio_apps"]):
+            moves.append((stream["index"], target, "not a radio app"))
+        elif sink.get("name") == SILENT and speaker:
+            moves.append((stream["index"], speaker["name"], "a speaker is connected now"))
+    return moves
+
+
+def silent_sink(sinks):
+    """Make sure the silent output exists. True if it does."""
+    if any(s.get("name") == SILENT for s in sinks):
+        return True
+    out = pactl("load-module", "module-null-sink", f"sink_name={SILENT}",
+                "sink_properties='device.description=\"No listening speaker\" priority.session=0'")
+    return out is not None
+
+
+class Router:
+    def __init__(self):
+        self.muted = set()  # streams muted for want of anywhere else to put them
+
+    def route(self):
+        sinks = pactl_list("sinks")
+        if not sinks:
+            return []
+        inputs = pactl_list("sink-inputs")
+        settings = load_settings()
+        radio, aprs = card_number(RADIO_CARD), card_number(APRS_CARD)
+        moves = plan(sinks, inputs, settings, radio, aprs, silent_ok=False)
+        if any(target is None for _i, target, _w in moves) and silent_sink(sinks):
+            moves = plan(pactl_list("sinks"), inputs, settings, radio, aprs)
+        done = []
+        for index, target, why in moves:
+            if target is None:
+                if index not in self.muted:
+                    pactl("set-sink-input-mute", str(index), "1")
+                    self.muted.add(index)
+            elif pactl("move-sink-input", str(index), target) is not None:
+                done.append((index, target, why))
+                if index in self.muted:
+                    pactl("set-sink-input-mute", str(index), "0")
+                    self.muted.discard(index)
+        live = {i.get("index") for i in inputs}
+        self.muted &= live
+        return done
+
+    def watch(self):
+        """Route at once, then again whenever an app starts playing or a speaker comes or goes."""
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        event = re.compile(r"Event '(new|change|remove)' on (sink-input|sink|server|card)")
+        while True:
+            self.route()
+            try:
+                proc = subprocess.Popen(["pactl", "subscribe"], stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL, text=True)
+            except OSError:
+                time.sleep(5)
+                continue
+            try:
+                for line in proc.stdout:
+                    if event.search(line):
+                        self.route()
+            finally:
+                proc.terminate()
+            time.sleep(2)  # PipeWire restarted: start again
+
+
+def radio_node(kind):
+    """The radio's sink or source name, or None."""
+    card = card_number(RADIO_CARD)
+    for node in pactl_list(kind):
+        if on_card(node, card) and not is_monitor(node):
+            return node.get("name")
+    return None
+
+
+def volume_percent(node):
+    """A sink's or source's volume (its first channel), in percent, or None."""
+    for channel in ((node or {}).get("volume") or {}).values():
+        try:
+            return round(int(channel["value"]) * 100 / 65536)
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
+def status():
+    sinks = pactl_list("sinks")
+    sources = pactl_list("sources")
+    inputs = pactl_list("sink-inputs")
+    settings = load_settings()
+    radio, aprs = card_number(RADIO_CARD), card_number(APRS_CARD)
+    cards = [c for c in (radio, aprs) if c is not None]
+    speaker = listening_speaker(sinks, cards, settings["listen_sink"])
+    by_index = {s.get("index"): s for s in sinks}
+    streams = []
+    for stream in inputs:
+        sink = by_index.get(stream.get("sink")) or {}
+        place = ("radio" if on_card(sink, radio) else "silent" if sink.get("name") == SILENT
+                 else "aprs" if on_card(sink, aprs) else "speaker")
+        streams.append({"index": stream.get("index"), "app": app_label(stream), "key": app_key(stream),
+                        "radio_app": is_radio_app(stream, settings["radio_apps"]), "place": place,
+                        "sink": sink.get("description") or sink.get("name") or ""})
+    radio_sink = next((s for s in sinks if on_card(s, radio) and not is_monitor(s)), None)
+    radio_source = next((s for s in sources if on_card(s, radio) and not is_monitor(s)), None)
+    return {
+        "radio_sink": radio_sink and radio_sink["name"],
+        "radio_source": radio_source and radio_source["name"],
+        "speaker": speaker["name"] if speaker else None,
+        "volumes": {"to_radio": volume_percent(radio_sink), "from_radio": volume_percent(radio_source),
+                    "speaker": volume_percent(speaker)},
+        "speakers": [{"name": s["name"], "description": s.get("description") or s["name"],
+                      "kind": speaker_kind(s)} for s in speakers(sinks, cards)],
+        "streams": streams,
+    }
+
+
+def main(argv):
+    cmd = argv[0] if len(argv) == 1 else None
+    if cmd == "watch":
+        return Router().watch()
+    if cmd == "route":
+        for index, target, why in Router().route():
+            print(f"Moved stream {index} to {target} ({why})")
+        return 0
+    if cmd in ("target", "speaker"):
+        sinks = pactl_list("sinks")
+        cards = [c for c in (card_number(RADIO_CARD), card_number(APRS_CARD)) if c is not None]
+        speaker = listening_speaker(sinks, cards, load_settings()["listen_sink"])
+        if speaker:
+            print(speaker["name"])
+            return 0
+        if cmd == "target" and silent_sink(sinks):
+            print(SILENT)
+            return 0
+        print("No speaker other than the radio is connected.", file=sys.stderr)
+        return 1
+    if cmd == "radio-source":
+        name = radio_node("sources")
+        if name:
+            print(name)
+            return 0
+        print("The radio's sound card isn't plugged in.", file=sys.stderr)
+        return 1
+    if cmd == "status":
+        print(json.dumps(status(), indent=2))
+        return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
