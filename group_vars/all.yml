@@ -68,6 +68,7 @@ launcher_apps:
   - { code: LIB, icon: library, name: Library, detail: Offline books · first aid, command: emcomm-library, app: library, run: [emcomm-library], audio: listen }
   - { code: REF, icon: reference, name: Reference, detail: Frequency lists, command: emcomm-launcher, page: reference }
   - { code: LOG, icon: logs, name: Logs, detail: Contacts · notes, command: emcomm-launcher, page: logs }
+  - { code: GDE, icon: guide, name: Guide, detail: How to operate, command: emcomm-guide, run: [emcomm-guide] }
   - code: WEB
     icon: browser
     name: Browser
