@@ -7,6 +7,7 @@ through emcomm-apply-settings. The app list comes from
 /etc/emcomm/launcher.json, which the playbook writes.
 """
 
+import array
 import csv
 import datetime
 import glob
@@ -95,16 +96,21 @@ MODE_PATH = os.environ.get("EMCOMM_MODE", "/etc/emcomm/mode")
 # and the computer's own sound settings to put back.
 AUDIO_PATH = os.path.expanduser("~/.config/emcomm/audio.json")
 AUDIO_BEFORE = os.path.expanduser("~/.local/state/emcomm/audio-before.json")
+# Keeps everything that isn't a radio app off the radio (Settings > Audio > Listening speaker).
+AUDIO_CMD = os.environ.get("EMCOMM_AUDIO", "emcomm-audio")
 AUDIO_CHOICES = [
     ("while_open", "Only while Emcomm-CNC is open (recommended)",
      "Open Emcomm-CNC and the radio becomes the speaker and microphone, so every radio app reaches it. "
-     "Exit and your computer's own speaker and microphone come back."),
+     "Other sound plays on the listening speaker meanwhile. Exit and your computer's own speaker and "
+     "microphone come back."),
     ("always", "Always",
      "The radio stays the speaker and microphone after you exit too, as on a dedicated station. "
-     "Every sound the computer makes goes to the radio."),
+     "With Emcomm-CNC closed, nothing keeps other sound off the radio: every sound the computer "
+     "makes goes to it."),
     ("never", "Never",
-     "Your computer's sound is left alone. Set each radio app to the radio's sound card in its own "
-     "settings (VARA, fldigi, WSJT-X, JS8Call, Direwolf)."),
+     "Your computer's speaker and microphone stay the defaults. While Emcomm-CNC is open, radio apps "
+     "(VARA, fldigi, WSJT-X, JS8Call, Direwolf, ARDOP) are still moved onto the radio's sound card; "
+     "with it closed, set each one to the radio's sound card in its own settings."),
 ]
 EXIT_LOG_OUT = 10  # exit status that ends the Emcomm-CNC login session (see emcomm-session)
 KEYBOARD_CMD = os.environ.get("EMCOMM_KEYBOARD", "onboard").split()
@@ -176,6 +182,10 @@ entry, combobox button, .picklist { background: $bg; color: $text; border: 1px s
 levelbar trough { background: $bar; border: 1px solid $line; border-radius: 4px; min-height: 10px; }
 levelbar block.filled { background: $ok; border: none; border-radius: 4px; }
 levelbar block.empty { background: transparent; border: none; }
+scale trough { background: $bar; border: 1px solid $line; border-radius: 4px; min-height: 8px; }
+scale highlight { background-image: none; background-color: $accent_fill; border: none; border-radius: 4px; }
+scale slider { min-width: 26px; min-height: 26px; border-radius: 50%; background: $text; border: none;
+               background-image: none; box-shadow: none; }
 .error { color: $danger_text; }
 .ok { color: $ok; }
 .freq { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: $accent; }
@@ -311,13 +321,45 @@ def station_mode():
 
 
 def load_audio_settings():
-    settings = {"radio_default": "while_open", "quiet": True}
+    settings = {"radio_default": "while_open", "quiet": True, "listen_sink": "", "radio_apps": []}
     saved = read_json(AUDIO_PATH, {})
     if isinstance(saved, dict):
         settings.update({k: v for k, v in saved.items() if k in settings})
     if settings["radio_default"] not in [c[0] for c in AUDIO_CHOICES]:
         settings["radio_default"] = "while_open"
+    if not isinstance(settings["listen_sink"], str):
+        settings["listen_sink"] = ""
+    if not isinstance(settings["radio_apps"], list):
+        settings["radio_apps"] = []
     return settings
+
+
+def audio_status():
+    """emcomm-audio's view: the radio's sink and source, the speakers, what's playing where."""
+    try:
+        out = subprocess.run([AUDIO_CMD, "status"], capture_output=True, text=True, timeout=10, check=False)
+        info = json.loads(out.stdout) if out.returncode == 0 else {}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        info = {}
+    return info if isinstance(info, dict) else {}
+
+
+def listen_target():
+    """Where a listen-only app should play (the listening speaker, or a silent output), or None."""
+    try:
+        out = subprocess.run([AUDIO_CMD, "target"], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def peak_db(chunk):
+    """Peak level of 16-bit little-endian mono samples, in dB below full scale."""
+    samples = array.array("h", chunk[:len(chunk) // 2 * 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    peak = max((abs(v) for v in samples), default=0)
+    return 20 * math.log10(peak / 32768) if peak else -96.0
 
 
 def pactl(*args):
@@ -830,8 +872,14 @@ def mount_usb_sticks():
 OPENING_TIMEOUT = 45
 
 
-def run_detached(argv):
-    return subprocess.Popen(argv, start_new_session=True,
+def run_if_installed(argv):
+    """run_detached, or nothing if the program isn't installed (pactl on a test machine)."""
+    if shutil.which(argv[0]):
+        run_detached(argv)
+
+
+def run_detached(argv, env=None):
+    return subprocess.Popen(argv, start_new_session=True, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -1909,6 +1957,7 @@ class Launcher(Gtk.Window):
         self.choices = {}
         self._filling = False
         self.default_audio_card = None
+        self.audio_router = None  # emcomm-audio watch
         self.rig_hz = None  # where the radio is, from the last status check
         self._poll_lock = threading.Lock()  # one status check at a time
         self._audio_lock = threading.Lock()  # the default-audio choice and the check that applies it
@@ -1957,6 +2006,7 @@ class Launcher(Gtk.Window):
         self.connect("key-press-event", self._on_key)
         self.home_bar = HomeBar(self)
         GLib.timeout_add_seconds(8, self._recorder_autostart)
+        self._audio_router_running()
         # A keyboard left over from before the launcher restarted would not hide from here
         # (not on a desktop, where an Onboard running is the person's own).
         if not self.desktop or self.session:
@@ -2187,6 +2237,7 @@ class Launcher(Gtk.Window):
                 self.rig_hz = int(hz) if hz and hz.isdigit() else None
                 audio = os.path.exists("/proc/asound/rigaudio")
                 self._default_audio_to_radio(audio)
+                GLib.idle_add(lambda: self._audio_router_running() and False)
                 net = self._network_summary()
                 gps = gps_fix() if os.path.exists(GPS_DEV) else "absent"
                 GLib.idle_add(self._show_status, freq, audio, net, gps)
@@ -2224,6 +2275,13 @@ class Launcher(Gtk.Window):
         self.grid_entry.set_text(grid)
         self._set_message(f"Grid {grid} filled in from the GPS. Tap Save to use it.", True)
         return False
+
+    def _audio_router_running(self):
+        """Keep emcomm-audio watching: it moves every app that isn't a radio app off the radio."""
+        if self.audio_router is None or self.audio_router.poll() is not None:
+            if shutil.which(AUDIO_CMD):
+                self.audio_router = subprocess.Popen([AUDIO_CMD, "watch"], stdout=subprocess.DEVNULL,
+                                                     stderr=subprocess.DEVNULL)
 
     def _default_audio_to_radio(self, audio):
         """Each time the radio's sound card appears, make it the default audio device.
@@ -3339,7 +3397,14 @@ class Launcher(Gtk.Window):
                 if window_app(win, [app], self.started):
                     wmctrl("-i", "-a", hex(win["id"]))
                     return
-            proc = run_detached(app.get("run") or [app["command"]])
+            env = None
+            if app.get("audio") == "listen":
+                # Starts on the listening speaker, not the radio (emcomm-audio would move it
+                # there anyway, but only once it's already playing).
+                target = listen_target()
+                if target:
+                    env = dict(os.environ, PULSE_SINK=target)
+            proc = run_detached(app.get("run") or [app["command"]], env)
             self.started[app.get("code")] = proc.pid
             self._tile_opening(btn, proc)
             if self.desktop and not self.session:
@@ -3420,6 +3485,8 @@ class Launcher(Gtk.Window):
         """Start the newly installed launcher. The kiosk and the desktop session start it again
         when this one quits; opened from a desktop's app menu, it starts itself."""
         if self.desktop and not self.session:
+            if self.audio_router and self.audio_router.poll() is None:
+                self.audio_router.terminate()  # the new launcher starts its own
             os.execv(sys.executable, [sys.executable] + sys.argv)
         self.quit()
 
@@ -3429,6 +3496,9 @@ class Launcher(Gtk.Window):
         with self._audio_lock:
             if self.desktop and self._audio_choice() == "while_open":
                 restore_sound_before()
+        if getattr(self, "audio_router", None) and self.audio_router.poll() is None:
+            self.audio_router.terminate()
+        self._audio_meters(None)
         Gtk.main_quit()
 
     def _navbtn(self, label, handler, extra_class=None):
@@ -3526,7 +3596,9 @@ class Launcher(Gtk.Window):
         return self.audio["radio_default"] if self.desktop else "always"
 
     def _audio_page(self):
-        """Settings > Audio: the radio's sound card, and (desktop) when it's every app's sound card."""
+        """Settings > Audio: the radio's sound card and its levels, the listening speaker that
+        everything else plays on, what's playing where, and (desktop) when the radio is every
+        app's sound card."""
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
         header = Gtk.Box(spacing=12)
         header.pack_start(self._navbtn("‹ Settings", lambda *_: self.stack.set_visible_child_name("settings")),
@@ -3534,7 +3606,11 @@ class Launcher(Gtk.Window):
         title = Gtk.Label(label="Audio", xalign=0)
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
-        header.pack_end(self._navbtn("Sound levels", lambda *_: run_detached(["pavucontrol"])), False, False, 0)
+        if shutil.which("pavucontrol"):
+            more = self._navbtn("More sound settings", lambda *_: run_detached(["pavucontrol"]))
+            more.set_tooltip_text("PipeWire's own volume window. Apps moved onto the radio there that "
+                                  "aren't radio apps are moved straight back.")
+            header.pack_end(more, False, False, 0)
         page.pack_start(header, False, False, 0)
         # Scrolls if the text is large: the page can't be taller than the screen.
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -3549,6 +3625,69 @@ class Launcher(Gtk.Window):
         now.pack_start(self.audio_radio_label, False, False, 0)
         now.pack_start(self.audio_now_label, False, False, 0)
         body.pack_start(now, False, False, 0)
+
+        levels = self._section("Levels")
+        grid = Gtk.Grid(column_spacing=14, row_spacing=6)
+        self.audio_sliders, self.audio_meters, self.audio_values = {}, {}, {}
+        rows = (("to_radio", "To radio", "Transmit audio from the radio apps"),
+                ("from_radio", "From radio", "Receive audio into the radio apps"),
+                ("speaker", "Listening speaker", "The Scanner, Gqrx, the browser, recordings"))
+        for row, (key, name, detail) in enumerate(rows):
+            names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            names.pack_start(Gtk.Label(label=name, xalign=0), False, False, 0)
+            small = Gtk.Label(label=detail, xalign=0)
+            small.get_style_context().add_class("muted")
+            names.pack_start(small, False, False, 0)
+            grid.attach(names, 0, row * 2, 1, 2)
+            scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+            scale.set_draw_value(False)
+            scale.set_hexpand(True)
+            scale.set_valign(Gtk.Align.END)
+            scale.connect("value-changed", lambda s, k=key: self._audio_set_volume(k, s.get_value()))
+            grid.attach(scale, 1, row * 2, 1, 1)
+            value = Gtk.Label(label="", xalign=1, width_chars=5)
+            value.get_style_context().add_class("muted")
+            grid.attach(value, 2, row * 2, 1, 1)
+            self.audio_sliders[key], self.audio_values[key] = scale, value
+            if key != "speaker":
+                # Inset like the slider's trough, so the two line up.
+                meter = Gtk.LevelBar(min_value=0, max_value=60, valign=Gtk.Align.START, margin_start=10,
+                                     margin_end=10)
+                meter.set_size_request(-1, 10)
+                for offset in (Gtk.LEVEL_BAR_OFFSET_LOW, Gtk.LEVEL_BAR_OFFSET_HIGH, Gtk.LEVEL_BAR_OFFSET_FULL):
+                    meter.remove_offset_value(offset)
+                grid.attach(meter, 1, row * 2 + 1, 1, 1)
+                self.audio_meters[key] = meter
+        levels.pack_start(grid, False, False, 0)
+        hint = Gtk.Label(xalign=0, wrap=True, label=(
+            "Transmit: raise To radio until the radio's ALC just starts to move, then back off a little. "
+            "Receive: set From radio so the meter sits about a third of the way on band noise."))
+        hint.get_style_context().add_class("muted")
+        levels.pack_start(hint, False, False, 0)
+        body.pack_start(levels, False, False, 0)
+
+        listen = self._section("Listening speaker")
+        row = Gtk.Box(spacing=12)
+        row.pack_start(Gtk.Label(label="Play other sound on", xalign=0), False, False, 0)
+        self.audio_speaker_pick = PickList()
+        self.audio_speaker_pick.connect("changed", lambda *_: self._audio_pick_speaker())
+        row.pack_start(self.audio_speaker_pick, True, True, 0)
+        listen.pack_start(row, False, False, 0)
+        self.audio_speaker_label = Gtk.Label(xalign=0, wrap=True)
+        listen.pack_start(self.audio_speaker_label, False, False, 0)
+        why = Gtk.Label(xalign=0, wrap=True, label=(
+            "Only radio apps play through the radio. Everything else, such as the Scanner, Gqrx, the "
+            "Library, the browser and recordings, plays here instead, so it's never transmitted. A USB "
+            "sound device is used only when picked here by name: a radio's USB audio looks just like a "
+            "USB headset."))
+        why.get_style_context().add_class("muted")
+        listen.pack_start(why, False, False, 0)
+        body.pack_start(listen, False, False, 0)
+
+        playing = self._section("Playing now")
+        self.audio_streams_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        playing.pack_start(self.audio_streams_box, False, False, 0)
+        body.pack_start(playing, False, False, 0)
 
         when = self._section("When the radio is every app's speaker and microphone")
         if not self.desktop:
@@ -3580,8 +3719,197 @@ class Launcher(Gtk.Window):
             self.audio_quiet.connect("toggled", lambda b: self._set_audio_quiet(b.get_active()))
             when.pack_start(self.audio_quiet, False, False, 6)
         body.pack_start(when, False, False, 0)
-        page.connect("map", lambda *_: self._audio_refresh())
+
+        self.audio_info, self.audio_touched, self.audio_meter_procs = {}, {}, {}
+        self._audio_streams_shown = None
+        page.connect("map", lambda *_: self._audio_shown(True))
+        page.connect("unmap", lambda *_: self._audio_shown(False))
         return page
+
+    def _audio_shown(self, shown):
+        """While the page is up: refresh every 2 s and run the level meters."""
+        if not shown:
+            self._audio_meters(None)
+            if getattr(self, "audio_timer", None):
+                GLib.source_remove(self.audio_timer)
+                self.audio_timer = None
+            return
+        self._audio_refresh()
+        self._audio_status()
+        if not getattr(self, "audio_timer", None):
+            self.audio_timer = GLib.timeout_add_seconds(2, lambda: self._audio_status() or True)
+
+    def _audio_status(self):
+        """Read emcomm-audio's view of the speakers and what's playing, off the main thread."""
+        def work():
+            info = audio_status()
+            GLib.idle_add(self._audio_show_status, info)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _audio_show_status(self, info):
+        if not self.stack.get_visible_child_name() == "audio":
+            return False
+        self.audio_info = info or {}
+        self._audio_meters(self.audio_info)
+        self._filling = True
+        volumes = self.audio_info.get("volumes") or {}
+        available = {"to_radio": self.audio_info.get("radio_sink"), "from_radio": self.audio_info.get("radio_source"),
+                     "speaker": self.audio_info.get("speaker")}
+        for key, scale in self.audio_sliders.items():
+            scale.set_sensitive(bool(available[key]) and volumes.get(key) is not None)
+            value = volumes.get(key)
+            # Not while a finger is on it: the slider would jump back under it.
+            if value is not None and time.time() - self.audio_touched.get(key, 0) > 3:
+                scale.set_value(min(100, value))
+            self.audio_values[key].set_text(f"{round(scale.get_value())} %" if scale.get_sensitive() else "")
+        self._audio_fill_speakers()
+        self._filling = False
+        self._audio_fill_streams()
+        return False
+
+    def _audio_fill_speakers(self):
+        info, choice = self.audio_info, self.audio["listen_sink"]
+        speakers = info.get("speakers") or []
+        kinds = {"usb": "USB", "bluetooth": "Bluetooth", "hdmi": "HDMI", "builtin": "Built-in"}
+        current = info.get("speaker")
+        auto_name = next((s["description"] for s in speakers if s["name"] == current), None)
+        items = [("", f"Automatic ({auto_name})" if auto_name and not choice else
+                  "Automatic: the built-in speaker, Bluetooth or HDMI")]
+        items += [(s["name"], f"{s['description']} · {kinds.get(s['kind'], 'Other')}") for s in speakers]
+        if choice and choice not in [s["name"] for s in speakers]:
+            items.append((choice, "The speaker picked before (not connected)"))
+        if items != getattr(self, "_audio_speaker_items", None):
+            self._audio_speaker_items = items
+            self.audio_speaker_pick.remove_all()
+            for item_id, text in items:
+                self.audio_speaker_pick.append(item_id, text)
+        self.audio_speaker_pick.set_active_id(choice)
+        ok, muted = self.colours["ok"], self.colours["muted"]
+        if current:
+            name = auto_name or current
+            self.audio_speaker_label.set_markup(
+                f"<span foreground='{ok}'>●</span>  Other sound plays on {GLib.markup_escape_text(name)}.")
+        else:
+            self.audio_speaker_label.set_markup(
+                f"<span foreground='{muted}'>○</span>  No speaker other than the radio is connected, so "
+                "other sound is silent. Plug in headphones, a speaker or a monitor with speakers"
+                + (", or pick a USB one above." if any(s["kind"] == "usb" for s in speakers) else "."))
+
+    def _audio_fill_streams(self):
+        streams = sorted(self.audio_info.get("streams") or [], key=lambda s: s["app"].lower())
+        shown = [(s["index"], s["app"], s["place"], s["sink"], s["radio_app"]) for s in streams]
+        if shown == self._audio_streams_shown:
+            return
+        self._audio_streams_shown = shown
+        for child in self.audio_streams_box.get_children():
+            child.destroy()
+        if not streams:
+            none = Gtk.Label(label="Nothing is playing.", xalign=0)
+            none.get_style_context().add_class("muted")
+            self.audio_streams_box.pack_start(none, False, False, 0)
+        where = {"radio": "Through the radio", "silent": "Silent: no listening speaker",
+                 "aprs": "On the APRS radio (moving it off)"}
+        for stream in streams:
+            row = Gtk.Box(spacing=12)
+            row.pack_start(Gtk.Label(label=stream["app"], xalign=0, ellipsize=Pango.EllipsizeMode.END,
+                                     width_chars=18, max_width_chars=24), False, False, 0)
+            place = Gtk.Label(label=where.get(stream["place"], stream["sink"] or "Listening speaker"), xalign=0,
+                              ellipsize=Pango.EllipsizeMode.END)
+            place.get_style_context().add_class("muted")
+            row.pack_start(place, True, True, 0)
+            check = Gtk.CheckButton(label="Radio app", active=stream["radio_app"])
+            check.get_style_context().add_class("pick")
+            builtin = stream["radio_app"] and stream["key"] not in self.audio["radio_apps"]
+            check.set_sensitive(not builtin)
+            check.set_tooltip_text("A radio app plays through the radio. "
+                                   + ("This one always does." if builtin else "Tick only apps that transmit."))
+            check.connect("toggled", lambda b, s=stream: self._audio_mark_radio_app(s, b.get_active()))
+            row.pack_end(check, False, False, 0)
+            self.audio_streams_box.pack_start(row, False, False, 0)
+        self.audio_streams_box.show_all()
+
+    def _audio_mark_radio_app(self, stream, radio):
+        apps = [a for a in self.audio["radio_apps"] if a != stream["key"]]
+        if radio:
+            if not self._confirm(f"Let {stream['app']} play through the radio?",
+                                 "Everything it plays is transmitted whenever the radio is keyed, or by VOX. "
+                                 "Tick only apps that send data or voice over the air."):
+                self._audio_streams_shown = None
+                self._audio_fill_streams()
+                return
+            apps.append(stream["key"])
+        self.audio["radio_apps"] = apps
+        write_json(AUDIO_PATH, self.audio)
+        sink = self.audio_info.get("radio_sink")
+        if radio and sink:
+            run_if_installed(["pactl", "move-sink-input", str(stream["index"]), sink])
+        else:
+            run_if_installed([AUDIO_CMD, "route"])
+        GLib.timeout_add(600, lambda: self._audio_status() and False)
+
+    def _audio_pick_speaker(self):
+        if self._filling:
+            return
+        choice = self.audio_speaker_pick.get_active_id() or ""
+        if choice == self.audio["listen_sink"]:
+            return
+        self.audio["listen_sink"] = choice
+        write_json(AUDIO_PATH, self.audio)
+        # What's playing on the old speaker stays there; what starts next goes to the new one.
+        speaker = choice or None
+        for stream in (self.audio_info.get("streams") or []):
+            if speaker and stream["place"] in ("speaker", "silent") and not stream["radio_app"]:
+                run_if_installed(["pactl", "move-sink-input", str(stream["index"]), speaker])
+        GLib.timeout_add(600, lambda: self._audio_status() and False)
+
+    def _audio_set_volume(self, key, value):
+        if self._filling:
+            return
+        self.audio_touched[key] = time.time()
+        name = {"to_radio": self.audio_info.get("radio_sink"), "from_radio": self.audio_info.get("radio_source"),
+                "speaker": self.audio_info.get("speaker")}[key]
+        self.audio_values[key].set_text(f"{round(value)} %")
+        if name:
+            kind = "set-source-volume" if key == "from_radio" else "set-sink-volume"
+            run_if_installed(["pactl", kind, name, f"{round(value)}%"])
+
+    def _audio_meters(self, info):
+        """Run a level meter on the radio's transmit and receive audio (None: stop them)."""
+        wanted = {}
+        if info:
+            if info.get("radio_sink"):
+                wanted["to_radio"] = info["radio_sink"] + ".monitor"
+            if info.get("radio_source"):
+                wanted["from_radio"] = info["radio_source"]
+        for key in ("to_radio", "from_radio"):
+            proc = self.audio_meter_procs.get(key)
+            if proc and (proc.poll() is not None or getattr(proc, "device", None) != wanted.get(key)):
+                proc.terminate()
+                self.audio_meter_procs.pop(key)
+                GLib.idle_add(self.audio_meters[key].set_value, 0)
+            if key in wanted and key not in self.audio_meter_procs:
+                proc = self._audio_meter(key, wanted[key])
+                if proc:  # none without parec: tried again at the next refresh
+                    self.audio_meter_procs[key] = proc
+
+    def _audio_meter(self, key, device):
+        try:
+            proc = subprocess.Popen(["parec", f"--device={device}", "--raw", "--format=s16le", "--rate=8000",
+                                     "--channels=1", "--latency-msec=50", "--client-name=Emcomm-CNC level meter"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError:
+            return None
+        proc.device = device
+        meter = self.audio_meters[key]
+
+        def read():
+            while True:
+                chunk = proc.stdout.read(800)  # 50 ms
+                if not chunk:
+                    return
+                GLib.idle_add(meter.set_value, max(0.0, 60 + peak_db(chunk)))
+        threading.Thread(target=read, daemon=True).start()
+        return proc
 
     def _audio_refresh(self):
         if self.desktop:
@@ -3601,8 +3929,8 @@ class Launcher(Gtk.Window):
         names = sound_names()
         sink, source = pactl("get-default-sink"), pactl("get-default-source")
         if sink or source:
-            text = (f"Speaker now: {names.get(sink, sink or 'none')}.  "
-                    f"Microphone now: {names.get(source, source or 'none')}.")
+            text = (f"Default speaker: {names.get(sink, sink or 'none')}.  "
+                    f"Default microphone: {names.get(source, source or 'none')}.")
             if self.desktop and os.path.exists(AUDIO_BEFORE):
                 before = read_json(AUDIO_BEFORE, {})
                 text += (f" When you exit: {names.get(before.get('sink'), before.get('sink') or 'none')} and "
@@ -6715,7 +7043,7 @@ class Launcher(Gtk.Window):
         actions.set_size_request(240, -1)
         actions.pack_start(self._navbtn("Read frequency", lambda *_: self._run_into_output(["emcomm-diag", "rig"])), False, False, 0)
         actions.pack_start(self._navbtn("PTT test (2 s)", self._confirm_ptt, "danger"), False, False, 0)
-        actions.pack_start(self._navbtn("Audio levels", lambda *_: run_detached(["xterm", "-fa", "IBM Plex Mono", "-fs", "12", "-e", "alsamixer", "-c", "rigaudio"])), False, False, 0)
+        actions.pack_start(self._navbtn("Audio levels", lambda *_: self.stack.set_visible_child_name("audio")), False, False, 0)
         actions.pack_start(self._navbtn("Rig control log", lambda *_: run_detached(["xterm", "-fa", "IBM Plex Mono", "-fs", "11", "-e", "journalctl", "-f", "-u", "rigctld"])), False, False, 0)
         actions.pack_start(self._navbtn("Terminal", lambda *_: run_detached(["xterm", "-fa", "IBM Plex Mono", "-fs", "12"])), False, False, 0)
         body.pack_start(actions, False, False, 0)

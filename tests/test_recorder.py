@@ -7,7 +7,6 @@ Run: python3 tests/test_recorder.py
 import array
 import importlib.machinery
 import importlib.util
-import json
 import math
 import os
 import tempfile
@@ -81,25 +80,34 @@ class Recorder(unittest.TestCase):
         self.assertTrue(name.endswith("Recordings/2026-10-19/220000Z 14.074 USB.wav"))
         self.assertTrue(rec.file_name(1792447200, "", "").endswith("220000Z.wav"))
 
-    def test_plays_to_a_named_speaker_that_isnt_the_radio(self):
-        dump = [{"id": 31, "type": "PipeWire:Interface:Node",
-                 "info": {"props": {"media.class": "Audio/Sink", "api.alsa.card": "2",
-                                    "node.name": "alsa_output.usb-radio"}}},
-                {"id": 45, "type": "PipeWire:Interface:Node",
-                 "info": {"props": {"media.class": "Audio/Sink", "api.alsa.card": "0",
-                                    "node.name": "alsa_output.pci-speakers"}}}]
-        real_run, real_readlink = rec.subprocess.run, rec.os.readlink
-        rec.subprocess.run = lambda *a, **k: type("R", (), {"stdout": json.dumps(dump)})()
-        rec.os.readlink = lambda _p: "card2"
+    def test_plays_only_to_the_listening_speaker(self):
+        calls = []
+        real_helper, real_run = rec.audio_helper, rec.subprocess.run
+        rec.subprocess.run = lambda argv, **k: calls.append(argv) or type("R", (), {"returncode": 0})()
         try:
-            self.assertEqual(rec.other_sink(), "alsa_output.pci-speakers")
-            rec.os.readlink = lambda _p: "card0"
-            self.assertEqual(rec.other_sink(), "alsa_output.usb-radio")
-            dump.pop(1)
-            rec.os.readlink = lambda _p: "card2"
-            self.assertIsNone(rec.other_sink())
+            rec.audio_helper = lambda cmd: "alsa_output.pci-speakers" if cmd == "speaker" else None
+            self.assertEqual(rec.play("/tmp/a.wav"), 0)
+            self.assertEqual(calls[-1], ["pw-play", "--target=alsa_output.pci-speakers", "/tmp/a.wav"])
+            rec.audio_helper = lambda cmd: None  # only the radio: never played
+            calls.clear()
+            self.assertEqual(rec.play("/tmp/a.wav"), 1)
+            self.assertEqual(calls, [])
         finally:
-            rec.subprocess.run, rec.os.readlink = real_run, real_readlink
+            rec.audio_helper, rec.subprocess.run = real_helper, real_run
+
+    def test_audio_helper_reads_one_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = os.path.join(tmp, "emcomm-audio")
+            with open(helper, "w", encoding="utf-8") as f:
+                f.write('#!/bin/sh\n[ "$1" = radio-source ] && echo alsa_input.usb-radio && exit 0\nexit 1\n')
+            os.chmod(helper, 0o755)
+            real = rec.AUDIO_CMD
+            rec.AUDIO_CMD = helper
+            try:
+                self.assertEqual(rec.audio_helper("radio-source"), "alsa_input.usb-radio")
+                self.assertIsNone(rec.audio_helper("speaker"))
+            finally:
+                rec.AUDIO_CMD = real
 
 
 if __name__ == "__main__":

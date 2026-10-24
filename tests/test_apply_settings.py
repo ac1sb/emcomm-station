@@ -188,7 +188,8 @@ class AprsRadioTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         rules = self.rules()
         self.assertIn('SUBSYSTEM=="sound", KERNEL=="card*", ENV{ID_PATH}=="pci-0000:00:14.0-usb-0:3.4:1.0", '
-                      'ENV{ID_MODEL_ID}=="0012", ENV{ID_VENDOR_ID}=="0d8c", ATTR{id}="aprsaudio"', rules)
+                      'ENV{ID_MODEL_ID}=="0012", ENV{ID_VENDOR_ID}=="0d8c", ATTR{id}="aprsaudio", '
+                      'ENV{ACP_IGNORE}="1", ENV{PULSE_IGNORE}="1"', rules)  # Direwolf's alone, not PipeWire's
         self.assertIn('SYMLINK+="aprs-ptt"', rules)
         # After the main radio's rules, so a card just like the radio's ends up named for APRS.
         self.assertGreater("99-emcomm-vhf.rules", "99-emcomm-radio.rules")
