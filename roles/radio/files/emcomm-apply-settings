@@ -37,6 +37,9 @@ ZONEINFO = f"{ROOT}/usr/share/zoneinfo"
 
 BAUD_RATES = (1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200)
 PTT_METHODS = ("RTS", "DTR", "CAT", "NONE")
+# The mode digital apps put the radio in: its data mode (DATA-U), plain USB, or none
+# (left as it is, as for VHF FM). emcomm-app-setup writes it into WSJT-X and JS8Call.
+DATA_MODES = ("data", "usb", "none")
 CALLSIGN_RE = re.compile(r"^[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,4}(/[A-Z0-9]{1,4})?$")
 GRID_RE = re.compile(r"^[A-R]{2}[0-9]{2}([A-X]{2})?$")
 ZONE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$")
@@ -138,6 +141,10 @@ def validate(raw):
         else:
             ptt_match = clean_match(raw.get("ptt_match"), "PTT port")
 
+    data_mode = str(raw.get("data_mode") or "data").lower()
+    if data_mode not in DATA_MODES:
+        raise SettingsError(f"mode for digital apps must be one of {', '.join(DATA_MODES)}")
+
     audio_match = None
     if raw.get("audio_match"):
         audio_match = clean_match(raw.get("audio_match"), "Sound card")
@@ -158,7 +165,7 @@ def validate(raw):
     return {"callsign": callsign, "grid": grid, "timezone": timezone,
             "radio_name": radio_name, "rig_model": rig_model,
             "cat_baud": baud, "cat_match": cat_match, "ptt_method": ptt, "ptt_match": ptt_match,
-            "audio_match": audio_match, "gps_match": gps_match}
+            "data_mode": data_mode, "audio_match": audio_match, "gps_match": gps_match}
 
 
 def validate_aprs(raw):
@@ -175,8 +182,11 @@ def validate_aprs(raw):
 def render_aprs(a):
     rules = ["# Written by emcomm-apply-settings. Change it in Settings > APRS iGate."]
     if a["audio_match"]:
-        rules += ['# APRS radio sound card -> ALSA card id "aprsaudio"',
-                  f'SUBSYSTEM=="sound", KERNEL=="card*", {udev_match(a["audio_match"])}, ATTR{{id}}="aprsaudio"']
+        # Hidden from PipeWire: Direwolf opens the card itself, and PipeWire holding it
+        # would lock Direwolf out, or make it a speaker other apps' sound goes out on.
+        rules += ['# APRS radio sound card -> ALSA card id "aprsaudio", for Direwolf only',
+                  f'SUBSYSTEM=="sound", KERNEL=="card*", {udev_match(a["audio_match"])}, ATTR{{id}}="aprsaudio", '
+                  'ENV{ACP_IGNORE}="1", ENV{PULSE_IGNORE}="1"']
     if a["ptt_match"]:
         rules += ["# APRS radio PTT serial port (RTS) -> /dev/aprs-ptt",
                   f'SUBSYSTEM=="tty", {udev_match(a["ptt_match"])}, SYMLINK+="aprs-ptt"']

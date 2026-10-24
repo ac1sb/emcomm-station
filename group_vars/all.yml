@@ -30,6 +30,8 @@ station_mode: kiosk
 #   icon:    image name in /usr/share/emcomm/icons (.svg or .png). Long-press or
 #            right-click a tile to use your own picture instead.
 #   desktop: settings that replace the ones above in desktop mode (station_mode).
+#   audio:   listen for an app that only plays sound for the operator (never transmits): it
+#            starts on the listening speaker from Settings > Audio, never on the radio.
 launcher_apps:
   - { code: JS8, icon: js8call, name: JS8Call, detail: HF messaging, command: js8call, app: js8call, run: [emcomm-start, js8call] }
   - { code: WL, icon: winlink, name: Winlink mail, detail: Pat, command: pat, app: pat, run: [emcomm-start, pat] }
@@ -59,11 +61,11 @@ launcher_apps:
   - { code: MCR, icon: meshcore, name: MeshCore, detail: Mesh text over LoRa, command: meshcore-cli, app: meshcore, run: [emcomm-start, meshcore] }
   - { code: NWR, icon: weather-radio, name: NOAA radio, detail: Alerts · no internet, command: emcomm-nwr, page: nwr }
   - { code: ONL, icon: online, name: Online, detail: Needs the internet, command: emcomm-online, page: online }
-  - { code: MAP, icon: map, name: Map, detail: Gateways · stations heard, command: emcomm-map, app: map, run: [emcomm-map] }
+  - { code: MAP, icon: map, name: Map, detail: Gateways · stations heard, command: emcomm-map, app: map, run: [emcomm-map], audio: listen }
   - { code: CHP, icon: chirp, name: CHIRP, detail: Program handhelds · mobiles, command: chirp, app: chirp, run: [chirp] }
-  - { code: SCN, icon: scanner, name: Scanner, detail: SDR · police fire EMS, command: emcomm-scanner, app: scanner, run: [emcomm-scanner] }
-  - { code: SDR, icon: sdr, name: Gqrx, detail: Any SDR · HF to UHF, command: gqrx, app: sdr, run: [emcomm-start, sdr] }
-  - { code: LIB, icon: library, name: Library, detail: Offline books · first aid, command: emcomm-library, app: library, run: [emcomm-library] }
+  - { code: SCN, icon: scanner, name: Scanner, detail: SDR · police fire EMS, command: emcomm-scanner, app: scanner, run: [emcomm-scanner], audio: listen }
+  - { code: SDR, icon: sdr, name: Gqrx, detail: Any SDR · HF to UHF, command: gqrx, app: sdr, run: [emcomm-start, sdr], audio: listen }
+  - { code: LIB, icon: library, name: Library, detail: Offline books · first aid, command: emcomm-library, app: library, run: [emcomm-library], audio: listen }
   - { code: REF, icon: reference, name: Reference, detail: Frequency lists, command: emcomm-launcher, page: reference }
   - { code: LOG, icon: logs, name: Logs, detail: Contacts · notes, command: emcomm-launcher, page: logs }
   - { code: GDE, icon: guide, name: Guide, detail: How to operate, command: emcomm-guide, run: [emcomm-guide] }
@@ -74,6 +76,7 @@ launcher_apps:
     command: chromium
     app: browser
     run: [chromium, --password-store=basic]
+    audio: listen
     # In desktop mode, the person's own browser with a page of the same bookmarks.
     desktop: { detail: Your browser · ham bookmarks, command: xdg-open, run: [xdg-open, /usr/share/emcomm/bookmarks.html] }
   - { code: FT8, icon: wsjtx, name: WSJT-X, detail: FT8 · band check, command: wsjtx, app: wsjtx, run: [emcomm-start, wsjtx] }

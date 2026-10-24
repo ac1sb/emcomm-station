@@ -12,3 +12,5 @@ ptt_match: null
 # The radio's built-in sound card: pick it under Sound card in Settings once the
 # radio is plugged in (its USB ID isn't pinned here yet).
 audio_match: null
+# Digital apps put the radio in DATA-U, which takes its audio from USB.
+data_mode: data

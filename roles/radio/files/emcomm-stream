@@ -24,6 +24,7 @@ CONFIG = os.path.expanduser("~/.config/emcomm/broadcastify.json")
 STATUS = os.path.expanduser("~/.local/state/emcomm/stream.json")
 LIVE_AFTER = 8          # seconds ffmpeg has to keep going before the feed counts as live
 RETRY = (5, 10, 30, 60)  # seconds between reconnects, the last one repeated
+AUDIO_CMD = os.environ.get("EMCOMM_AUDIO", "emcomm-audio")
 
 
 def load_config(path=None):
@@ -56,9 +57,20 @@ def icecast_url(config):
     return f"icecast://source:{password}@{server}:{int(config.get('port') or 80)}/{mount}"
 
 
-def ffmpeg_args(config):
+def radio_source():
+    """The radio's receive audio by name (emcomm-audio), or None if it isn't plugged in. Not
+    the default microphone: in desktop mode, or with the radio unplugged, that's a room mic."""
+    try:
+        result = subprocess.run([AUDIO_CMD, "radio-source"], capture_output=True, text=True, timeout=10,
+                                check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() or None if result.returncode == 0 else None
+
+
+def ffmpeg_args(config, source):
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-f", "pulse", "-i", "default",
+            "-f", "pulse", "-i", source,
             "-ac", "1", "-ar", "22050", "-c:a", "libmp3lame", "-b:a", "16k",
             "-content_type", "audio/mpeg", "-ice_name", str(config.get("name") or "Emcomm-CNC station"),
             "-f", "mp3", icecast_url(config)]
@@ -107,9 +119,17 @@ def run():
     failures = 0
     try:
         while not stopping:
+            source = radio_source()
+            if source is None:
+                write_status(live=False, error="Waiting for the radio's sound card to be plugged in.")
+                for _ in range(10):
+                    if stopping:
+                        break
+                    time.sleep(0.5)
+                continue
             write_status(live=False, connecting=True)
             started = time.time()
-            proc = subprocess.Popen(ffmpeg_args(config), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            proc = subprocess.Popen(ffmpeg_args(config, source), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                     text=True)
             live_marked = False
             while proc.poll() is None and not stopping:

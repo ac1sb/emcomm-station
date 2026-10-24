@@ -36,7 +36,8 @@ class Stream(unittest.TestCase):
         self.assertEqual(url, "icecast://source:p%40ss%20w%2Frd@audio9.broadcastify.com:80/abcd1234")
 
     def test_broadcastify_audio_format(self):
-        args = stream.ffmpeg_args(FEED)
+        args = stream.ffmpeg_args(FEED, "alsa_input.usb-radio")
+        self.assertEqual(args[args.index("-i") + 1], "alsa_input.usb-radio")  # the radio, not "default"
         for flag, value in (("-ac", "1"), ("-ar", "22050"), ("-b:a", "16k"), ("-c:a", "libmp3lame")):
             self.assertEqual(args[args.index(flag) + 1], value)
 
