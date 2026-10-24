@@ -21,6 +21,12 @@ class AppSetupTest(unittest.TestCase):
         self.home = self.tmp.name
         self.station = os.path.join(self.home, "station.json")
         self.set_station(callsign="AC1SB", grid="FN31pr")
+        self.allow(True)
+
+    def allow(self, allowed, leave_alone=()):
+        os.makedirs(os.path.join(self.home, ".config/emcomm"), exist_ok=True)
+        with open(os.path.join(self.home, ".config/emcomm/app-radio.json"), "w") as f:
+            json.dump({"allowed": allowed, "leave_alone": list(leave_alone)}, f)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -52,7 +58,7 @@ class AppSetupTest(unittest.TestCase):
 
     def test_pat_keeps_operator_settings_and_follows_callsign(self):
         path = os.path.join(self.home, ".config/pat/config.json")
-        os.makedirs(os.path.dirname(path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             json.dump({"mycall": "N0CALL", "secure_login_password": "secret",
                        "varahf": {"addr": "localhost:8400", "bandwidth": 500, "ptt_ctrl": False}}, f)
@@ -72,19 +78,118 @@ class AppSetupTest(unittest.TestCase):
 
     def test_direwolf_custom_config_wins(self):
         custom = os.path.join(self.home, ".config/emcomm/direwolf.custom.conf")
-        os.makedirs(os.path.dirname(custom))
+        os.makedirs(os.path.dirname(custom), exist_ok=True)
         open(custom, "w").close()
         self.assertEqual(self.run_helper("direwolf"), custom)
 
-    def test_js8call_first_run_only(self):
+    def test_js8call_new_config(self):
         path = self.run_helper("js8call")
         ini = self.read(path)
-        self.assertIn("MyCall=AC1SB\n", ini)
-        self.assertIn("CATNetworkPort=127.0.0.1:4532\n", ini)
+        for line in ("[Configuration]", "MyCall=AC1SB", "MyGrid=FN31pr", "Rig=Hamlib NET rigctl",
+                     "CATNetworkPort=127.0.0.1:4532", "PTTMethod=PTT_method_CAT", "DataMode=data_mode_data",
+                     "SplitMode=split_mode_emulate"):
+            self.assertIn(line + "\n", ini)
+
+    def test_wsjtx_keeps_operator_settings_and_backs_up(self):
+        path = os.path.join(self.home, ".config/WSJT-X.ini")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        before = ("[General]\nRig=not this one\n\n[Configuration]\nMyCall=AC1SB\nRig=FLRig FLRig\n"
+                  "SoundInName=USB Audio Device\nPTTMethod=PTT_method_RTS\nTxDelay=0.2\n\n[MainWindow]\nstate=1\n")
         with open(path, "w") as f:
-            f.write("[Configuration]\nMyCall=CHANGED\n")
-        self.run_helper("js8call")
-        self.assertEqual(self.read(path), "[Configuration]\nMyCall=CHANGED\n")
+            f.write(before)
+        self.run_helper("wsjtx")
+        ini = self.read(path)
+        self.assertIn("[General]\nRig=not this one\n", ini)  # only [Configuration] is touched
+        self.assertIn("Rig=Hamlib NET rigctl\n", ini)
+        self.assertIn("PTTMethod=PTT_method_CAT\n", ini)
+        self.assertIn("SoundInName=USB Audio Device\n", ini)  # sound cards are the operator's
+        self.assertIn("TxDelay=0.2\n", ini)
+        self.assertIn("[MainWindow]\nstate=1\n", ini)
+        self.assertEqual(ini.count("Rig=Hamlib NET rigctl"), 1)
+        section = ini.split("[Configuration]\n", 1)[1].split("\n[", 1)[0]
+        self.assertIn("DataMode=data_mode_data", section)
+        backups = os.listdir(os.path.join(self.home, ".local/state/emcomm/config-backups"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(self.read(os.path.join(self.home, ".local/state/emcomm/config-backups", backups[0])), before)
+        # Nothing to change: no rewrite, no second backup.
+        mtime = os.path.getmtime(path)
+        self.run_helper("wsjtx")
+        self.assertEqual(os.path.getmtime(path), mtime)
+        self.assertEqual(len(os.listdir(os.path.join(self.home, ".local/state/emcomm/config-backups"))), 1)
+
+    def test_vox_and_vhf_fm(self):
+        self.set_station(callsign="AC1SB", grid="FN31", ptt_method="NONE", data_mode="none")
+        ini = self.read(self.run_helper("wsjtx"))
+        self.assertIn("PTTMethod=PTT_method_VOX\n", ini)
+        self.assertIn("DataMode=data_mode_none\n", ini)
+        self.assertIn("SplitMode=split_mode_none\n", ini)
+        self.assertIn("<HAMLIBCMDPTT>0</HAMLIBCMDPTT>", self.read(self.run_helper("fldigi")))
+        self.assertNotIn("PTT RIG", self.read(self.run_helper("direwolf")))
+
+    def test_fldigi(self):
+        path = self.run_helper("fldigi")
+        self.assertTrue(path.endswith(".fldigi/fldigi_def.xml"))
+        xml = self.read(path)
+        for element in ("<CHKUSEHAMLIBIS>1</CHKUSEHAMLIBIS>", "<HAMRIGMODEL>2</HAMRIGMODEL>",
+                        "<HAMRIGDEVICE>127.0.0.1:4532</HAMRIGDEVICE>", "<HAMLIBCMDPTT>1</HAMLIBCMDPTT>",
+                        "<CHKUSEXMLRPCIS>0</CHKUSEXMLRPCIS>", "<MYCALL>AC1SB</MYCALL>", "<MYLOC>FN31pr</MYLOC>"):
+            self.assertIn(element, xml)
+        self.assertTrue(xml.rstrip().endswith("</FLDIGI_DEFS>"))
+        with open(path, "w") as f:
+            f.write("<?xml version=\"1.0\"?>\n<FLDIGI_DEFS>\n<WFREFLEVEL>-20</WFREFLEVEL>\n"
+                    "<CHKUSEHAMLIBIS>0</CHKUSEHAMLIBIS>\n<CHKUSEXMLRPCIS>1</CHKUSEXMLRPCIS>\n</FLDIGI_DEFS>\n")
+        xml = self.read(self.run_helper("fldigi"))
+        self.assertIn("<WFREFLEVEL>-20</WFREFLEVEL>", xml)
+        self.assertIn("<CHKUSEHAMLIBIS>1</CHKUSEHAMLIBIS>", xml)
+        self.assertIn("<CHKUSEXMLRPCIS>0</CHKUSEXMLRPCIS>", xml)
+        self.assertEqual(xml.count("CHKUSEHAMLIBIS>"), 2)
+
+    def test_radio_writes_every_installed_app(self):
+        bin_dir = os.path.join(self.home, "bin")
+        os.makedirs(bin_dir)
+        for program in ("wsjtx", "fldigi", "pat"):
+            with open(os.path.join(bin_dir, program), "w") as f:
+                f.write("#!/bin/sh\n")
+            os.chmod(os.path.join(bin_dir, program), 0o755)
+        self.allow(True, ["pat"])
+        out = self.run_helper("radio", PATH=bin_dir)
+        states = {r["app"]: r["state"] for r in map(json.loads, out.splitlines())}
+        self.assertEqual(states, {"wsjtx": "updated", "js8call": "not installed", "fldigi": "updated",
+                                  "pat": "left alone", "xastir": "not installed"})
+        self.assertTrue(os.path.exists(os.path.join(self.home, ".config/WSJT-X.ini")))
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".config/pat/config.json")))
+        out = self.run_helper("radio", PATH=bin_dir)
+        states = {r["app"]: r["state"] for r in map(json.loads, out.splitlines())}
+        self.assertEqual(states["wsjtx"], "unchanged")
+
+    def test_nothing_changes_until_allowed(self):
+        self.allow(False)
+        path = self.run_helper("wsjtx")
+        self.assertFalse(os.path.exists(path))
+        self.assertFalse(os.path.exists(self.run_helper("fldigi")))
+        self.assertFalse(os.path.exists(self.run_helper("pat")))
+        states = {r["app"]: r["state"] for r in map(json.loads, self.run_helper("radio").splitlines())}
+        self.assertEqual(set(states.values()), {"not allowed"})
+        os.remove(os.path.join(self.home, ".config/emcomm/app-radio.json"))  # never asked: the same
+        self.assertFalse(os.path.exists(self.run_helper("wsjtx")))
+        # Emcomm-CNC's own Direwolf file and flmsg's UTC times aren't rig settings in another app.
+        self.assertIn("MYCALL AC1SB", self.read(self.run_helper("direwolf")))
+
+    def test_radio_skips_an_open_app(self):
+        # A program named wsjtx that's running: it would write its own settings back on closing.
+        bin_dir = os.path.join(self.home, "bin")
+        os.makedirs(bin_dir)
+        fake = os.path.join(bin_dir, "wsjtx")
+        os.symlink("/bin/sleep", fake)
+        proc = subprocess.Popen([fake, "30"])
+        try:
+            out = self.run_helper("radio", PATH=bin_dir)
+        finally:
+            proc.kill()
+            proc.wait()
+        states = {r["app"]: r["state"] for r in map(json.loads, out.splitlines())}
+        self.assertEqual(states["wsjtx"], "open")
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".config/WSJT-X.ini")))
 
     def test_flmsg_uses_utc(self):
         path = self.run_helper("flmsg")
@@ -125,7 +230,7 @@ class AppSetupTest(unittest.TestCase):
 
     def test_xastir_keeps_operator_interfaces(self):
         path = os.path.join(self.home, ".xastir/config/xastir.cnf")
-        os.makedirs(os.path.dirname(path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write("STATION_CALLSIGN:N0CALL\nDEVICE0_TYPE:1\nDEVICE0_SPEED:9600\nMAP_BGCOLOR:3\n")
         self.set_station(callsign="w1aw", grid="FN31")

@@ -114,11 +114,9 @@ in_terminal() {
 }
 
 case "${1:-}" in
-  js8call|wsjtx)
+  js8call|wsjtx|fldigi)
+    # Rig control through rigctld, as Settings > Radio says, plus the callsign and grid.
     emcomm-app-setup "$1" >/dev/null
-    exec "$1"
-    ;;
-  fldigi)
     exec "$1"
     ;;
   flmsg)

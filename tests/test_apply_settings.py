@@ -43,6 +43,27 @@ class ApplySettingsTest(unittest.TestCase):
         with open(os.path.join(self.root, rel)) as f:
             return f.read()
 
+    def test_data_mode(self):
+        r = self.run_helper(preset("ft-710"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(self.read("etc/emcomm/station.json"))["data_mode"], "data")
+        settings = preset("ft-710")
+        settings.pop("data_mode")  # settings saved before there was a choice
+        self.assertEqual(self.run_helper(settings).returncode, 0)
+        self.assertEqual(json.loads(self.read("etc/emcomm/station.json"))["data_mode"], "data")
+        r = self.run_helper(preset("ft-710", data_mode="lsb"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("mode for digital apps", r.stderr)
+
+    def test_id5100_preset_needs_its_cat_port_picked(self):
+        r = self.run_helper(preset("id-5100-digirig"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("CAT port", r.stderr)
+        r = self.run_helper(preset("id-5100-digirig", cat_match={"vendor": "067b", "product": "2303"}))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--model=3071", self.read("etc/emcomm/rigctld.env"))
+        self.assertEqual(json.loads(self.read("etc/emcomm/station.json"))["data_mode"], "none")
+
     def test_ft891_digirig_preset(self):
         r = self.run_helper(preset("ft-891-digirig", callsign="ac1sb", grid="fn31pr"))
         self.assertEqual(r.returncode, 0, r.stderr)
