@@ -11,6 +11,10 @@ current settings.
   emcomm-apply-settings --check NEW.json  validate only
   emcomm-apply-settings --aprs NEW.json   the APRS radio's sound card and PTT port
                                           (a second radio for APRS and the iGate)
+  emcomm-apply-settings --radio2 NEW.json a second radio with rig control, running
+                                          alongside the first: rigctld2 on port 4533,
+                                          /dev/rig2-cat, /dev/rig2-ptt, card "rig2audio"
+                                          ({"radio_name": ""} turns it off)
 
 Settings name any Hamlib rig model plus USB matches (vendor/product IDs,
 optional serial number and interface) for the CAT port, PTT port, sound
@@ -33,6 +37,9 @@ APRS_SETTINGS = f"{ETC}/aprs-radio.json"
 # Read after the radio's rules, so an APRS sound card just like the radio's (two
 # Digirigs) ends up named for APRS.
 APRS_RULES = f"{ROOT}/etc/udev/rules.d/99-emcomm-vhf.rules"
+RADIO2_SETTINGS = f"{ETC}/radio2.json"
+# Read after the first radio's rules, like the APRS radio's.
+RADIO2_RULES = f"{ROOT}/etc/udev/rules.d/99-emcomm-radio2.rules"
 ZONEINFO = f"{ROOT}/usr/share/zoneinfo"
 
 BAUD_RATES = (1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200)
@@ -110,6 +117,26 @@ def validate(raw):
     if not GRID_RE.fullmatch(grid.upper()):
         raise SettingsError(f"grid square should look like FN31 or FN31pr: {grid!r}")
 
+    radio = validate_radio(raw)
+
+    gps_match = None
+    if raw.get("gps_match"):
+        gps_match = clean_match(raw.get("gps_match"), "GPS")
+        if gps_match == radio["cat_match"] or gps_match == radio["ptt_match"]:
+            raise SettingsError("the GPS can't use the radio's port")
+
+    # The computer's time zone, for the launcher's local clock. Left as it is when not given.
+    timezone = raw.get("timezone") or None
+    if timezone is not None:
+        timezone = str(timezone)
+        if not ZONE_RE.fullmatch(timezone) or not zone_exists(timezone):
+            raise SettingsError(f"unknown time zone: {timezone!r}")
+
+    return {"callsign": callsign, "grid": grid, "timezone": timezone, **radio, "gps_match": gps_match}
+
+
+def validate_radio(raw):
+    """The radio's own settings (a profile): name, Hamlib model, CAT, PTT, sound card, mode."""
     radio_name = str(raw.get("radio_name", "")).strip()
     if not NAME_RE.fullmatch(radio_name):
         raise SettingsError("pick a radio")
@@ -149,23 +176,68 @@ def validate(raw):
     if raw.get("audio_match"):
         audio_match = clean_match(raw.get("audio_match"), "Sound card")
 
-    gps_match = None
-    if raw.get("gps_match"):
-        gps_match = clean_match(raw.get("gps_match"), "GPS")
-        if gps_match == cat_match or gps_match == ptt_match:
-            raise SettingsError("the GPS can't use the radio's port")
-
-    # The computer's time zone, for the launcher's local clock. Left as it is when not given.
-    timezone = raw.get("timezone") or None
-    if timezone is not None:
-        timezone = str(timezone)
-        if not ZONE_RE.fullmatch(timezone) or not zone_exists(timezone):
-            raise SettingsError(f"unknown time zone: {timezone!r}")
-
-    return {"callsign": callsign, "grid": grid, "timezone": timezone,
-            "radio_name": radio_name, "rig_model": rig_model,
+    return {"radio_name": radio_name, "rig_model": rig_model,
             "cat_baud": baud, "cat_match": cat_match, "ptt_method": ptt, "ptt_match": ptt_match,
-            "data_mode": data_mode, "audio_match": audio_match, "gps_match": gps_match}
+            "data_mode": data_mode, "audio_match": audio_match}
+
+
+def validate_radio2(raw, first):
+    """The second radio, or {"radio_name": ""} for none. It can't share the first radio's devices."""
+    if not isinstance(raw, dict):
+        raise SettingsError("settings should be a JSON object")
+    if not str(raw.get("radio_name") or "").strip():
+        return {"radio_name": ""}
+    radio = validate_radio(raw)
+    for key, what in (("cat_match", "CAT port"), ("audio_match", "sound card")):
+        mine, theirs = radio.get(key), (first or {}).get(key)
+        if mine and theirs and (mine.items() <= theirs.items() or theirs.items() <= mine.items()):
+            raise SettingsError(f"radio 2's {what} is radio 1's: each radio needs its own")
+    return radio
+
+
+def render_radio2(r):
+    """udev rules and rigctld2 arguments for the second radio."""
+    rules = [f"# Written by emcomm-apply-settings for radio 2 ({r['radio_name']}). Change it in Settings > Radio.",
+             "# CAT serial port -> /dev/rig2-cat. Plugging the radio in starts rigctld2.",
+             f'SUBSYSTEM=="tty", {udev_match(r["cat_match"])}, SYMLINK+="rig2-cat", '
+             'TAG+="systemd", ENV{SYSTEMD_WANTS}+="rigctld2.service"']
+    if isinstance(r["ptt_match"], dict):
+        rules += ["# PTT serial port -> /dev/rig2-ptt",
+                  f'SUBSYSTEM=="tty", {udev_match(r["ptt_match"])}, SYMLINK+="rig2-ptt"']
+    if r["audio_match"]:
+        rules += ['# Sound card -> ALSA card id "rig2audio"',
+                  f'SUBSYSTEM=="sound", KERNEL=="card*", {udev_match(r["audio_match"])}, ATTR{{id}}="rig2audio"']
+    args = [f"--model={r['rig_model']}", "--rig-file=/dev/rig2-cat",
+            f"--serial-speed={r['cat_baud']}", f"--ptt-type={r['ptt_method']}"]
+    if r["ptt_match"] == "cat":
+        args.append("--ptt-file=/dev/rig2-cat")
+    elif r["ptt_match"]:
+        args.append("--ptt-file=/dev/rig2-ptt")
+    env = (f"# Written by emcomm-apply-settings for radio 2 ({r['radio_name']}).\n"
+           f"RIGCTLD_ARGS=\"{' '.join(args)}\"\n")
+    return "\n".join(rules) + "\n", env
+
+
+def apply_radio2(r):
+    write(RADIO2_SETTINGS, json.dumps(r, indent=2) + "\n")
+    if r["radio_name"]:
+        rules, env = render_radio2(r)
+        write(RADIO2_RULES, rules)
+        write(f"{ETC}/rigctld2.env", env)
+    else:
+        for path in (RADIO2_RULES, f"{ETC}/rigctld2.env"):
+            if os.path.exists(path):
+                os.remove(path)
+    if ROOT:
+        return
+    subprocess.run(["udevadm", "control", "--reload"], check=False)
+    subprocess.run(["udevadm", "trigger", "--subsystem-match=tty", "--subsystem-match=sound"], check=False)
+    subprocess.run(["udevadm", "settle", "--timeout=5"], check=False)
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    if r["radio_name"] and os.path.exists("/dev/rig2-cat"):
+        subprocess.run(["systemctl", "restart", "rigctld2"], check=False)
+    else:
+        subprocess.run(["systemctl", "stop", "rigctld2"], check=False)
 
 
 def validate_aprs(raw):
@@ -295,6 +367,23 @@ def set_zone(name):
 
 
 def main(argv):
+    if len(argv) == 2 and argv[0] == "--radio2":
+        try:
+            with open(argv[1], encoding="utf-8") as f:
+                raw = json.load(f)
+            try:
+                with open(SETTINGS, encoding="utf-8") as f:
+                    first = json.load(f)
+            except (OSError, ValueError):
+                first = {}
+            radio = validate_radio2(raw, first)
+        except (OSError, ValueError) as exc:
+            print(f"Not saved: {exc}", file=sys.stderr)
+            return 1
+        apply_radio2(radio)
+        print(f"Saved. Radio 2: {radio['radio_name']}, rig control on port 4533." if radio["radio_name"]
+              else "Saved. No second radio.")
+        return 0
     if len(argv) == 2 and argv[0] == "--aprs":
         try:
             with open(argv[1], encoding="utf-8") as f:

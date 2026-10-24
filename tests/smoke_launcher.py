@@ -107,7 +107,7 @@ def fake_fldigi(calls):
     return server
 
 
-def fake_rigctld(commands):
+def fake_rigctld(commands, freq="14074000"):
     """A TCP server answering as rigctld does for a radio on 14.074 MHz; `commands` records each line."""
     state = {"ptt": "0"}
 
@@ -117,7 +117,7 @@ def fake_rigctld(commands):
                 cmd = raw.decode().strip()
                 commands.append(cmd)
                 if cmd == "f":
-                    reply = "14074000"
+                    reply = freq
                 elif cmd == "m":
                     reply = "PKTUSB\n3000"
                 elif cmd == "v":
@@ -169,9 +169,15 @@ def main():
     rig_commands = []
     rigctld = fake_rigctld(rig_commands)
     os.environ["EMCOMM_RIGCTLD"] = f"127.0.0.1:{rigctld.server_address[1]}"
+    rig2_commands = []
+    rigctld2 = fake_rigctld(rig2_commands, freq="146520000")
+    os.environ.update({"EMCOMM_RIGCTLD2": f"127.0.0.1:{rigctld2.server_address[1]}",
+                       "EMCOMM_RADIO2": os.path.join(tmp.name, "radio2.json"),
+                       "EMCOMM_RIG2_CAT": os.path.join(tmp.name, "rig2-cat")})
     fake_apply = os.path.join(tmp.name, "emcomm-apply-settings")
     with open(fake_apply, "w", encoding="utf-8") as f:
-        f.write(f"#!/bin/sh\ncp \"$1\" {os.environ['EMCOMM_STATION']} && echo Saved.\n")
+        f.write(f"#!/bin/sh\nif [ \"$1\" = --radio2 ]; then cp \"$2\" {tmp.name}/radio2.json && echo Saved radio 2.; "
+                f"exit; fi\ncp \"$1\" {os.environ['EMCOMM_STATION']} && echo Saved.\n")
     fake_setup = os.path.join(tmp.name, "emcomm-app-setup")
     with open(fake_setup, "w", encoding="utf-8") as f:
         f.write("#!/bin/sh\n[ \"$1\" = radio ] || exit 2\n"
@@ -180,6 +186,13 @@ def main():
                 "echo '{\"app\": \"js8call\", \"name\": \"JS8Call\", \"state\": \"open\", \"backup\": null}'\n")
     for path in (fake_apply, fake_setup):
         os.chmod(path, 0o755)
+    fake_find = os.path.join(tmp.name, "emcomm-find-radio")
+    with open(fake_find, "w", encoding="utf-8") as f:
+        f.write("#!/bin/sh\necho \"$@\" > " + os.path.join(tmp.name, "find-args") + "\n"
+                "echo '{\"found\": true, \"model\": 1036, \"name\": \"FT-891\", \"baud\": 38400, "
+                "\"freq\": \"7074000\"}'\n")
+    os.chmod(fake_find, 0o755)
+    os.environ["EMCOMM_FIND"] = fake_find
     os.environ.update({"EMCOMM_APPLY": fake_apply, "EMCOMM_APP_SETUP": fake_setup,
                        "EMCOMM_RIG_CAT": os.path.join(tmp.name, "rig-cat")})
     loader = importlib.machinery.SourceFileLoader("emcomm_launcher", os.path.join(FILES, "emcomm-launcher"))
@@ -550,6 +563,91 @@ def main():
     check("Set up for this radio: WSJT-X and fldigi." in message and "Not changed while open: JS8Call" in message,
           f"Save says what it did to the apps: {message}")
     check(json.load(open(L.PROFILES_PATH))["profiles"]["FT-710"]["data_mode"] == "usb", "profile updated on Save")
+
+    # ---- Find radio: the radio on the CAT port names itself; its model and baud rate are filled in ----
+    ft891_port = {"vendor": "10c4", "product": "ea70", "serial": "FT891", "interface": "00"}
+    devices = os.environ["EMCOMM_FAKE_DEVICES"]
+    with open(devices, "w", encoding="utf-8") as f:
+        json.dump({"serial": [["USB 10c4:ea70 port 0 · ttyUSB0 · CP2105", ft891_port]], "sound": [],
+                   "aprs_sound": [], "serial_links": [[ft891_port, "/dev/serial/by-id/usb-Silicon_Labs_FT891-if00"]]}, f)
+    win._rescan_devices()
+    win.cat_combo.set_active_id("d0")
+    answer_dialog(lambda d: Gtk.ResponseType.OK)
+    win._find_radio()
+    pump(1.5)
+    message = win.settings_messages[0].get_text()
+    args = open(os.path.join(tmp.name, "find-args")).read().split()
+    check(args[0] == "/dev/serial/by-id/usb-Silicon_Labs_FT891-if00", f"Find radio asks about the CAT port: {args}")
+    check(message.startswith("Found FT-891 at 38400 baud, on 7.074.000"), f"Find radio: {message}")
+    check(win.baud_combo.get_active_id() == "38400", "baud rate filled in")
+    check(win.model_combo.get_active_id() == "1036" or not win.models, "model filled in")
+    win._fill_settings()
+
+    # ---- A saved radio plugged in while another is in use: offer to switch ----
+    win.profiles["FT-710"]["cat_match"] = {"vendor": "10c4", "product": "ea70", "serial": "FT710", "interface": "00"}
+    win.profiles["FT-891 home"] = {"rig_model": 1036, "cat_baud": 38400, "cat_match": ft891_port, "ptt_method": "RTS",
+                                   "ptt_match": None, "audio_match": None, "data_mode": "data"}
+    with open(devices, "a", encoding="utf-8"):
+        os.utime(devices, None)
+    win._devices_seen = "before"
+    win._poll_status()
+    pump(2)
+    offer = win._switch_dialog
+    check(offer is not None and "FT-891 home is plugged in" in (offer.get_property("text") or ""),
+          "offered to switch to the radio plugged in")
+    if offer is not None:
+        offer.response(Gtk.ResponseType.OK)
+        pump(2.5)
+        check(json.load(open(os.environ["EMCOMM_STATION"]))["radio_name"] == "FT-891 home", "switched to it")
+        check(win.profile_combo.get_active_id() == "FT-891 home", "Radio page shows it in use")
+    for d in dialogs():
+        d.response(Gtk.ResponseType.OK)  # the note shown when switching away from the Radio page
+    pump(0.3)
+
+    # ---- Radio 2: a second radio alongside, its own rig control, apps picked for it ----
+    win.radio_tabs[2].set_active(True)
+    pump(1)
+    check(win.profile_combo.get_active_id() == L.RADIO2_OFF and "Off: no second radio" in win.rig_line.get_text(),
+          f"radio 2 starts off: {win.rig_line.get_text()}")
+    check(not win.test_ptt_btn.get_sensitive(), "no Test PTT without a second radio")
+    win.profile_combo.set_active_id("FT-710")
+    pump(0.3)
+    win._save_settings()
+    pump(2)
+    radio2 = json.load(open(os.environ["EMCOMM_RADIO2"]))
+    check(radio2["radio_name"] == "FT-710", f"radio 2 saved: {win.settings_messages[0].get_text()}")
+    check(json.load(open(os.environ["EMCOMM_STATION"]))["radio_name"] == "FT-891 home", "radio 1 unchanged")
+    pump(3.5)
+    check("146.520.000" in win.rig_line.get_text(), f"radio 2's own rig control: {win.rig_line.get_text()}")
+    win._test_cat()
+    pump(1.5)
+    check(win.settings_messages[0].get_text().startswith("CAT works: the radio says 146.520.000"),
+          f"Test CAT on radio 2: {win.settings_messages[0].get_text()}")
+    check("v" in rig2_commands, "Test CAT asked radio 2's rigctld")
+
+    def tick_packet(d):
+        for c in dialog_widgets(d, Gtk.CheckButton):
+            if c.get_label().startswith("Packet and APRS"):
+                c.set_active(True)
+        return Gtk.ResponseType.OK
+    answer_dialog(tick_packet)
+    win._radio_apps_dialog()
+    pump(0.5)
+    check(json.load(open(L.APP_RADIO_PATH))["radio2_apps"] == ["direwolf"] and
+          json.load(open(L.AUDIO_PATH))["radio2_apps"] == ["direwolf"], "Packet and APRS put on radio 2")
+    win.radio_tabs[1].set_active(True)
+    pump(0.5)
+    check(win.profile_combo.get_active_id() == "FT-891 home", "radio 1 tab shows radio 1")
+    labels = [label for _id, label in win.profile_combo.items] if hasattr(win.profile_combo, "items") else []
+    check(any("(radio 2)" in str(x) for x in labels) or not labels, f"profiles marked by radio: {labels}")
+    win.profile_combo.set_active_id("FT-710")
+    pump(0.3)
+    win._save_settings()
+    pump(0.5)
+    check("radio 2's" in win.settings_messages[0].get_text(), "radio 2's profile can't also be radio 1")
+    win._fill_settings()
+    rigctld2.shutdown()
+    rigctld2.server_close()
     rigctld.shutdown()
     rigctld.server_close()
     pump(3)
