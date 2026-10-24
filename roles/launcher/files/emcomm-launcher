@@ -3887,7 +3887,9 @@ class Launcher(Gtk.Window):
                 self.audio_meter_procs.pop(key)
                 GLib.idle_add(self.audio_meters[key].set_value, 0)
             if key in wanted and key not in self.audio_meter_procs:
-                self.audio_meter_procs[key] = self._audio_meter(key, wanted[key])
+                proc = self._audio_meter(key, wanted[key])
+                if proc:  # none without parec: tried again at the next refresh
+                    self.audio_meter_procs[key] = proc
 
     def _audio_meter(self, key, device):
         try:
