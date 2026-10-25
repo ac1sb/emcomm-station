@@ -367,9 +367,11 @@ unplugged, their sound goes to a silent output rather than to a speaker.
 
 **Settings > Audio > Levels** has two sliders with live meters:
 
-- **To radio** (transmit audio from the radio apps). Raise it until the radio's ALC
-  meter just starts to move, then back off a little. With ALC showing, the signal is
-  distorted and splatters.
+- **To radio** (transmit audio from the radio apps). This one level is shared by
+  every radio app, so set it once (about 40–60%) and trim each app with its own
+  control (VARA's Drive level, WSJT-X's Pwr slider). Aim for the radio's ALC at about
+  a third of its scale or less; higher ALC distorts the signal and splatters. The
+  slider isn't linear, so take big steps.
 - **From radio** (receive audio into the radio apps). Set it so the meter sits about
   a third of the way up on band noise.
 
@@ -493,8 +495,14 @@ opens in its own window. Pat doesn't make sound itself; it hands each message to
 | TCP ports | 8300 (the standard; Pat expects it) |
 | Licence key | Your key, if you have one |
 
-On the radio, turn **VOX off**. Set the levels as in [Levels](#levels), and VARA's
-own **Tune** button to check the ALC.
+On the radio, turn **VOX off**. Set the levels as in [Levels](#levels), and use VARA's
+own **Tune** button to check the ALC. Tune only works while a mail program is linked
+to VARA: in Pat, tick **Listen > varahf** first (untick it afterwards, because while
+it's on VARA can answer incoming calls and transmit), or set the level during a real
+connection.
+
+Tested on an FT-710 in USB mode, connected by its own USB cable: To radio **59%**,
+VARA Drive level **−11 dB**, which gives ALC at about 3 on Tune.
 
 ### VARA FM
 
