@@ -156,6 +156,7 @@ def download(folder, name, progress):
 def window():
     import gi
     gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
     from gi.repository import GLib, Gtk, Pango
 
     win = Gtk.Window(title="Library")

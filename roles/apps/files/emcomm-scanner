@@ -1204,6 +1204,7 @@ def picklist_class():
     """PickList: the same searchable drop-down list as the launcher's (made once Gtk is loaded)."""
     import gi
     gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
     from gi.repository import Gdk, GLib, GObject, Gtk, Pango
 
     class PickList(Gtk.Button):
@@ -1345,6 +1346,7 @@ def picklist_class():
 def gtk_with_theme():
     import gi
     gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
     from gi.repository import Gdk, GLib, Gtk
     provider = Gtk.CssProvider()
     provider.load_from_data(CSS.format(**theme()).encode())
