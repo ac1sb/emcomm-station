@@ -462,8 +462,12 @@ Settings > Update station gets the latest Emcomm-CNC, as on the station.
 ### Run it
 
 - **From the app menu:** open **Emcomm-CNC**. It fills the screen; when you start
-  an app from a tile, the launcher steps aside so the app is in front. To leave,
-  tap **⏻ > Power…** and choose **Exit Emcomm-CNC**.
+  an app from a tile, the launcher steps aside so the app is in front. To get at
+  the rest of your desktop, tap **—** in the top bar (or press **Ctrl+M**, or
+  **⏻ > Minimize**). To bring it back, click Emcomm-CNC in your taskbar or dock,
+  use Alt+Tab, or open **Emcomm-CNC** from the app menu again: that brings back
+  the one already running rather than starting a second. To leave, tap
+  **⏻ > Power…** and choose **Exit Emcomm-CNC**.
 - **As its own session:** on the login screen, pick **Emcomm-CNC** before typing
   your password (on Ubuntu, click your name, then the gear button at the bottom
   right). You get the full station: the Home bar across the top, apps opening
