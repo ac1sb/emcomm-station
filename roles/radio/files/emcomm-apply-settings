@@ -220,6 +220,7 @@ def render_radio2(r):
 
 def apply_radio2(r):
     write(RADIO2_SETTINGS, json.dumps(r, indent=2) + "\n")
+    before = read_text(RADIO2_RULES)
     if r["radio_name"]:
         rules, env = render_radio2(r)
         write(RADIO2_RULES, rules)
@@ -230,9 +231,7 @@ def apply_radio2(r):
                 os.remove(path)
     if ROOT:
         return
-    subprocess.run(["udevadm", "control", "--reload"], check=False)
-    subprocess.run(["udevadm", "trigger", "--subsystem-match=tty", "--subsystem-match=sound"], check=False)
-    subprocess.run(["udevadm", "settle", "--timeout=5"], check=False)
+    reapply_udev(before != read_text(RADIO2_RULES))
     subprocess.run(["systemctl", "daemon-reload"], check=False)
     if r["radio_name"] and os.path.exists("/dev/rig2-cat"):
         subprocess.run(["systemctl", "restart", "rigctld2"], check=False)
@@ -267,12 +266,11 @@ def render_aprs(a):
 
 def apply_aprs(a):
     write(APRS_SETTINGS, json.dumps(a, indent=2) + "\n")
+    before = read_text(APRS_RULES)
     write(APRS_RULES, render_aprs(a))
     if ROOT:
         return
-    subprocess.run(["udevadm", "control", "--reload"], check=False)
-    subprocess.run(["udevadm", "trigger", "--subsystem-match=tty", "--subsystem-match=sound"], check=False)
-    subprocess.run(["udevadm", "settle", "--timeout=5"], check=False)
+    reapply_udev(before != read_text(APRS_RULES))
 
 
 def udev_match(match):
@@ -318,6 +316,27 @@ def render(s):
     return "\n".join(rules) + "\n", rigctld_env, station_env
 
 
+def read_text(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def reapply_udev(changed):
+    """Apply new udev rules to what's plugged in now: USB serial ports and USB sound cards
+    only, and only when the rules changed (Update station applies the settings every
+    time). Re-announcing every sound card makes WirePlumber 0.4 drop the computer's own
+    sound card until it restarts, which left the station with no speaker but the radio."""
+    if not changed:
+        return
+    subprocess.run(["udevadm", "control", "--reload"], check=False)
+    subprocess.run(["udevadm", "trigger", "--subsystem-match=tty", "--subsystem-match=sound",
+                    "--property-match=ID_BUS=usb"], check=False)
+    subprocess.run(["udevadm", "settle", "--timeout=5"], check=False)
+
+
 def write(path, text, mode=0o644):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.tmp"
@@ -329,14 +348,13 @@ def write(path, text, mode=0o644):
 
 def apply(settings):
     rules, rigctld_env, station_env = render(settings)
+    changed = read_text(UDEV_RULES) != rules
     write(UDEV_RULES, rules)
     write(f"{ETC}/rigctld.env", rigctld_env)
     write(f"{ETC}/station.env", station_env)
     if ROOT:
         return
-    subprocess.run(["udevadm", "control", "--reload"], check=False)
-    subprocess.run(["udevadm", "trigger", "--subsystem-match=tty", "--subsystem-match=sound"], check=False)
-    subprocess.run(["udevadm", "settle", "--timeout=5"], check=False)
+    reapply_udev(changed)
     subprocess.run(["systemctl", "daemon-reload"], check=False)
     if os.path.exists("/dev/rig-cat"):
         subprocess.run(["systemctl", "restart", "rigctld"], check=False)
