@@ -208,6 +208,15 @@ class Helpers(unittest.TestCase):
                          ["builtin", "hdmi", "usb", "bluetooth"])
         self.assertTrue(audio.is_monitor({"name": "x.monitor", "properties": {}}))
 
+    def test_apps_named_by_their_sound_library_show_their_own_name(self):
+        qt = stream(1, 1, "QtPulseAudio:4321", "wsjtx")
+        self.assertEqual((audio.app_label(qt), audio.app_key(qt)), ("WSJT-X", "wsjtx"))
+        plug = stream(2, 1, "ALSA plug-in [direwolf]", "direwolf")
+        self.assertEqual((audio.app_label(plug), audio.app_key(plug)), ("Direwolf", "direwolf"))
+        other = stream(3, 1, "QtPulseAudio:99", "qttermtcp")
+        self.assertEqual((audio.app_label(other), audio.app_key(other)), ("qttermtcp", "qttermtcp"))
+        self.assertEqual(audio.app_label(stream(4, 1, "Scanner", "pacat")), "Scanner")
+
     def test_card_number(self):
         with tempfile.TemporaryDirectory() as tmp:
             link = os.path.join(tmp, "rigaudio")
