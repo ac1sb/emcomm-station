@@ -140,6 +140,14 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
     Type each callsign and press Enter to check it in, or fill in From, To and
     Message and tap **Log** for traffic; every entry gets the UTC time, and
     **Undo** removes the last one. Nets are kept in `~/.local/share/emcomm/nets`.
+    As a callsign is typed, the line above it shows the name, town and licence
+    class from the FCC's licence list kept on the station (no internet needed),
+    flags an expired licence in red, and says when a US call isn't in the list
+    (often a miscopied call). A check-in is logged with that name and town, and
+    they print on the ICS-309. Contact notes on the Logs page do the same.
+    Update station downloads the list (about 150 MB, kept only while it builds)
+    when it's over a week old and the station is online; offline, the last list
+    is kept. Calls outside the US aren't in it.
   - **ICS-309 Communications Log** fills in the log for the net picked in the
     list (else the open or last net), and **ICS-205 Radio Communications Plan**
     fills in the plan from My frequencies (receive and transmit frequency, tone,

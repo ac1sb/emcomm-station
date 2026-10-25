@@ -95,6 +95,12 @@ def field(label, value, colspan=1):
     return f"<td colspan='{colspan}'><span class='label'>{esc(label)}</span>{esc(value)}</td>"
 
 
+def entry_message(e):
+    """An entry's message, with who checked in when the callsign list knew them."""
+    who = ", ".join(filter(None, [e.get("name", ""), " ".join(filter(None, [e.get("city", ""), e.get("state", "")]))]))
+    return " · ".join(filter(None, [e.get("message", ""), who]))
+
+
 def ics309(net):
     """The ICS 309 Communications Log for one net, as an HTML page."""
     operator = " ".join(filter(None, [net.get("operator", ""), net.get("callsign", "")]))
@@ -106,7 +112,7 @@ def ics309(net):
         body = "".join(
             f"<tr><td>{esc(utc(e.get('time'), '%m/%d %H%M'))}</td><td>{esc(e.get('from', ''))}</td>"
             f"<td>{esc(e.get('from_msg', ''))}</td><td>{esc(e.get('to', ''))}</td>"
-            f"<td>{esc(e.get('to_msg', ''))}</td><td>{esc(e.get('message', ''))}</td></tr>"
+            f"<td>{esc(e.get('to_msg', ''))}</td><td>{esc(entry_message(e))}</td></tr>"
             for e in rows)
         body += "<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>" * (ROWS_309 - len(rows))
         out.append(
