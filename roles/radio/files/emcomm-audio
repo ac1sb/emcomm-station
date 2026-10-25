@@ -165,17 +165,30 @@ def listening_speaker(sinks, cards, choice):
     return min(auto, key=rank)
 
 
+# Names apps get from their sound library rather than from themselves: Qt names
+# every app's sound "QtPulseAudio:<process id>", ALSA's PipeWire plug-in "ALSA plug-in [prog]".
+GENERIC_NAME = re.compile(r"^(qtpulseaudio|alsa plug-in|pipewire alsa)", re.IGNORECASE)
+LABELS = {"wsjtx": "WSJT-X", "js8call": "JS8Call", "jtdx": "JTDX", "direwolf": "Direwolf",
+          "ardopcf": "ARDOP", "fldigi": "fldigi", "flrig": "flrig", "freedv": "FreeDV", "qsstv": "QSSTV"}
+
+
 def app_key(stream):
     """The name an app's sound is known by: the name it gives, else its program's."""
     props = stream.get("properties") or {}
     binary = os.path.basename(str(props.get("application.process.binary") or "")).lower()
-    return str(props.get("application.name") or "").lower() or binary
+    name = str(props.get("application.name") or "")
+    if binary and (not name or GENERIC_NAME.match(name)):
+        return binary
+    return name.lower() or binary
 
 
 def app_label(stream):
     props = stream.get("properties") or {}
-    return str(props.get("application.name") or props.get("application.process.binary")
-               or props.get("media.name") or "Unknown app")
+    name = str(props.get("application.name") or "")
+    binary = os.path.basename(str(props.get("application.process.binary") or ""))
+    if binary and (not name or GENERIC_NAME.match(name)):
+        return LABELS.get(binary.lower(), binary)
+    return name or str(props.get("media.name") or "Unknown app")
 
 
 def is_radio_app(stream, extra=()):
