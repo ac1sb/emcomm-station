@@ -114,6 +114,7 @@ Look across the top of the screen:
 | --- | --- | --- |
 | ● **Rig 14.074.000** (green dot and a frequency) | The station is talking to the radio | Radio off, or its USB cable is out. Turn it on, plug it in, wait 10 seconds |
 | ● **Radio audio** (green dot) | The radio's sound card is plugged in | Same: check the USB cable |
+| Speaker and microphone icons | Tap for the listening speaker's volume, or the radio's To radio and From radio levels ([Levels](#levels)) | A microphone with a line through it: the radio's sound card isn't plugged in |
 | **UTC** time | Times on everything are UTC | If it's wrong, tell whoever runs the station: digital modes need the right time |
 | ▲ **weather alerts** (red) | Weather alerts in force near you | Tap it to read them |
 
@@ -203,8 +204,9 @@ save their settings. Turn the radio off after the station.
 ### The screen
 
 - **Top bar:** callsign, grid square (from the GPS when one is plugged in), local
-  time and UTC, network status, weather alerts in force, **Rec**, ⌨ (on-screen
-  keyboard) and **⏻** (Settings, Diagnostics, Power).
+  time and UTC, network status, weather alerts in force, **Rec**, the speaker and
+  microphone icons (sound levels, see [Levels](#levels)), ⌨ (on-screen keyboard) and
+  **⏻** (Settings, Diagnostics, Power).
 - **Home:** the app tiles, 18 to a page. Swipe sideways, tap ◀ ▶ or press Page
   Up/Down for the next page.
 - **Folders** group related apps under one tile. Standard folders:
@@ -212,7 +214,8 @@ save their settings. Turn the radio off after the station.
   - **Mesh & APRS:** Meshtastic, MeshCore, APRS.
 - **Home bar:** when an app is open, a thin bar across the top of the screen has
   **⌂ Home**, a button for each open app (tap it to bring that app to the front,
-  ✕ to close it) and the time.
+  ✕ to close it), **Rec**, the speaker and microphone icons and the time. So levels
+  can be changed while WSJT-X or VARA is on the screen.
 
 Tapping a tile whose app is already open brings it to the front; it does not start
 a second copy. While an app starts, its tile shows **Opening…**. If it shows
@@ -233,6 +236,7 @@ a second copy. While an app starts, its tile shows **Opening…**. If it shows
 | F9 | Forms |
 | 1-9 | Open the first nine tiles on the page shown |
 | Alt+Tab | Switch between open apps |
+| Volume up, down and mute keys | The listening speaker only, never the radio (on a dedicated station and in the Emcomm-CNC session) |
 
 Every drop-down list can be searched: tap it and type, or start typing on it.
 
@@ -379,6 +383,26 @@ unplugged, their sound goes to a silent output rather than to a speaker.
 
 Set them once per radio and band; they're kept. **Diagnostics > Audio levels** opens
 the same page.
+
+**From any screen:** the top bar (and the Home bar over other apps) has a speaker
+icon and a microphone icon. Tap one and its sliders drop down; tap anywhere else to
+put them away. They're the same levels as Settings > Audio: move one and the other
+moves too.
+
+- **Speaker icon:** the **Listening speaker** volume, with a mute button, and which
+  speaker it's playing on. The icon shows the volume, or a crossed-out speaker when
+  it's muted or there's no listening speaker. To pick a different speaker, tap
+  **Audio settings**.
+- **Microphone icon:** the radio's **To radio** and **From radio** levels, with the
+  meters. Tune or transmit and watch the radio's ALC while you move **To radio**.
+
+![The top bar's microphone icon, with the radio's levels](guide/audio-topbar.png)
+
+The keyboard's volume keys change the listening speaker too, never the radio: on a
+station the radio is the default speaker, so the usual volume keys would change the
+transmit level. (In desktop mode with Emcomm-CNC in a window, your desktop's own
+volume keys and menu still work as before; while the radio is the default speaker,
+its volume there is **To radio**.)
 
 ### The modem ports
 
