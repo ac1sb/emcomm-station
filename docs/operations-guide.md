@@ -141,7 +141,8 @@ If both dots are green, the station is ready.
    in voice.
 3. To keep a record, tap **Logs** (F4). Type the callsign of the station you worked
    (net control, for a check-in) and a note such as "checked in, no traffic", then
-   tap **Add note**. The UTC time, frequency and mode are filled in from the radio.
+   tap **Add note**. The UTC time, frequency and mode are filled in from the radio,
+   and the station's name and town show as you type the callsign.
 
 ## Write an ICS-213 and send it by radio
 
@@ -715,7 +716,8 @@ can also save a PDF to a USB stick.
 
 - **Contact notes:** your own notes. Type a callsign and a note (traffic passed,
   signal report, net) and tap **Add note**; the UTC time, frequency and mode are
-  filled in from the radio.
+  filled in from the radio. As you type the callsign, its name, town and licence
+  class show from the offline FCC list (US calls only).
 - **JS8Call messages** and **JS8Call all activity.**
 - **WSJT-X contacts.**
 - **Winlink mail.**
@@ -1123,7 +1125,12 @@ served agency's RACES plan and its radio officer authorise.
 1. Forms > **New ▾ > Net log** (or F8). Type the **net name**, the **incident**
    (it goes on the ICS forms) and **your name**, then tap **Start net**.
 2. Take check-ins: type each callsign in **From** and press Enter (or **Check in**).
-   A note on the check-in (location, "mobile", "no traffic") goes in **Message**.
+   As you type, the line above shows the name, town and licence class from the FCC
+   licence list kept on the station (no internet needed). An expired licence shows
+   in red, and a US call that isn't in the list is flagged, which often means a
+   miscopied call: ask for it again. The check-in is logged with that name and town,
+   and they print on the ICS-309. A note on the check-in (location, "mobile", "no
+   traffic") goes in **Message**.
 3. Log traffic: **From**, **To** (blank means you, net control) and **Message**, then
    **Log**. **Undo** removes the last entry.
 4. Hand a formal message to an ICS-213: Forms > **New ▾ > ICS-213 message**; the
@@ -1183,7 +1190,8 @@ app and never transmit:
 | Logs, Recorder, Reference, gateway finder (from the saved list) | Updating the gateway list |
 | Scanner, Gqrx, NOAA radio alerts, ADS-B aircraft | Broadcastify, the APRS iGate |
 | Map (offline), Library (books already downloaded) | Library downloads, Update station |
-| GPS position and time | Callsign lookup (earlier lookups still show) |
+| GPS position and time | Online callsign lookup with QRZ and aprs.fi (earlier lookups still show) |
+| US callsign name, town and class in Net control and Logs (offline FCC list) | Refreshing the FCC list (Update station, weekly) |
 
 Without GPS or internet, the clock drifts. Check UTC against WWV (2.5, 5, 10, 15
 MHz) before digital work.
@@ -1201,8 +1209,9 @@ MHz) before digital work.
 
 With internet:
 
-1. **Settings > Update station.** Read Logs > **Station updates** if anything
-   failed.
+1. **Settings > Update station.** It also refreshes the offline FCC callsign list
+   when it's over a week old (about 150 MB to download). Read Logs > **Station
+   updates** if anything failed.
 2. **Reference > Nearest Winlink gateways > Update list.**
 3. **Library:** download any new books; check the ones you rely on open.
 4. **Online:** check alerts and propagation load.
@@ -1299,6 +1308,7 @@ serial port).
 | Recordings | `~/Recordings` |
 | Library books | `~/Library` |
 | Pat (Winlink) | `~/.config/pat/config.json` |
+| Offline FCC callsign list | `/var/lib/emcomm/callsigns.db` |
 | Update log | `/var/log/emcomm-update.log` |
 
 **Settings > Backup** saves your settings, lists and tile arrangement to a USB stick.
