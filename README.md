@@ -7,6 +7,11 @@ straight into a full-screen touch launcher for the radio apps, with no desktop
 environment. To try it on a Debian or Ubuntu computer you already use, see
 [desktop mode](#try-it-on-a-computer-you-already-use-desktop-mode).
 
+**Operating the station:** see the [operations guide](docs/operations-guide.md):
+a cold start for first-time operators, every app's rig and audio settings, which
+apps go together and in what order, and ARES/RACES walkthroughs. On the station,
+the **Guide** tile shows it, with a **Print** button for the go-kit.
+
 ![Home screen](docs/home.png)
 
 ## What's in it so far
@@ -426,8 +431,8 @@ environment. To try it on a Debian or Ubuntu computer you already use, see
 - **fldigi:** in Configure > Rig control > Hamlib, pick "Hamlib NET rigctl" with
   device `localhost:4532`, and pick the sound card under Audio.
 
-Running more than one sound-card app at a time doesn't work: close one before
-opening the next.
+Several sound-card apps can listen at once; transmit from one at a time, and
+don't run two apps that both set the radio's frequency (WSJT-X and JS8Call, say).
 
 ## Try it on a computer you already use (desktop mode)
 

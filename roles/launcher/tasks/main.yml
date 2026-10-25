@@ -9,6 +9,8 @@
       - udisks2  # lets the kiosk user open USB sticks, e.g. to pick a tile icon
       - gir1.2-poppler-0.18  # draws the ICS-213 form on screen and for printing
       - python3-pypdf  # fills in the ICS-213 form
+      - python3-markdown  # turns the operations guide into a page
+      - gir1.2-webkit2-4.1  # shows the operations guide
     install_recommends: false
 
 - name: Install the tile icons
@@ -38,12 +40,22 @@
     mode: "0644"
     directory_mode: "0755"
 
+- name: Install the operations guide and its pictures
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: "0644"
+    directory_mode: "0755"
+  loop:
+    - { src: "{{ playbook_dir }}/docs/operations-guide.md", dest: /usr/share/emcomm/guide/operations-guide.md }
+    - { src: "{{ playbook_dir }}/docs/guide/", dest: /usr/share/emcomm/guide/guide/ }
+
 - name: Install the launcher and its helpers (Online page, ICS forms, backup)
   ansible.builtin.copy:
     src: "{{ item }}"
     dest: "/usr/local/bin/{{ item }}"
     mode: "0755"
-  loop: [emcomm-launcher, emcomm-online, emcomm-ics, emcomm-backup, emcomm-callsign]
+  loop: [emcomm-launcher, emcomm-online, emcomm-ics, emcomm-backup, emcomm-callsign, emcomm-guide]
 
 # The FCC licence list for offline callsign lookup: downloaded when it's over a
 # week old and the station is online. Offline, the last list is kept.

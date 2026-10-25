@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Show the operations guide in a window with a Print button.
+
+  emcomm-guide           open the guide
+  emcomm-guide --html    write the page and print its path (for the tests)
+
+The guide is docs/operations-guide.md, installed in /usr/share/emcomm/guide with
+its pictures. It's turned into a page in ~/.cache/emcomm in the station's colours
+(Settings > Display), and printed black on white whatever the colours.
+"""
+
+import html
+import os
+import sys
+
+GUIDE_DIR = os.environ.get("EMCOMM_GUIDE", "/usr/share/emcomm/guide")
+GUIDE = os.path.join(GUIDE_DIR, "operations-guide.md")
+THEME_PATH = os.path.expanduser("~/.config/emcomm/theme")
+OUT = os.path.expanduser("~/.cache/emcomm/operations-guide.html")
+
+# The launcher's themes, as far as a page of text needs them (bg, surface, line, text, muted, accent).
+THEMES = {
+    "dark": ("#101214", "#1A1D21", "#2A2F35", "#E8E6E1", "#9AA0A6", "#F2A33A"),
+    "light": ("#F4F2EE", "#FFFFFF", "#D6D2CA", "#1D1F22", "#5F6368", "#A85F00"),
+    "slate": ("#0E1318", "#16202A", "#253342", "#E6EBF0", "#8D9BAA", "#6CB4EE"),
+    "night": ("#090505", "#140A0A", "#2B1414", "#E0675C", "#94463F", "#FF5A47"),
+    "sunlight": ("#FFFFFF", "#FFFFFF", "#1A1A1A", "#000000", "#333333", "#0B3C9C"),
+}
+
+CSS = """
+body { background: %s; color: %s; font: 17px/1.5 "IBM Plex Sans", "DejaVu Sans", sans-serif;
+       max-width: 60em; margin: 0 auto; padding: 8px 24px 48px; }
+h1 { font-size: 28px; margin: 12px 0 4px; }
+h2 { font-size: 23px; margin-top: 40px; padding-left: 10px; border-left: 4px solid %s; }
+h3 { font-size: 19px; margin-top: 28px; }
+a { color: %s; }
+table { border-collapse: collapse; margin: 12px 0; width: 100%%; background: %s; }
+th, td { border: 1px solid %s; padding: 6px 10px; text-align: left; vertical-align: top; }
+th { color: %s; font-weight: 600; }
+code { font-family: "IBM Plex Mono", "DejaVu Sans Mono", monospace; font-size: 15px; }
+blockquote { margin: 12px 0; padding: 4px 16px; background: %s; border-left: 4px solid %s; }
+img { max-width: 100%%; border: 1px solid %s; }
+hr { border: 0; border-top: 1px solid %s; margin: 32px 0; }
+@media print {
+  body { background: #FFFFFF; color: #000000; font-size: 11pt; max-width: none; padding: 0; }
+  a { color: #000000; text-decoration: none; }
+  h2 { break-before: page; border-left-color: #000000; }
+  table, blockquote { background: #FFFFFF; }
+  th, td, img { border-color: #888888; }
+  th { color: #000000; }
+  blockquote { border-left-color: #000000; }
+  tr, img, blockquote { break-inside: avoid; }
+}
+"""
+
+
+def theme_colours():
+    try:
+        with open(THEME_PATH, encoding="utf-8") as f:
+            name = f.read().strip()
+    except OSError:
+        name = "dark"
+    return THEMES.get(name, THEMES["dark"])
+
+
+def render(text, colours, guide_dir=GUIDE_DIR):
+    """The guide as a whole HTML page."""
+    import markdown
+
+    body = markdown.markdown(text, extensions=["tables", "toc", "sane_lists", "fenced_code"])
+    # The pictures sit next to the guide; the page itself is written elsewhere.
+    body = body.replace('src="guide/', f'src="file://{os.path.join(guide_dir, "guide")}/')
+    bg, surface, line, fg, muted, accent = colours
+    css = CSS % (bg, fg, accent, accent, surface, line, muted, surface, accent, line, line)
+    return (f"<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{html.escape('Operations guide')}"
+            f"</title><style>{css}</style></head><body>\n{body}\n</body></html>\n")
+
+
+def write_page():
+    with open(GUIDE, encoding="utf-8") as f:
+        page = render(f.read(), theme_colours())
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    with open(OUT + ".tmp", "w", encoding="utf-8") as f:
+        f.write(page)
+    os.replace(OUT + ".tmp", OUT)
+    return OUT
+
+
+def main(argv):
+    try:
+        path = write_page()
+    except ImportError:
+        print("The guide needs python3-markdown. Run Update station.", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"The guide isn't installed ({exc}). Run Update station.", file=sys.stderr)
+        return 1
+    if argv == ["--html"]:
+        print(path)
+        return 0
+    os.execvp("emcomm-webview", ["emcomm-webview", "--print", "file://" + path, "Operations guide"])
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
