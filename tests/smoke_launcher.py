@@ -195,6 +195,13 @@ def main():
     os.environ["EMCOMM_FIND"] = fake_find
     os.environ.update({"EMCOMM_APPLY": fake_apply, "EMCOMM_APP_SETUP": fake_setup,
                        "EMCOMM_RIG_CAT": os.path.join(tmp.name, "rig-cat")})
+    # The offline callsign list, built from the unit test's small FCC file.
+    sys.path.insert(0, os.path.join(REPO, "tests"))
+    import test_callsign
+    fcc_zip = os.path.join(tmp.name, "l_amat.zip")
+    test_callsign.fake_zip(fcc_zip)
+    os.environ["EMCOMM_CALLSIGN_DB"] = os.path.join(tmp.name, "callsigns.db")
+    test_callsign.cs.build(fcc_zip, os.environ["EMCOMM_CALLSIGN_DB"])
     loader = importlib.machinery.SourceFileLoader("emcomm_launcher", os.path.join(FILES, "emcomm-launcher"))
     spec = importlib.util.spec_from_loader("emcomm_launcher", loader)
     L = importlib.util.module_from_spec(spec)
@@ -343,10 +350,28 @@ def main():
     win.ncs_name.set_text("Smoke net")
     win._net_start_or_close()
     pump(0.3)
-    win.ncs_from.set_text("K1ABC")
+    win.ncs_from.set_text("K1OLD")
+    pump(0.2)
+    check("licence expired" in win.ncs_lookup.get_text()
+          and win.ncs_lookup.get_style_context().has_class("error"), f"lookup: {win.ncs_lookup.get_text()}")
+    win.ncs_from.set_text("KC1ABC")
+    pump(0.2)
+    check(win.ncs_lookup.get_text().startswith("KC1ABC · John Q Smith · Manchester Center, VT")
+          and not win.ncs_lookup.get_style_context().has_class("error"), f"lookup: {win.ncs_lookup.get_text()}")
     win._net_add(checkin=True)
     pump(0.3)
     check(win.ncs is not None and len(win.ncs["entries"]) == 2, "net started and a check-in logged")
+    check(win.ncs["entries"][-1].get("name") == "John Q Smith" and win.ncs["entries"][-1].get("state") == "VT",
+          f"check-in has the name: {win.ncs['entries'][-1]}")
+    check("John Q Smith, Manchester Center VT" in win.ncs_view.get_buffer().props.text, "net log shows the name")
+    if os.environ.get("EMCOMM_SHOT"):  # a picture of Net control for the docs
+        from gi.repository import Gdk
+        win.ncs_from.set_text("K1OLD")
+        pump(0.5)
+        gdkwin = win.get_window()
+        Gdk.pixbuf_get_from_window(gdkwin, 0, 0, gdkwin.get_width(), gdkwin.get_height()).savev(
+            os.environ["EMCOMM_SHOT"], "png", [], [])
+        win.ncs_from.set_text("")
     win.stack.set_visible_child_name("forms")
     pump(5)
     check(rows() and rows()[0].item["kind"] == "net" and rows()[0].item.get("open"), "open net tops the list")

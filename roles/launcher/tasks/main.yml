@@ -55,7 +55,24 @@
     src: "{{ item }}"
     dest: "/usr/local/bin/{{ item }}"
     mode: "0755"
-  loop: [emcomm-launcher, emcomm-online, emcomm-ics, emcomm-backup, emcomm-guide]
+  loop: [emcomm-launcher, emcomm-online, emcomm-ics, emcomm-backup, emcomm-callsign, emcomm-guide]
+
+# The FCC licence list for offline callsign lookup: downloaded when it's over a
+# week old and the station is online. Offline, the last list is kept.
+- name: Update the offline callsign list
+  tags: [callsign]
+  block:
+    - name: Download the FCC amateur licence list and rebuild the callsign database
+      ansible.builtin.command: emcomm-callsign update --max-age 7
+      register: launcher_callsign
+      changed_when: "'rebuilt' in launcher_callsign.stdout"
+  rescue:
+    - name: Report that the callsign list didn't update
+      ansible.builtin.debug:
+        msg: >-
+          EMCOMM WARNING: The callsign list didn't download
+          ({{ (ansible_failed_result.stderr | default('')) | trim | truncate(300) }}).
+          Callsign lookup works after an Update station with internet. Everything else carried on.
 
 - name: Write launcher settings
   ansible.builtin.copy:
