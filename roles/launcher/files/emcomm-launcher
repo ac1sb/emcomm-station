@@ -2292,6 +2292,12 @@ class Launcher(Gtk.Window):
             subprocess.run(["pkill", "-u", str(os.getuid()), "-x", "onboard"], capture_output=True, check=False)
         self._watch_text_entries()
 
+    def minimize(self):
+        """Desktop mode only: off the screen, to the taskbar. The kiosk and the Emcomm-CNC
+        session have no taskbar to come back from, so there it does nothing."""
+        if self.desktop and not self.session:
+            self.iconify()
+
     def go_home(self):
         """Bring the launcher back in front of any app, on its Home page."""
         self.show_page("home")
@@ -2299,6 +2305,10 @@ class Launcher(Gtk.Window):
     def show_page(self, name):
         """Bring the launcher back in front of any app, on the page given."""
         self.stack.set_visible_child_name(name)
+        self.bring_back()
+
+    def bring_back(self):
+        """Back in front, full screen, on whatever page it was showing."""
         self.deiconify()
         self._set_fullscreen(not self._keyboard_shown())
         self.present_with_time(Gtk.get_current_event_time())
@@ -2402,7 +2412,11 @@ class Launcher(Gtk.Window):
 
     def _on_key(self, _widget, event):
         """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online,
-        F8 Net control, F9 Forms, 1-9 open a tile on Home, Page Up/Down change Home page."""
+        F8 Net control, F9 Forms, 1-9 open a tile on Home, Page Up/Down change Home page,
+        Ctrl+M minimize (desktop mode)."""
+        if event.state & Gdk.ModifierType.CONTROL_MASK and event.keyval in (Gdk.KEY_m, Gdk.KEY_M):
+            self.minimize()
+            return True
         pages = {Gdk.KEY_Escape: "home", Gdk.KEY_F1: "home", Gdk.KEY_F2: "diagnostics",
                  Gdk.KEY_F3: "settings", Gdk.KEY_F4: "logs", Gdk.KEY_F5: "reference", Gdk.KEY_F6: "wifi",
                  Gdk.KEY_F7: "online", Gdk.KEY_F8: "net", Gdk.KEY_F9: "forms"}
@@ -2443,6 +2457,15 @@ class Launcher(Gtk.Window):
         power.set_valign(Gtk.Align.CENTER)
         power.set_popover(self._station_menu(power))
         bar.pack_end(power, False, False, 0)
+        if self.desktop and not self.session:
+            # Opened from a desktop's app menu: step aside to the rest of the desktop. The
+            # taskbar or dock, Alt+Tab, or the app menu's Emcomm-CNC brings it back.
+            minimize = Gtk.Button(label="—", tooltip_text="Minimize to the taskbar (Ctrl+M)")
+            minimize.get_style_context().add_class("navbtn")
+            minimize.set_valign(Gtk.Align.CENTER)
+            minimize.set_can_focus(False)  # keyboard users have Ctrl+M
+            minimize.connect("clicked", lambda *_: self.minimize())
+            bar.pack_end(minimize, False, False, 0)
         bar.pack_end(keyboard, False, False, 0)
         self.clock = Gtk.Label()
         self.clock.get_style_context().add_class("mono")
@@ -2700,9 +2723,12 @@ class Launcher(Gtk.Window):
             menu.popdown()
             handler()
 
-        for label, handler in (("Settings  F3", lambda: self.stack.set_visible_child_name("settings")),
-                               ("Diagnostics  F2", lambda: self.stack.set_visible_child_name("diagnostics")),
-                               ("Power…", self._power_dialog)):
+        items = [("Settings  F3", lambda: self.stack.set_visible_child_name("settings")),
+                 ("Diagnostics  F2", lambda: self.stack.set_visible_child_name("diagnostics"))]
+        if self.desktop and not self.session:
+            items.append(("Minimize  Ctrl+M", self.minimize))
+        items.append(("Power…", self._power_dialog))
+        for label, handler in items:
             item = self._navbtn(label, lambda _b, h=handler: go(h))
             item.get_child().set_xalign(0)
             item.set_size_request(240, -1)
@@ -3771,6 +3797,7 @@ class Launcher(Gtk.Window):
         if self.desktop and not self.session:
             if self.audio_router and self.audio_router.poll() is None:
                 self.audio_router.terminate()  # the new launcher starts its own
+            os.environ["EMCOMM_LAUNCHER_RESTARTED"] = "1"
             os.execv(sys.executable, [sys.executable] + sys.argv)
         self.quit()
 
@@ -8043,9 +8070,40 @@ class Launcher(Gtk.Window):
         threading.Thread(target=work, daemon=True).start()
 
 
+def one_launcher():
+    """Desktop mode, opened from the app menu: one launcher per person. Opening Emcomm-CNC
+    again while it's running (minimized or behind other windows) brings that one back, and
+    this one ends. Returns the Gtk.Application holding the name, or None when another
+    launcher took the call (or the session bus is missing, when there's nothing to share)."""
+    # After Update station the old launcher has only just let go of the name.
+    tries = 20 if os.environ.pop("EMCOMM_LAUNCHER_RESTARTED", None) else 1
+    for attempt in range(tries):
+        app = Gtk.Application(application_id="org.emcommcnc.Launcher")
+        try:
+            app.register(None)
+        except GLib.Error:
+            return Gtk.Application(application_id="org.emcommcnc.Launcher",
+                                   flags=Gio.ApplicationFlags.NON_UNIQUE)
+        if not app.get_is_remote():
+            return app
+        if attempt < tries - 1:
+            time.sleep(0.25)
+    # The desktop's startup token goes along, so the desktop lets that window to the front.
+    app.activate()
+    return None
+
+
 def main():
     GLib.set_prgname("emcomm-cnc")  # matches the desktop's app menu entry (emcomm-cnc.desktop)
+    app = None
+    if station_mode() == "desktop" and os.environ.get("EMCOMM_SESSION") != "1":
+        app = one_launcher()
+        if app is None:
+            return
     win = Launcher(load_config())
+    if app is not None:
+        win.app = app  # kept, so the name stays held
+        app.connect("activate", lambda *_: win.bring_back())
     win.connect("destroy", lambda *_: win.quit(win.exit_status))
     # Logging out or a kill: still give the computer its own sound back.
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
