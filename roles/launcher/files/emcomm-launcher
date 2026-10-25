@@ -19,6 +19,7 @@ import re
 import shutil
 import signal
 import socket
+import sqlite3
 import string
 import subprocess
 import sys
@@ -1872,16 +1873,89 @@ def save_net(path, net):
     os.replace(tmp, path)
 
 
+def entry_message(e):
+    """An entry's message, with who checked in when the callsign list knew them."""
+    who = ", ".join(filter(None, [e.get("name", ""), " ".join(filter(None, [e.get("city", ""), e.get("state", "")]))]))
+    return " · ".join(filter(None, [e.get("message", ""), who]))
+
+
 def net_lines(net):
     lines = [f"{'Time':<6}  {'From':<10}  {'To':<10}  Message"]
     for e in net.get("entries", []):
         lines.append(f"{time.strftime('%H%MZ', time.gmtime(e['time'])):<6}  {e.get('from', ''):<10}  "
-                     f"{e.get('to', ''):<10}  {e.get('message', '')}")
+                     f"{e.get('to', ''):<10}  {entry_message(e)}")
     return "\n".join(lines) + "\n"
 
 
 def checked_in(net):
     return sorted({e["from"] for e in net.get("entries", []) if e.get("checkin") and e.get("from")})
+
+
+# Offline callsign lookup: emcomm-callsign keeps the FCC's amateur licence list in
+# this database (Update station refreshes it weekly when online).
+CALLSIGN_DB = os.environ.get("EMCOMM_CALLSIGN_DB", "/var/lib/emcomm/callsigns.db")
+CALLSIGN_CLASSES = {"E": "Amateur Extra", "A": "Advanced", "G": "General", "P": "Technician Plus",
+                    "T": "Technician", "N": "Novice"}
+US_CALL = re.compile(r"(?:A[A-L]|[KNW][A-Z]?)[0-9][A-Z]{1,3}")  # what the FCC issues
+
+
+def _callsign_db(db):
+    return sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+
+
+def callsign_lookup(call, db=None):
+    """What the FCC list says about a call: {call, name, city, state, class, status
+    ("A" active, "E" expired), expires}, or None. Raises nothing."""
+    db = db or CALLSIGN_DB
+    if not call or not os.path.exists(db):
+        return None
+    try:
+        con = _callsign_db(db)
+        row = con.execute("SELECT call, name, city, state, class, status, expires FROM calls WHERE call = ?",
+                          (call.strip().upper(),)).fetchone()
+        con.close()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    return dict(zip(("call", "name", "city", "state", "class", "status", "expires"), row))
+
+
+def callsign_list_date(db=None):
+    """'2026-10-20', when the callsign list was built; '' when there's none."""
+    db = db or CALLSIGN_DB
+    if not os.path.exists(db):
+        return ""
+    try:
+        con = _callsign_db(db)
+        row = con.execute("SELECT value FROM meta WHERE key = 'built'").fetchone()
+        con.close()
+        return time.strftime("%Y-%m-%d", time.gmtime(int(row[0]))) if row else ""
+    except (sqlite3.Error, ValueError):
+        return ""
+
+
+def callsign_summary(call, db=None):
+    """(line to show under a callsign field, whether it's a problem to look at)."""
+    call = call.strip().upper()
+    if not call:
+        return "", False
+    db = db or CALLSIGN_DB
+    found = callsign_lookup(call, db)
+    if found:
+        place = ", ".join(filter(None, [found["city"], found["state"]]))
+        kind = CALLSIGN_CLASSES.get(found["class"], found["class"] or "Club")
+        parts = [found["call"], found["name"], place, kind]
+        if found["status"] != "A":
+            parts.append(f"licence expired {found['expires']}" if found["expires"] else "licence expired")
+            return " · ".join(filter(None, parts)), True
+        return " · ".join(filter(None, parts)), False
+    listed = callsign_list_date(db)
+    if not listed:
+        return "Callsign lookup needs the FCC list: run Update station once with internet.", False
+    if not US_CALL.fullmatch(call):
+        return f"{call}: not a US call, so not in the FCC list.", False
+    return f"{call} isn't in the FCC list from {listed}. Check the call.", False
 
 
 
@@ -5605,10 +5679,22 @@ class Launcher(Gtk.Window):
         row.pack_start(self.note_text, True, True, 0)
         row.pack_start(self._navbtn("Add note", self._add_note, "primary"), False, False, 0)
         note_box.pack_start(row, False, False, 0)
+        self.note_lookup = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.note_call.connect("changed", lambda w: self._show_callsign(w, self.note_lookup))
+        note_box.pack_start(self.note_lookup, False, False, 0)
         page.pack_end(note_box, False, False, 0)
 
         page.connect("map", lambda *_: self._show_log())
         return page
+
+    def _show_callsign(self, entry, label):
+        """Under a callsign field: name, town and licence class from the FCC list, or
+        why the call isn't there. An expired licence shows in the error colour."""
+        text, problem = callsign_summary(entry.get_text())
+        label.set_text(text)
+        style = label.get_style_context()
+        style.remove_class("error" if not problem else "muted")
+        style.add_class("error" if problem else "muted")
 
     def _show_log(self):
         source = self.log_combo.get_active_id()
@@ -5625,6 +5711,10 @@ class Launcher(Gtk.Window):
         call, note = self.note_call.get_text().strip(), self.note_text.get_text().strip()
         if not (call or note):
             return
+        found = callsign_lookup(call)
+        if found:  # the note says who it was, from the FCC list
+            who = ", ".join(filter(None, [found["name"], " ".join(filter(None, [found["city"], found["state"]]))]))
+            note = " · ".join(filter(None, [who, note]))
         freq = format_freq(rigctld_query(*RIGCTLD, "f"))
         mode = rigctld_query(*RIGCTLD, "m")
         os.makedirs(os.path.dirname(NOTES_PATH), exist_ok=True)
@@ -5683,6 +5773,10 @@ class Launcher(Gtk.Window):
         for btn in self.ncs_entry_btns:
             row.pack_start(btn, False, False, 0)
         page.pack_end(row, False, False, 0)
+        # Who the From call is, from the offline FCC list, as it's typed.
+        self.ncs_lookup = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.ncs_from.connect("changed", lambda w: self._show_callsign(w, self.ncs_lookup))
+        page.pack_end(self.ncs_lookup, False, False, 0)
 
         self.ncs_path, self.ncs, self._ncs_filling = None, None, False
         page.connect("map", lambda *_: self._net_show(reload=True))
@@ -5769,6 +5863,9 @@ class Launcher(Gtk.Window):
                  "to": to or (self.ncs.get("callsign", "") if sender else ""), "message": message}
         if checkin:
             entry["checkin"] = True
+            found = callsign_lookup(sender)
+            if found:
+                entry.update(name=found["name"], city=found["city"], state=found["state"])
         self.ncs["entries"].append(entry)
         save_net(self.ncs_path, self.ncs)
         for widget in (self.ncs_from, self.ncs_to, self.ncs_message):

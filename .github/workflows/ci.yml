@@ -35,7 +35,7 @@ jobs:
           roles/launcher/files/emcomm-ics roles/radio/files/emcomm-nwr roles/radio/files/emcomm-adsb roles/apps/files/emcomm-library
           roles/launcher/files/emcomm-backup roles/radio/files/emcomm-recorder roles/radio/files/emcomm-stream roles/kiosk/files/emcomm-display
           roles/apps/files/emcomm-scanner roles/apps/files/emcomm-mesh-nodes roles/radio/files/emcomm-igate
-          roles/kiosk/files/emcomm-splash roles/radio/files/emcomm-find-radio
+          roles/kiosk/files/emcomm-splash roles/radio/files/emcomm-find-radio roles/launcher/files/emcomm-callsign
       - name: Helper tests
         run: |
           python tests/test_apply_settings.py
@@ -56,6 +56,7 @@ jobs:
           python tests/test_map_prepare.py
           python tests/test_mesh_nodes.py
           python tests/test_splash.py
+          python tests/test_callsign.py
 
   launcher:
     # The real launcher, headless: the Forms page, the ICS-213 editor, Send over the
