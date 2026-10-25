@@ -59,6 +59,7 @@ jobs:
           python tests/test_splash.py
           python tests/test_callsign.py
           python tests/test_guide.py
+          python tests/test_gi_versions.py
 
   launcher:
     # The real launcher, headless: the Forms page, the ICS-213 editor, Send over the
