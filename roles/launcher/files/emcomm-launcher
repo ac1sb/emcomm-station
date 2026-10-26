@@ -70,7 +70,7 @@ RIGCTLD2 = (_rig2[0], int(_rig2[1]))
 RADIO2_PATH = os.environ.get("EMCOMM_RADIO2", "/etc/emcomm/radio2.json")
 RIG2_CAT_DEV = os.environ.get("EMCOMM_RIG2_CAT", "/dev/rig2-cat")
 # Apps that can use radio 2: (key in app-radio.json and audio.json, name).
-RADIO2_CHOICES = [("wsjtx", "WSJT-X"), ("js8call", "JS8Call"), ("fldigi", "fldigi"),
+RADIO2_CHOICES = [("wsjtx", "WSJT-X"), ("js8call", "JS8Call"), ("fldigi", "fldigi"), ("qsstv", "QSSTV (SSTV)"),
                   ("direwolf", "Packet and APRS (Direwolf)"), ("varafm", "VARA FM")]
 APP_SETUP_CMD = os.environ.get("EMCOMM_APP_SETUP", "emcomm-app-setup")
 # Saved radios (Settings > Radio > Profile). The one in use is also in station.json.
@@ -79,8 +79,8 @@ PROFILE_FIELDS = ("rig_model", "cat_baud", "cat_match", "ptt_method", "ptt_match
 PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9 +/()._-]{1,60}$")  # as emcomm-apply-settings checks radio_name
 # Apps whose rig settings Save writes (emcomm-app-setup radio), and where the operator can opt out.
 APP_RADIO_PATH = os.path.expanduser("~/.config/emcomm/app-radio.json")
-RADIO_APPS = [("wsjtx", "WSJT-X"), ("js8call", "JS8Call"), ("fldigi", "fldigi"), ("pat", "Pat (Winlink, VARA, ARDOP)"),
-              ("xastir", "Xastir (APRS)")]
+RADIO_APPS = [("wsjtx", "WSJT-X"), ("js8call", "JS8Call"), ("fldigi", "fldigi"), ("qsstv", "QSSTV (SSTV)"),
+              ("pat", "Pat (Winlink, VARA, ARDOP)"), ("xastir", "Xastir (APRS)")]
 DATA_MODE_CHOICES = [("data", "Data / Pkt (DATA-U)"), ("usb", "USB"), ("none", "Leave the radio's mode (FM)")]
 BAUD_RATES = ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
 GPS_FIXED = [("", "Automatic (u-blox USB GPS)")]
@@ -4918,8 +4918,8 @@ class Launcher(Gtk.Window):
 
         # Permission to change other apps' settings: off until the operator ticks it.
         allow_row = Gtk.Box(spacing=8)
-        self.allow_apps_check = Gtk.CheckButton(label="Let Emcomm-CNC set up WSJT-X, JS8Call, fldigi, Pat and Xastir "
-                                                      "for this radio")
+        self.allow_apps_check = Gtk.CheckButton(label="Let Emcomm-CNC set up WSJT-X, JS8Call, fldigi, QSSTV, Pat "
+                                                      "and Xastir for this radio")
         self.allow_apps_check.set_tooltip_text("Off: Emcomm-CNC never changes another app's settings")
         self.allow_apps_check.connect("toggled", self._allow_apps_toggled)
         allow_row.pack_start(self.allow_apps_check, True, True, 0)
@@ -5154,7 +5154,7 @@ class Launcher(Gtk.Window):
                                    buttons=Gtk.ButtonsType.NONE,
                                    text="Let Emcomm-CNC change other apps' radio settings?")
         dialog.format_secondary_text(
-            "Each time you save here, start Emcomm-CNC, or open WSJT-X, JS8Call, fldigi, Pat or Xastir from its "
+            "Each time you save here, start Emcomm-CNC, or open WSJT-X, JS8Call, fldigi, QSSTV, Pat or Xastir from its "
             "tile, Emcomm-CNC writes into that app's own settings: rig control through Emcomm-CNC (Hamlib NET "
             "rigctl, 127.0.0.1:4532), PTT by CAT (or VOX), the mode for digital apps and split, your callsign "
             "and grid square. Nothing else in the app is changed. Sound cards are left as they are: Emcomm-CNC "

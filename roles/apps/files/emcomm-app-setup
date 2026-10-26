@@ -2,7 +2,7 @@
 """Fill in an app's settings from the station settings before it starts.
 
   emcomm-app-setup radio     write the radio in Settings > Radio into every app
-                             installed (WSJT-X, JS8Call, fldigi, Pat, Xastir), skipping
+                             installed (WSJT-X, JS8Call, fldigi, QSSTV, Pat, Xastir), skipping
                              any that's open; one JSON line per app
   emcomm-app-setup pat       callsign, grid and rig control in Pat's config
   emcomm-app-setup direwolf  write the Direwolf config and print its path
@@ -12,6 +12,8 @@
   emcomm-app-setup wsjtx     callsign, grid and rig control
   emcomm-app-setup fldigi    callsign, grid and rig control, and the radio put in the
                              mode for digital apps (DATA-U or USB), which fldigi doesn't set
+  emcomm-app-setup qsstv     callsign, grid and rig control, and the radio put in the
+                             mode for digital apps, like fldigi
   emcomm-app-setup flmsg     dates and times in UTC (2026-10-21, 1356Z), the full
                              window with flmsg's own forms, and the callsign if
                              flmsg has none yet
@@ -26,7 +28,7 @@ Sound cards are left alone too: emcomm-audio moves radio apps onto the radio's s
 card. Before a file is changed, the old one is copied to
 ~/.local/state/emcomm/config-backups (the last 5 of each).
 
-Nothing in WSJT-X, JS8Call, fldigi, Pat or Xastir is changed until the operator allows
+Nothing in WSJT-X, JS8Call, fldigi, QSSTV, Pat or Xastir is changed until the operator allows
 it (Settings > Radio, saved as "allowed": true in ~/.config/emcomm/app-radio.json), and
 an app listed there under "leave_alone" is never touched.
 An app that's open writes its own settings back when it closes, so it's skipped and
@@ -65,6 +67,7 @@ RADIO_APPS = {
     "wsjtx": ("WSJT-X", "wsjtx", ".config/WSJT-X.ini"),
     "js8call": ("JS8Call", "js8call", ".config/JS8Call.ini"),
     "fldigi": ("fldigi", "fldigi", ".fldigi/fldigi_def.xml"),
+    "qsstv": ("QSSTV", "qsstv", ".config/ON4QZ/qsstv_9.0.conf"),
     "pat": ("Pat", "pat", ".config/pat/config.json"),
     "xastir": ("Xastir", "xastir", ".xastir/config/xastir.cnf"),
 }
@@ -385,9 +388,28 @@ def setup_fldigi(station):
     return path, changed, backup
 
 
+def setup_qsstv(station):
+    """QSSTV's settings: CAT through rigctld (Hamlib "NET rigctl", which QSSTV names by the
+    model number right-aligned in 5 characters; any other spelling and it can't find the
+    model and quits), PTT by CAT or else VOX, and the callsign and locator. PTT is "CAT
+    (Data port)" (Hamlib's RIG_PTT_RIG_MICDATA, 5), which sends "T 3" to rigctld: with "CAT
+    (Voice port)" (1), Hamlib 4.5 refuses QSSTV's PTT ("Invalid parameter") and never keys."""
+    path = os.path.join(HOME, RADIO_APPS["qsstv"][2])
+    text = merge_qt_ini(read(path), {"enableCAT": "true", "radioModel": '"    2 Hamlib,NET rigctl"',
+                                     "serialPort": station.get("rig", RIGCTLD), "pttType": "5"}, "radio1")
+    text = merge_qt_ini(text, {"useVOX": "true" if ptt_by_vox(station) else "false"}, "TX")
+    personal = {"callsign": station.get("callsign"), "locator": station.get("grid")}
+    personal = {key: value for key, value in personal.items() if value}
+    if personal:
+        text = merge_qt_ini(text, personal, "PERSONAL")
+    changed, backup = write_changed(path, text)
+    return path, changed, backup
+
+
 SETUP = {"wsjtx": lambda st: setup_qt_ini(for_app(st, "wsjtx"), "WSJT-X.ini"),
          "js8call": lambda st: setup_qt_ini(for_app(st, "js8call"), "JS8Call.ini"),
-         "fldigi": lambda st: setup_fldigi(for_app(st, "fldigi")), "pat": setup_pat, "xastir": setup_xastir}
+         "fldigi": lambda st: setup_fldigi(for_app(st, "fldigi")),
+         "qsstv": lambda st: setup_qsstv(for_app(st, "qsstv")), "pat": setup_pat, "xastir": setup_xastir}
 
 
 # Hamlib's names for the mode for digital apps; "none" leaves the radio as it is.
@@ -487,8 +509,8 @@ def main(argv):
             path = os.path.join(HOME, RADIO_APPS[app][2])
         else:
             path = SETUP[app](station)[0]
-            if app == "fldigi":
-                set_rig_mode(for_app(station, "fldigi"))
+            if app in ("fldigi", "qsstv"):  # neither puts the radio in a mode itself
+                set_rig_mode(for_app(station, app))
     elif app == "direwolf":
         path = setup_direwolf(station)
     elif app == "flmsg":

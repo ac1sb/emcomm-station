@@ -111,7 +111,7 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   touchscreen turns with the screen. A change to the screen goes back by itself
   after 15 seconds unless you tap **Keep**, so a setting the screen can't show
   can't lock you out.
-- **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, flmsg (ICS-213 forms; set to date and time everything in UTC, e.g. 1356Z), Pat for
+- **Radio apps:** JS8Call, WSJT-X, fldigi with flamp, QSSTV for pictures (SSTV), flmsg (ICS-213 forms; set to date and time everything in UTC, e.g. 1356Z), Pat for
   Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf), Direwolf for
   packet, Xastir for APRS, the Meshtastic (`contact`) and MeshCore
   (`meshcore-cli`) clients for LoRa mesh radios, Meshtastic's own desktop app

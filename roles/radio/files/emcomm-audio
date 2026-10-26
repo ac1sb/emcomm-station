@@ -57,7 +57,7 @@ RADIO2_CARD = os.environ.get("EMCOMM_RADIO2_CARD", "/proc/asound/rig2audio")
 # matched as part of the name: Wine calls VARA FM "VARAFM.exe").
 RADIO2_APPS = {
     "wsjtx": ("wsjt-x", "wsjtx"), "js8call": ("js8call",), "fldigi": ("fldigi", "flamp"),
-    "direwolf": ("direwolf",), "varafm": ("varafm",), "ardop": ("ardop",),
+    "qsstv": ("qsstv",), "direwolf": ("direwolf",), "varafm": ("varafm",), "ardop": ("ardop",),
 }
 SILENT = "emcomm_silent"
 # PipeWire versions put the ALSA card number under different keys.
