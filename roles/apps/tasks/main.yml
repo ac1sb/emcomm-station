@@ -86,6 +86,23 @@
         state: link
       loop: "{{ apps_mesh_clients | dict2items }}"
 
+    # Meshtastic's own command line (it comes with the Mesh text client), for the
+    # terminal. emcomm-mesh-check stands in front of it so it opens the mesh radio's
+    # port, never the radio's CAT or PTT port. A meshtastic already there is left alone.
+    - name: Check for a meshtastic command already on the PATH
+      ansible.builtin.stat:
+        path: /usr/local/bin/meshtastic
+        follow: false
+      register: apps_meshtastic_cli
+
+    - name: Put Meshtastic's command line on the PATH
+      ansible.builtin.file:
+        src: /usr/local/bin/emcomm-mesh-check
+        dest: /usr/local/bin/meshtastic
+        state: link
+      when: not apps_meshtastic_cli.stat.exists or
+        (apps_meshtastic_cli.stat.islnk and apps_meshtastic_cli.stat.lnk_source == '/usr/local/bin/emcomm-mesh-check')
+
 # Meshtastic Desktop, Meshtastic's own app (the desktop build of its Android app),
 # from Flathub, which builds it from Meshtastic's source and signs it. It's large
 # (about 1 GB with its runtime), so it's only installed from its tile; once there,

@@ -45,7 +45,7 @@ rm -f /etc/modprobe.d/emcomm-rtl-sdr.conf /etc/sudoers.d/emcomm-update /etc/sudo
 echo "== Removing its programs, menu entry and login session =="
 rm -f /usr/local/bin/emcomm-* /usr/local/sbin/emcomm-*
 # Programs it put in /usr/local/bin, unless they were there before.
-for prog in ardopcf winetricks chirp contact meshcore-cli meshtastic-desktop; do
+for prog in ardopcf winetricks chirp contact meshcore-cli meshtastic-desktop meshtastic; do
   if ! grep -qx "$prog" "$BEFORE/usr-local-bin" 2>/dev/null; then
     rm -f "/usr/local/bin/$prog"
   fi

@@ -36,7 +36,7 @@ jobs:
           roles/launcher/files/emcomm-backup roles/radio/files/emcomm-recorder roles/radio/files/emcomm-stream roles/kiosk/files/emcomm-display
           roles/apps/files/emcomm-scanner roles/apps/files/emcomm-mesh-nodes roles/radio/files/emcomm-igate
           roles/kiosk/files/emcomm-splash roles/radio/files/emcomm-find-radio roles/launcher/files/emcomm-callsign
-          roles/launcher/files/emcomm-guide
+          roles/launcher/files/emcomm-guide roles/diagnostics/files/emcomm-mesh-check
       - name: Helper tests
         run: |
           python tests/test_apply_settings.py
@@ -56,6 +56,7 @@ jobs:
           python tests/test_scanner.py
           python tests/test_map_prepare.py
           python tests/test_mesh_nodes.py
+          python tests/test_mesh_check.py
           python tests/test_splash.py
           python tests/test_callsign.py
           python tests/test_guide.py
@@ -67,10 +68,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install GTK, Poppler and a virtual display
+      - name: Install GTK, Poppler, VTE and a virtual display
         run: >-
           sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends
-          python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-poppler-0.18 gir1.2-pango-1.0
+          python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-poppler-0.18 gir1.2-pango-1.0 gir1.2-vte-2.91
           python3-yaml python3-pypdf xvfb fonts-dejavu-core
       - name: Launcher smoke test
         run: EMCOMM_SMOKE_REQUIRED=1 xvfb-run -a -s "-screen 0 1024x600x24" python3 tests/smoke_launcher.py
