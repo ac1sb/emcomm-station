@@ -417,6 +417,7 @@
 
     - name: Enable 32-bit packages (VARA is a 32-bit Windows program)
       ansible.builtin.command: dpkg --add-architecture i386
+      register: apps_i386_added
       when: "'i386' not in apps_foreign_arch.stdout_lines"
       changed_when: true
 
@@ -424,6 +425,9 @@
       ansible.builtin.apt:
         name: [wine, "wine32:i386", cabextract, unzip, udisks2, gir1.2-webkit2-4.1]
         update_cache: true
+        # Just turned on, 32-bit packages need a fresh list; otherwise one from
+        # the last 12 hours will do (see Install base packages).
+        cache_valid_time: "{{ 0 if apps_i386_added is changed else 43200 }}"
         install_recommends: false
 
     - name: Install winetricks

@@ -47,6 +47,13 @@ install -m 0644 /dev/null "$LOG"
 exec > >(tee -a "$LOG") 2>&1
 echo "emcomm-update ${*:-} started $(date -u '+%Y-%m-%d %H:%M UTC')"
 
+# Each step's time is printed as it finishes (see callback_plugins/emcomm_times.py),
+# so a slow one can be seen rather than guessed at.
+took() {
+  local s=$((SECONDS - $1))
+  if ((s < 60)); then echo "${s}s"; else printf '%dm %02ds\n' $((s / 60)) $((s % 60)); fi
+}
+
 # What failed, in a few lines at the end, so it needn't be found in the scroll.
 summary() {
   local rc=$?
@@ -58,19 +65,21 @@ summary() {
     echo "The whole log is on the Logs page (Station updates) and in $LOG."
   else
     grep -h "EMCOMM WARNING" "$LOG" | sed 's/^ *"msg": *"//; s/",\?$//' | sort -u || true
-    echo "Done."
+    echo "Done in $(took 0)."
   fi
 }
 trap summary EXIT
 
 if [ -z "$app" ]; then
   echo "== Downloading updates =="
+  start=$SECONDS
   # Never stop to ask for a GitHub login: there's no one to type it.
   if [ -d .git ] && GIT_TERMINAL_PROMPT=0 git pull --ff-only; then
     :
   else
     echo "Couldn't download updates (no internet?). Rebuilding from the copy on this station."
   fi
+  echo "  took $(took "$start")"
   echo
   echo "== Rebuilding the station =="
   ansible-playbook site.yml
