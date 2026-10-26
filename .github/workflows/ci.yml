@@ -25,6 +25,7 @@ jobs:
           shellcheck roles/diagnostics/files/emcomm-diag roles/diagnostics/files/emcomm-ptt-test
           roles/base/files/emcomm-update roles/apps/files/emcomm-start roles/apps/files/emcomm-install-vara
           roles/kiosk/files/emcomm-session install-desktop.sh uninstall-desktop.sh
+          roles/apps/files/emcomm-build-voacap
           && shellcheck -s bash roles/kiosk/files/bash_profile roles/kiosk/files/autostart
       - name: Python compiles
         run: >-
@@ -37,6 +38,7 @@ jobs:
           roles/apps/files/emcomm-scanner roles/apps/files/emcomm-mesh-nodes roles/radio/files/emcomm-igate
           roles/kiosk/files/emcomm-splash roles/radio/files/emcomm-find-radio roles/launcher/files/emcomm-callsign
           roles/launcher/files/emcomm-guide roles/diagnostics/files/emcomm-mesh-check roles/launcher/files/emcomm-files
+          roles/launcher/files/emcomm-voacap
       - name: Helper tests
         run: |
           python tests/test_apply_settings.py
@@ -60,6 +62,7 @@ jobs:
           python tests/test_splash.py
           python tests/test_callsign.py
           python tests/test_files.py
+          python tests/test_voacap.py
           python tests/test_guide.py
           python tests/test_gi_versions.py
 
@@ -76,3 +79,27 @@ jobs:
           python3-yaml python3-pypdf xvfb fonts-dejavu-core
       - name: Launcher smoke test
         run: EMCOMM_SMOKE_REQUIRED=1 xvfb-run -a -s "-screen 0 1024x600x24" python3 tests/smoke_launcher.py
+
+  voacap:
+    # VOACAP built the way the station builds it (emcomm-build-voacap, at the commit in
+    # roles/apps/defaults), then checked against voacapl's own published sample output
+    # and for band planner predictions that look like HF does.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the build tools
+        run: >-
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends
+          gfortran make autoconf automake
+      - name: Download VOACAP at the station's commit
+        run: |
+          defaults=roles/apps/defaults/main.yml
+          repo=$(sed -n 's/^apps_voacap_repo: *//p' "$defaults")
+          commit=$(sed -n 's/^apps_voacap_commit: *//p' "$defaults")
+          git init -q "$RUNNER_TEMP/voacapl"
+          git -C "$RUNNER_TEMP/voacapl" fetch -q --depth 1 "$repo" "$commit"
+          git -C "$RUNNER_TEMP/voacapl" checkout -q FETCH_HEAD
+      - name: Build and install it
+        run: sudo roles/apps/files/emcomm-build-voacap "$RUNNER_TEMP/voacapl" /usr/local
+      - name: Band planner tests with the real VOACAP
+        run: EMCOMM_VOACAP_SRC="$RUNNER_TEMP/voacapl" EMCOMM_VOACAP_REQUIRED=1 python3 tests/test_voacap.py -v

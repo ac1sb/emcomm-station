@@ -81,6 +81,7 @@ launcher_apps:
   - { code: MCR, icon: meshcore, name: MC text, detail: MeshCore in text, command: meshcore-cli, app: meshcore, run: [emcomm-start, meshcore] }
   - { code: NWR, icon: weather-radio, name: NOAA radio, detail: Alerts · no internet, command: emcomm-nwr, page: nwr }
   - { code: ONL, icon: online, name: Online, detail: Needs the internet, command: emcomm-online, page: online }
+  - { code: BND, icon: bands, name: Band planner, detail: Best HF band by hour, command: emcomm-launcher, page: bands }
   - { code: MAP, icon: map, name: Map, detail: Gateways · stations heard, command: emcomm-map, app: map, run: [emcomm-map], audio: listen }
   - { code: CHP, icon: chirp, name: CHIRP, detail: Program handhelds · mobiles, command: chirp, app: chirp, run: [chirp] }
   - { code: SCN, icon: scanner, name: Scanner, detail: SDR · police fire EMS, command: emcomm-scanner, app: scanner, run: [emcomm-scanner], audio: listen }

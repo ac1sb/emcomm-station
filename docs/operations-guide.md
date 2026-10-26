@@ -64,6 +64,7 @@ Every time and date the station writes (forms, logs, recordings, net logs) is in
 - [Meshtastic and MeshCore](#meshtastic-and-meshcore)
 - [Map](#map)
 - [Online, Browser and Library](#online-browser-and-library)
+- [Band planner (VOACAP)](#band-planner-voacap)
 - [CHIRP](#chirp)
 - [Settings](#settings)
 - [Diagnostics](#diagnostics)
@@ -1200,6 +1201,50 @@ internet; any `.zim` on a USB stick shows up too.
 
 ---
 
+## Band planner (VOACAP)
+
+**Band planner** (tile) says which HF band is most likely to reach a place, hour by
+hour, with no internet. It runs VOACAP, the propagation program the Voice of America
+built and HF broadcasters and the military still plan with, from the station's grid
+square (Settings > User) to the place you pick.
+
+1. Pick the place at the top: **Nearby** (100, 250, 500 or 1000 km away, for NVIS
+   and in-state nets), a **US** state capital, a **DX** city, or **Another grid
+   square…** for anywhere else.
+2. Check the row under it: the mode (**Voice (SSB)**, **Winlink (VARA HF, ARDOP)**,
+   **CW**, **FT8 and JS8Call**), the antenna, the power, the noise where you are and
+   the month.
+3. Read the chart: a row per band (10 m at the top), a column per UTC hour, the
+   current hour outlined. Each number is the share of days in that month the band
+   gets through (the signal is strong enough for that mode over the noise):
+
+| Colour | Means |
+| --- | --- |
+| Green, 75 to 100 | Gets through on most days: plan on it |
+| Amber, 40 to 74 | Often: have a second band ready |
+| Grey, 10 to 39 | Now and then |
+| `·` | Hardly ever (under 10%) |
+
+The line above the chart names the best bands right now and the MUF (the highest
+frequency the ionosphere bends back to that place, this hour). Above the chart:
+the distance and the beam heading.
+
+- **Antenna:** the same antenna is assumed at both ends. A dipole is cut for each
+  band, at the height shown. **Low dipole, 5 m (NVIS)** sends most of its signal
+  straight up, which is what reaches 0 to 500 km on 80 and 40 m.
+- **Sunspot number (SSN):** VOACAP plans with the month's smoothed sunspot number.
+  It's NOAA's forecast, saved by the Online page once a week when the station is
+  online, or a built-in estimate before that (the line under the chart says which).
+  Type another number to see what a different month of the solar cycle looks like;
+  picking another month goes back to the forecast.
+- **What it can't see:** VOACAP predicts the month's usual conditions. A solar flare
+  (radio blackout, by day) or a geomagnetic storm (high K index) closes bands it says
+  are open: check **Online > Propagation**, and NOAA's scales there, when the band
+  is dead.
+- **Install:** VOACAP isn't on the station at first. The page offers **Install
+  VOACAP**, which downloads it and builds it on the station (a few minutes, needs
+  the internet once). Update station keeps it after that.
+
 ## CHIRP
 
 Programs handhelds and mobiles over their programming cable. The station keeps
@@ -1476,6 +1521,7 @@ app and never transmit:
 | Logs, Recorder, Reference, gateway finder (from the saved list) | Updating the gateway list |
 | Scanner, Gqrx, NOAA radio alerts, ADS-B aircraft | Broadcastify, the APRS iGate |
 | Map (offline), Library (books already downloaded) | Library downloads, Update station |
+| Band planner (VOACAP), with the last saved sunspot forecast | Refreshing the sunspot forecast (Online page, weekly) |
 | GPS position and time; position from a Meshtastic radio's GPS | Online callsign lookup with QRZ and aprs.fi (earlier lookups still show) |
 | Callsign and DMR ID lookup in Net control and Logs (offline FCC and RadioID lists) | Refreshing those lists (Update station, weekly) |
 

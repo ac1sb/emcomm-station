@@ -151,6 +151,59 @@
       fallback: The MC text tile still works.
   tags: [meshy]
 
+# VOACAP for the Band planner page: voacapl (VOACAP for Linux, github.com/jawatson/voacapl),
+# built from its source at a fixed commit, since Debian only packages it from forky
+# on. Built only from the planner's Install button (a few minutes); once there,
+# Update station rebuilds it when apps_voacap_commit changes. A failure is
+# reported, but doesn't stop the rest of the station updating.
+- name: Check whether VOACAP is installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/voacapl
+  register: apps_voacap_bin
+  tags: [voacap]
+
+- name: Install VOACAP
+  tags: [voacap]
+  when: apps_voacap_bin.stat.exists or 'voacap' in ansible_run_tags
+  block:
+    - name: Read the installed VOACAP commit
+      ansible.builtin.slurp:
+        src: /usr/local/share/voacapl/emcomm-commit
+      register: apps_voacap_installed
+      failed_when: false
+
+    - name: Build VOACAP
+      when: (apps_voacap_installed.content | default('') | b64decode | trim) != apps_voacap_commit
+      block:
+        - name: Install the tools that build VOACAP
+          ansible.builtin.apt:
+            name: [git, gfortran, make, autoconf, automake]
+            install_recommends: false
+
+        - name: Download the VOACAP source
+          ansible.builtin.git:
+            repo: "{{ apps_voacap_repo }}"
+            dest: /opt/emcomm/src/voacapl
+            version: "{{ apps_voacap_commit }}"
+            force: true
+
+        - name: Build and install VOACAP
+          ansible.builtin.script: emcomm-build-voacap /opt/emcomm/src/voacapl /usr/local
+          changed_when: true
+
+        - name: Remember the installed VOACAP commit
+          ansible.builtin.copy:
+            content: "{{ apps_voacap_commit }}\n"
+            dest: /usr/local/share/voacapl/emcomm-commit
+            mode: "0644"
+  rescue:
+    - name: Report that VOACAP didn't build
+      ansible.builtin.debug:
+        msg: >-
+          EMCOMM WARNING: VOACAP didn't build ({{ ansible_failed_task.name }}:
+          {{ (ansible_failed_result.stderr | default(ansible_failed_result.msg | default(''))) | trim | truncate(300) }}).
+          The Band planner needs it; everything else carried on.
+
 # CHIRP isn't packaged by Debian. Its download site (archive.chirpmyradio.com)
 # sits behind a Cloudflare check that refuses scripts, so CHIRP is installed
 # from its source on GitHub instead: pure Python, with its libraries from Debian.
