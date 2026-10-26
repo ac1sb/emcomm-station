@@ -11,6 +11,7 @@
       - python3-pypdf  # fills in the ICS-213 form
       - python3-markdown  # turns the operations guide into a page
       - gir1.2-webkit2-4.1  # shows the operations guide
+      - gir1.2-vte-2.91  # the terminal (Diagnostics > Terminal)
     install_recommends: false
 
 - name: Install the tile icons

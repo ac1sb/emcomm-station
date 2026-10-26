@@ -1,6 +1,7 @@
 #!/bin/bash
 # Hardware and service status for the Diagnostics screen (and for SSH sessions).
-# Usage: emcomm-diag [usb|ports|audio|services|events|rig|gps|all]
+# Usage: emcomm-diag [usb|ports|audio|services|events|rig|gps|mesh|log|all]
+# mesh (asks the Meshtastic radio) and log aren't in all.
 set -u
 
 # shellcheck disable=SC1091
@@ -106,6 +107,20 @@ show_events() {
     echo "none"
 }
 
+show_mesh() {
+  section "Mesh radio (Meshtastic, USB)"
+  if command -v emcomm-mesh-check >/dev/null; then
+    timeout 75 emcomm-mesh-check || true
+  else
+    echo "emcomm-mesh-check isn't installed: run Update station"
+  fi
+}
+
+show_log() {
+  section "Warnings and errors since start-up (UTC, latest 40)"
+  journalctl -b -p warning --utc -o short-iso --no-pager -q 2>/dev/null | tail -n 40
+}
+
 case "${1:-all}" in
   usb) show_usb ;;
   ports) show_ports ;;
@@ -114,6 +129,8 @@ case "${1:-all}" in
   rig) show_rig ;;
   events) show_events ;;
   gps) show_gps ;;
+  mesh) show_mesh ;;
+  log) show_log ;;
   all) show_usb; show_ports; show_audio; show_services; show_rig; show_gps; show_events ;;
-  *) echo "usage: $0 [usb|ports|audio|services|events|rig|gps|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [usb|ports|audio|services|events|rig|gps|mesh|log|all]" >&2; exit 2 ;;
 esac

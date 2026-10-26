@@ -296,8 +296,14 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
 - **Update station** (in Settings): downloads the latest Emcomm-CNC and installs
   anything missing, with progress on screen. No terminal or password needed.
 - **Diagnostics:** USB devices with vendor:product IDs, radio ports, sound cards,
-  services, recent USB events, a read-frequency check and a 2-second PTT test.
-  The same report is available over SSH with `emcomm-diag`.
+  services, recent USB events, a read-frequency check and a 2-second PTT test, as
+  one report or one check at a time from a searchable list. **Mesh radio** asks a
+  USB Meshtastic radio about its GPS, fix and settings (`emcomm-mesh-check`).
+  **Terminal** (Ctrl+Alt+T) is a built-in command line as the station user, with
+  touch keys (Esc, Tab, Ctrl+C, arrows) and a searchable list of station commands
+  that types one in for Enter to run; `meshtastic` there is Meshtastic's own command
+  line, kept off the radio's CAT and PTT ports. The same report is available over
+  SSH with `emcomm-diag`.
 
 ![Home screen in light mode](docs/home-light.png)
 

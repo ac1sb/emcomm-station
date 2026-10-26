@@ -736,6 +736,53 @@ def main():
         check(folder.get_style_context().has_class("tapped") and win.stack.get_visible_child_name() == "folder",
               "folder tap flashes and opens")
 
+    # Diagnostics: a searchable list of checks, the mesh radio only when picked.
+    win.stack.set_visible_child_name("home")
+    pump(0.2)
+    win.stack.set_visible_child_name("diagnostics")
+    pump(0.5)
+    check(win.diag_check.get_active_id() == "all" and "mesh" in [i for i, _ in win.diag_check.items],
+          "Diagnostics: list of checks, Everything first")
+    check(win.output.get_buffer().get_text(*win.output.get_buffer().get_bounds(), False).startswith(
+        "$ emcomm-diag all"), "Diagnostics runs Everything when it opens")
+    # Terminal: a shell as this user, touch keys, and station commands typed in at the prompt.
+    if L.Vte is None:
+        print("skipped: the terminal (gir1.2-vte-2.91 isn't installed)")
+    else:
+        def screen_text():
+            try:
+                return win.terminal.get_text_format(L.Vte.Format.TEXT) or ""
+            except AttributeError:  # VTE before 0.76
+                return win.terminal.get_text(None, None)[0] or ""
+
+        win.open_terminal()
+        pump(2)
+        check(win.stack.get_visible_child_name() == "terminal" and win.term_pid, "Terminal: a shell started")
+        check("Station terminal" not in screen_text() and "Terminal, as" in screen_text(),
+              "Terminal: says whose shell it is (desktop mode here)")
+        who = next(n for n, (_l, cmd) in enumerate(L.TERMINAL_COMMANDS) if cmd == "id")
+        win.term_commands.set_active_id(str(who))
+        pump(0.5)
+        check(win.term_commands.get_active_id() is None and win.term_commands.label.get_text() == "Station commands…",
+              "Terminal: the list goes back to its title once a command is typed in")
+        win._terminal_send("\r")
+        pump(1.5)
+        check("uid=" in screen_text(), "Terminal: a station command runs with Enter")
+        esc = L.Gdk.Event.new(L.Gdk.EventType.KEY_PRESS)
+        esc.keyval, esc.state = L.Gdk.KEY_Escape, 0
+        check(win._on_key(win, esc) is False and win.stack.get_visible_child_name() == "terminal",
+              "Terminal: Esc is the terminal's, not Home")
+        page = win.stack.get_child_by_name("terminal")
+        need = page.get_preferred_width()[0]
+        check(need <= 1024, f"Terminal: fits 1024 px (needs {need})")
+        old_pid = win.term_pid
+        win._terminal_restart()
+        pump(1.5)
+        check(win.term_pid and win.term_pid != old_pid, "Terminal: New starts another shell")
+        os.kill(win.term_pid, 9)
+        pump(1)
+        check(win.term_pid is None and "The shell ended" in screen_text(), "Terminal: says when the shell ends")
+
     # a tile added after the operator arranged Home joins its standard folder
     apps = [{"code": c} for c in ("MSH", "MSD", "APR", "WEB")]
     std = [{"name": "Mesh & APRS", "apps": ["MSH", "MSD", "APR"]}]
