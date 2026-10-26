@@ -87,6 +87,27 @@ class Refreshing(unittest.TestCase):
         mesh.refresh("meshtastic", saved, run=lambda *a: self.fail("the tile has it"))
         self.assertIn("tile has the radio", saved["meshtastic"]["error"])
 
+    def test_the_meshtastic_app_has_the_radio(self):
+        class Done:
+            stdout = "org.mozilla.firefox\norg.meshtastic.MeshtasticDesktop\n"
+        real = mesh.subprocess.run
+        mesh.subprocess.run = lambda *a, **k: Done()
+        try:
+            self.assertTrue(mesh.flatpak_running("org.meshtastic.MeshtasticDesktop"))
+            self.assertTrue(self.old[2]("meshtastic"))
+            Done.stdout = "org.mozilla.firefox\n"
+            self.assertFalse(mesh.flatpak_running("org.meshtastic.MeshtasticDesktop"))
+        finally:
+            mesh.subprocess.run = real
+
+        def missing(*a, **k):
+            raise FileNotFoundError("flatpak")
+        mesh.subprocess.run = missing
+        try:
+            self.assertFalse(mesh.flatpak_running("org.meshtastic.MeshtasticDesktop"))
+        finally:
+            mesh.subprocess.run = real
+
     def test_the_map_gets_a_script(self):
         mesh.save({"meshtastic": {"nodes": []}})
         with open(os.path.join(mesh.OUT, "nodes.js")) as f:

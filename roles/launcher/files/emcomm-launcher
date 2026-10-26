@@ -954,10 +954,11 @@ def standard_order(apps, folders):
     return apply_folders([app.get("code") for app in apps], folders)
 
 
-def arrange_tiles(apps, order):
+def arrange_tiles(apps, order, folders=None):
     """The Home slots in the operator's order: apps (dicts), GAP, PAGE and folders
     ({"folder": name, "apps": [app dicts]}). Apps the saved order doesn't know (new ones)
-    go at the end; codes no longer installed are dropped."""
+    join the folder holding their standard folder-mates (folders), or else go at the end;
+    codes no longer installed are dropped."""
     by_code = {app.get("code"): app for app in apps}
     slots, placed = [], set()
     for code in order if isinstance(order, list) else []:
@@ -976,6 +977,14 @@ def arrange_tiles(apps, order):
         elif code in by_code and code not in placed:
             slots.append(by_code[code])
             placed.add(code)
+    for folder in folders or []:
+        mates = folder.get("apps") or []
+        home = next((slot for slot in slots if is_folder(slot)
+                     and any(a.get("code") in mates for a in slot["apps"])), None)
+        for code in mates:
+            if home is not None and code in by_code and code not in placed and len(home["apps"]) < FOLDER_MAX:
+                home["apps"].append(by_code[code])
+                placed.add(code)
     while slots and slots[-1] in (GAP, PAGE):
         slots.pop()  # new apps join the last page, not an empty one
     return slots + [app for app in apps if app.get("code") not in placed]
@@ -1146,6 +1155,8 @@ def window_app(win, apps, started):
     for app in apps:
         if app.get("command", "").lower() in cls and app.get("command") not in ("wine", "xterm"):
             return app
+        if app.get("window") and app["window"] in win["cls"].lower():
+            return app  # a sandboxed (Flatpak) app's window reports a pid from inside its sandbox
     return None
 
 
@@ -2779,7 +2790,7 @@ class Launcher(Gtk.Window):
     def _slots_from(self, order):
         """Home slots (tile widgets and PAGE markers) for a saved order."""
         slots = []
-        for entry in arrange_tiles(self.config.get("apps", []), order):
+        for entry in arrange_tiles(self.config.get("apps", []), order, self.config.get("folders")):
             if is_folder(entry):
                 slots.append(self._folder_tile(entry["folder"],
                                                [self.app_tiles[a.get("code")] for a in entry["apps"]]))
