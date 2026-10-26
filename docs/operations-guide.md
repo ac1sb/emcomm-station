@@ -203,10 +203,12 @@ save their settings. Turn the radio off after the station.
 
 ### The screen
 
-- **Top bar:** callsign, grid square (from the GPS when one is plugged in), local
-  time and UTC, network status, weather alerts in force, **Rec**, the speaker and
-  microphone icons (sound levels, see [Levels](#levels)), ⌨ (on-screen keyboard) and
-  **⏻** (Settings, Diagnostics, Power).
+- **Top bar:** callsign, grid square (from the GPS when one is plugged in, or
+  **Mesh** from a Meshtastic radio's GPS, see [Position from a Meshtastic
+  radio](#position-from-a-meshtastic-radio)), local time and UTC, network status,
+  weather alerts in force, **Rec**, the speaker and microphone icons (sound levels,
+  see [Levels](#levels)), ⌨ (on-screen keyboard) and **⏻** (Settings, Diagnostics,
+  Power).
 - **Home:** the app tiles, 18 to a page. Swipe sideways, tap ◀ ▶ or press Page
   Up/Down for the next page.
 - **Folders** group related apps under one tile. Standard folders:
@@ -278,7 +280,8 @@ every problem before you go on the air.
    from the radio. If it fails, see [Troubleshooting](#troubleshooting).
 3. **Time.** Check UTC in the top bar against a known source. FT8, JS8Call and VARA
    all fail if the clock is off by more than about a second. With a GPS plugged
-   in, Diagnostics shows whether the clock is following it.
+   in, Diagnostics shows whether the clock is following it. A Meshtastic radio's
+   GPS gives position only, never the time.
 4. **Settings (F3) > Audio.** The **Radio sound card** section should name the
    radio's card (on the FT-710, the C-Media **USB Audio Device**). The **Listening
    speaker** should be the speaker or headphones you want to hear the Scanner and
@@ -1038,8 +1041,47 @@ The app's own map needs the internet for areas it hasn't shown before. The stati
 
 A node takes one connection at a time, so open one mesh tile per node. While a
 tile has the node, the Map's Mesh layer keeps the last list it had. The Mesh
-layer asks the node **Mesh text** or **MC text** last used, so open the text
-tile once if the layer stays empty.
+layer asks the node **Mesh text** or **MC text** last used (or the Meshtastic radio
+picked below for position), so open the text tile once if the layer stays empty.
+
+### Position from a Meshtastic radio
+
+A Meshtastic radio with a GPS (T-Beam, T-Echo, RAK with a GPS module, Wireless
+Tracker and the like) can give the station its grid square when no USB GPS has a fix.
+
+1. Plug the radio in by USB. Check its GPS is on (Meshtastic app > the radio's
+   settings > Position > GPS mode **Enabled**) and it has a view of the sky.
+2. **Settings > Devices > Position from a Meshtastic radio's GPS:** pick the radio's
+   port, then **Save**. The radio's own port only: the radio's CAT and PTT ports and
+   the USB GPS aren't offered, and are never opened.
+3. The top bar shows **● Mesh FN33ld**. When it differs from the saved grid it says
+   "tap to use"; tapping it (or **Settings > User > From GPS**) fills in the grid.
+   Then **Save**.
+
+How it works and its limits:
+
+- The station asks the radio every 30 minutes, for a few seconds, and never while
+  the **Meshtastic** or **Mesh text** tile is open (a radio takes one connection at
+  a time). If you tap the Meshtastic tile in those few seconds and it can't connect,
+  tap Connect again.
+- A USB GPS with a fix always comes first. A fix more than 6 hours old isn't used.
+- A position typed into the radio (fixed position) doesn't count: that's the grid you
+  already typed.
+- **Position only, not time.** Meshtastic gives the time in whole seconds, from a
+  report sent whenever the radio gets round to it, with no timing pulse. At best the
+  clock would be right to about a second, often worse. FT8 needs it within about half
+  a second (WSJT-X stops decoding at 2 to 3 seconds out), so the clock is never set
+  from the mesh radio. For time with no internet, plug in a USB GPS: any u-blox puck
+  (VK-162 and the like, about $15 to $25) works with no setup and keeps the clock
+  within about a tenth of a second, plenty for FT8.
+- Top bar words when there's no position: **Mesh asking** (first answer still to
+  come), **Mesh no fix yet**, **Mesh fix too old**, **Mesh no GPS** (the radio has
+  none), **Mesh GPS off** (switched off in the radio), **Mesh radio busy** (a mesh
+  tile has it). Nothing shows while the radio is unplugged.
+- **Diagnostics > GPS** shows the radio's last position, when it was fixed and asked,
+  and any error.
+
+⚠ **Not yet tested with a real Meshtastic radio on this station.**
 
 ---
 
@@ -1106,7 +1148,7 @@ file, then upload to the radio.
 | --- | --- |
 | User | Callsign, grid square (**From GPS** fills it in), time zone |
 | Radio | Radio profiles; manufacturer and model; baud rate, CAT port, PTT and PTT port; sound card; mode for digital apps; whether Emcomm-CNC sets up the apps; Test CAT and Test PTT. **Save and use this radio** |
-| Devices | GPS port, what's plugged in, **Free the SDR receiver**, **ADS-B receiver** |
+| Devices | GPS port, a Meshtastic radio's GPS for position, what's plugged in, **Free the SDR receiver**, **ADS-B receiver** |
 | Display | Colours (Amber dark, Light, Slate blue, Night red, Sunlight), resolution, text size, rotation, start-up screen |
 | Wi-Fi | Networks (also F6) |
 | Accounts | QRZ, HamQTH, aprs.fi key, contact email |
@@ -1362,10 +1404,10 @@ app and never transmit:
 | Logs, Recorder, Reference, gateway finder (from the saved list) | Updating the gateway list |
 | Scanner, Gqrx, NOAA radio alerts, ADS-B aircraft | Broadcastify, the APRS iGate |
 | Map (offline), Library (books already downloaded) | Library downloads, Update station |
-| GPS position and time | Online callsign lookup with QRZ and aprs.fi (earlier lookups still show) |
+| GPS position and time; position from a Meshtastic radio's GPS | Online callsign lookup with QRZ and aprs.fi (earlier lookups still show) |
 | Callsign and DMR ID lookup in Net control and Logs (offline FCC and RadioID lists) | Refreshing those lists (Update station, weekly) |
 
-Without GPS or internet, the clock drifts. Check UTC against WWV (2.5, 5, 10, 15
+Without a USB GPS or internet, the clock drifts (a Meshtastic radio doesn't set it). Check UTC against WWV (2.5, 5, 10, 15
 MHz) before digital work.
 
 ## Shift change and end of activation

@@ -1,6 +1,7 @@
 """Check emcomm-mesh-nodes reads node positions from Meshtastic and MeshCore, keeps
 the last list when a radio can't be asked, and leaves a radio alone while its tile
-has it.
+has it; and that the station's own position comes from the Meshtastic radio picked
+in Settings > Devices, never from a typed-in position or the radio's own ports.
 
 Run: python3 tests/test_mesh_nodes.py
 """
@@ -114,6 +115,79 @@ class Refreshing(unittest.TestCase):
         mesh.save({"meshtastic": {"nodes": []}})
         with open(os.path.join(mesh.OUT, "nodes.js")) as f:
             self.assertTrue(f.read().startswith("window.MESHNODES = {"))
+
+
+class StationPosition(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old = mesh.CONFIG, mesh.GPS_CONFIG, mesh.OUT, mesh.in_use, mesh.RADIO_PORTS
+        mesh.CONFIG = os.path.join(self.tmp.name, "mesh-{}.json")
+        mesh.GPS_CONFIG = mesh.CONFIG.format("gps")
+        mesh.OUT = os.path.join(self.tmp.name, "out")
+        mesh.in_use = lambda kind: False
+        self.port = os.path.join(self.tmp.name, "usb-RAKwireless_WisCore")
+        self.cat = os.path.join(self.tmp.name, "rig-cat")
+        open(self.port, "w").close()
+        mesh.RADIO_PORTS = (self.cat,)
+        with open(mesh.GPS_CONFIG, "w") as f:
+            json.dump({"port": self.port}, f)
+        self.asked = []
+
+    def tearDown(self):
+        mesh.CONFIG, mesh.GPS_CONFIG, mesh.OUT, mesh.in_use, mesh.RADIO_PORTS = self.old
+        self.tmp.cleanup()
+
+    def answer(self, *args):
+        self.asked.append(args)
+        return {"nodes": [{"name": "AC1SB base"}],
+                "mine": mesh.own_position(MESHTASTIC_FIX, 1, "on")}
+
+    def test_own_position(self):
+        mine = mesh.own_position(MESHTASTIC_FIX, 1, "on")
+        self.assertEqual((mine["lat"], mine["lon"], mine["fix_time"], mine["gps"]), (43.16, -73.07, 1760990000, "on"))
+        typed = {"a": {"num": 1, "position": dict(MESHTASTIC_FIX["a"]["position"], locationSource="LOC_MANUAL")}}
+        self.assertIsNone(mesh.own_position(typed, 1)["lat"])
+        self.assertIsNone(mesh.own_position(MESHTASTIC, 3, "none")["lat"])
+        self.assertIsNone(mesh.own_position(MESHTASTIC_FIX, None)["lat"])
+
+    def test_asks_then_waits(self):
+        entry = mesh.position(run=self.answer)
+        self.assertEqual((entry["lat"], entry["port"], entry["error"]), (43.16, self.port, ""))
+        self.assertEqual(self.asked, [("meshtastic", "usb", self.port)])
+        self.assertEqual(mesh.load()["meshtastic"]["nodes"], [{"name": "AC1SB base"}])  # the map's list too
+        mesh.position(run=self.answer)
+        self.assertEqual(len(self.asked), 1)  # asked lately
+        mesh.position(now=True, run=self.answer)
+        self.assertEqual(len(self.asked), 2)
+
+    def test_keeps_the_last_fix(self):
+        mesh.position(run=self.answer)
+        entry = mesh.position(now=True, run=lambda *a: {"error": "No answer from the radio."})
+        self.assertEqual((entry["lat"], entry["error"]), (43.16, "No answer from the radio."))
+        mesh.in_use = lambda kind: True
+        entry = mesh.position(now=True, run=lambda *a: self.fail("the app has the radio"))
+        self.assertIn("app has the radio", entry["error"])
+        os.remove(self.port)
+        self.assertIn("isn't plugged in", mesh.position(now=True, run=self.answer)["error"])
+
+    def test_never_opens_the_radios_port(self):
+        os.symlink(self.port, self.cat)
+        entry = mesh.position(now=True, run=lambda *a: self.fail("opened the CAT port"))
+        self.assertIn("radio's", entry["error"])
+        self.assertIn("radio's", mesh.refresh("meshtastic", {}, run=lambda *a: self.fail("opened it"))["error"])
+
+    def test_off(self):
+        os.remove(mesh.GPS_CONFIG)
+        self.assertIsNone(mesh.position(run=lambda *a: self.fail("asked with nothing picked")))
+        self.assertEqual(mesh.describe_position({}), ["Meshtastic GPS: off (Settings > Devices)"])
+
+    def test_the_map_uses_the_gps_radio_too(self):
+        self.assertEqual(mesh.connection("meshtastic"), ("usb", self.port))
+        self.assertIsNone(mesh.connection("meshcore"))
+
+
+MESHTASTIC_FIX = {"a": {"num": 1, "position": {"latitude": 43.16, "longitude": -73.07, "altitude": 270,
+                                               "time": 1760990000, "locationSource": "LOC_INTERNAL"}}}
 
 
 if __name__ == "__main__":
