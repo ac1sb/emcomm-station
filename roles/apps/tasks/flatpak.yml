@@ -1,0 +1,47 @@
+---
+# One app from Flathub, which builds it from its makers' source and signs it.
+# Only installed from its tile (they're large); once there, each Update station
+# brings it up to date. A failure is reported, but doesn't stop the rest of the
+# station updating.
+#   apps_flatpak: {name: shown in messages, id: Flathub app id, command: put on the PATH,
+#                  tag: the tile's install tag, fallback: what still works without it}
+- name: Check whether this app is installed, {{ apps_flatpak.name }}
+  ansible.builtin.stat:
+    path: "/usr/local/bin/{{ apps_flatpak.command }}"
+  register: apps_flatpak_wrapper
+
+- name: Install, or update, {{ apps_flatpak.name }}
+  when: apps_flatpak_wrapper.stat.exists or apps_flatpak.tag in ansible_run_tags
+  block:
+    - name: Install Flatpak
+      ansible.builtin.apt:
+        name: flatpak
+        install_recommends: false
+
+    - name: Add the Flathub app store
+      ansible.builtin.command: >-
+        flatpak remote-add --system --if-not-exists flathub {{ apps_flathub_repo }}
+      changed_when: false
+
+    - name: Install or update {{ apps_flatpak.name }}
+      ansible.builtin.command: >-
+        flatpak install --system --noninteractive --or-update flathub {{ apps_flatpak.id }}
+      register: apps_flatpak_install
+      changed_when: "'Nothing to do' not in apps_flatpak_install.stdout"
+
+    - name: Put on the PATH, {{ apps_flatpak.name }}
+      ansible.builtin.copy:
+        content: |
+          #!/bin/sh
+          # {{ apps_flatpak.name }} (Flatpak). The map leaves the mesh radio alone while
+          # it runs (emcomm-mesh-nodes asks flatpak ps).
+          exec flatpak run {{ apps_flatpak.id }} "$@"
+        dest: "/usr/local/bin/{{ apps_flatpak.command }}"
+        mode: "0755"
+  rescue:
+    - name: Report a failed install, {{ apps_flatpak.name }}
+      ansible.builtin.debug:
+        msg: >-
+          EMCOMM WARNING: {{ apps_flatpak.name }} didn't install or update ({{ ansible_failed_task.name }}:
+          {{ (ansible_failed_result.stderr | default(ansible_failed_result.msg | default(''))) | trim | truncate(300) }}).
+          {{ apps_flatpak.fallback }} Everything else carried on.

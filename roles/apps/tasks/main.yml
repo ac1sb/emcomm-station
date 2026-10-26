@@ -86,54 +86,36 @@
         state: link
       loop: "{{ apps_mesh_clients | dict2items }}"
 
-# Meshtastic Desktop, Meshtastic's own app (the desktop build of its Android app),
-# from Flathub, which builds it from Meshtastic's source and signs it. It's large
-# (about 1 GB with its runtime), so it's only installed from its tile; once there,
-# each Update station brings it up to date. A failure is reported, but doesn't stop
-# the rest of the station updating.
+# The full mesh apps, from Flathub (see flatpak.yml). Meshtastic Desktop is
+# Meshtastic's own app (the desktop build of its Android app); Meshy is a MeshCore
+# app made for small touch screens (GTK4, also packaged by Debian from forky on).
 - name: Install Meshtastic Desktop
+  ansible.builtin.include_tasks:
+    file: flatpak.yml
+    apply:
+      tags: [meshtastic-desktop]
+  vars:
+    apps_flatpak:
+      name: Meshtastic Desktop
+      id: "{{ apps_meshtastic_desktop_id }}"
+      command: meshtastic-desktop
+      tag: meshtastic-desktop
+      fallback: The Mesh text tile still works.
   tags: [meshtastic-desktop]
-  block:
-    - name: Check whether Meshtastic Desktop is installed
-      ansible.builtin.stat:
-        path: /usr/local/bin/meshtastic-desktop
-      register: apps_meshtastic_desktop
 
-    - name: Install, or update, Meshtastic Desktop
-      when: apps_meshtastic_desktop.stat.exists or 'meshtastic-desktop' in ansible_run_tags
-      block:
-        - name: Install Flatpak
-          ansible.builtin.apt:
-            name: flatpak
-            install_recommends: false
-
-        - name: Add the Flathub app store
-          ansible.builtin.command: >-
-            flatpak remote-add --system --if-not-exists flathub {{ apps_flathub_repo }}
-          changed_when: false
-
-        - name: Install or update the app
-          ansible.builtin.command: >-
-            flatpak install --system --noninteractive --or-update flathub {{ apps_meshtastic_desktop_id }}
-          register: apps_meshtastic_desktop_install
-          changed_when: "'Nothing to do' not in apps_meshtastic_desktop_install.stdout"
-
-        - name: Put Meshtastic Desktop on the PATH
-          ansible.builtin.copy:
-            content: |
-              #!/bin/sh
-              # Meshtastic Desktop (Flatpak). The map leaves the radio alone while it runs
-              # (emcomm-mesh-nodes asks flatpak ps).
-              exec flatpak run {{ apps_meshtastic_desktop_id }} "$@"
-            dest: /usr/local/bin/meshtastic-desktop
-            mode: "0755"
-  rescue:
-    - name: Report that Meshtastic Desktop didn't install
-      ansible.builtin.debug:
-        msg: >-
-          EMCOMM WARNING: Meshtastic Desktop didn't install or update ({{ ansible_failed_task.name }}:
-          {{ (ansible_failed_result.stderr | default(ansible_failed_result.msg | default(''))) | trim | truncate(300) }}).
-          The Meshtastic text client still works. Everything else carried on.
+- name: Install Meshy (MeshCore)
+  ansible.builtin.include_tasks:
+    file: flatpak.yml
+    apply:
+      tags: [meshy]
+  vars:
+    apps_flatpak:
+      name: Meshy
+      id: "{{ apps_meshy_id }}"
+      command: meshy
+      tag: meshy
+      fallback: The MC text tile still works.
+  tags: [meshy]
 
 # CHIRP isn't packaged by Debian. Its download site (archive.chirpmyradio.com)
 # sits behind a Cloudflare check that refuses scripts, so CHIRP is installed
