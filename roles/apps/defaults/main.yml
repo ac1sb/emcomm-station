@@ -13,6 +13,10 @@ apps_ardopcf_version: 1.0.4.1.3
 apps_contact_version: 1.7.1
 apps_meshcore_cli_version: 1.6.6
 
+# Meshtastic Desktop, from Flathub (signed by Flathub, so no checksum here).
+apps_flathub_repo: https://dl.flathub.org/repo/flathub.flatpakrepo
+apps_meshtastic_desktop_id: org.meshtastic.MeshtasticDesktop
+
 # Natural Earth (public domain) for the offline station map: countries, lakes,
 # state lines, US counties, North American highways and towns.
 apps_natural_earth_version: v5.1.2

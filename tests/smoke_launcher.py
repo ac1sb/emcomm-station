@@ -736,6 +736,20 @@ def main():
         check(folder.get_style_context().has_class("tapped") and win.stack.get_visible_child_name() == "folder",
               "folder tap flashes and opens")
 
+    # a tile added after the operator arranged Home joins its standard folder
+    apps = [{"code": c} for c in ("MSH", "MSD", "APR", "WEB")]
+    std = [{"name": "Mesh & APRS", "apps": ["MSH", "MSD", "APR"]}]
+    slots = L.arrange_tiles(apps, ["WEB", {"folder": "Mesh", "apps": ["APR", "MSH"]}], std)
+    check([a["code"] for a in slots[1]["apps"]] == ["APR", "MSH", "MSD"] and len(slots) == 2,
+          f"new tile in its folder: {slots}")
+    slots = L.arrange_tiles(apps, ["WEB", "MSH", "APR"], std)
+    check([s.get("code") for s in slots] == ["WEB", "MSH", "APR", "MSD"], f"no folder, new tile at the end: {slots}")
+    check(L.window_app({"pid": 2, "cls": "org-meshtastic-desktop-MainKt.org-meshtastic-desktop-MainKt"},
+                       [{"code": "MSD", "command": "meshtastic-desktop", "window": "meshtastic"}], {}) is not None
+          and L.window_app({"pid": 2, "cls": "xterm.XTerm"}, [{"code": "MSD", "command": "meshtastic-desktop",
+                                                               "window": "meshtastic"}], {}) is None,
+          "a Flatpak window is matched by its class")
+
     win.destroy()
     pump(0.2)
     tmp.cleanup()

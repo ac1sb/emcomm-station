@@ -57,7 +57,17 @@ launcher_apps:
   - { code: PKT, icon: packet, name: Packet, detail: Winlink packet, command: direwolf, app: packet, run: [emcomm-start, packet] }
   - { code: ARD, icon: ardop, name: ARDOP, detail: Winlink HF modem, command: ardopcf, app: ardop, run: [emcomm-start, ardop] }
   - { code: APR, icon: aprs, name: APRS, detail: Xastir · map and messages, command: xastir, app: aprs, run: [emcomm-start, aprs] }
-  - { code: MSH, icon: meshtastic, name: Meshtastic, detail: Mesh text over LoRa, command: contact, app: meshtastic, run: [emcomm-start, meshtastic] }
+  - { code: MSH, icon: meshtastic, name: Mesh text, detail: Meshtastic in text, command: contact, app: meshtastic, run: [emcomm-start, meshtastic] }
+  # Meshtastic's own app, the desktop build of its Android app (a Flatpak, so its window
+  # is matched by class rather than by the program the tile started).
+  - code: MSD
+    icon: meshtastic-desktop
+    name: Meshtastic
+    detail: Messages · nodes · map
+    command: meshtastic-desktop
+    app: meshtastic-desktop
+    window: meshtastic
+    run: [meshtastic-desktop]
   - { code: MCR, icon: meshcore, name: MeshCore, detail: Mesh text over LoRa, command: meshcore-cli, app: meshcore, run: [emcomm-start, meshcore] }
   - { code: NWR, icon: weather-radio, name: NOAA radio, detail: Alerts · no internet, command: emcomm-nwr, page: nwr }
   - { code: ONL, icon: online, name: Online, detail: Needs the internet, command: emcomm-online, page: online }
@@ -85,4 +95,4 @@ launcher_apps:
 # moved in and out, and folders added, renamed or removed, with Arrange tiles on the station.
 launcher_folders:
   - { name: Email, apps: [WL, VHF, VFM, ARD, PKT] }
-  - { name: Mesh & APRS, apps: [MSH, MCR, APR] }
+  - { name: Mesh & APRS, apps: [MSD, MSH, MCR, APR] }

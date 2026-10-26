@@ -45,7 +45,7 @@ rm -f /etc/modprobe.d/emcomm-rtl-sdr.conf /etc/sudoers.d/emcomm-update /etc/sudo
 echo "== Removing its programs, menu entry and login session =="
 rm -f /usr/local/bin/emcomm-* /usr/local/sbin/emcomm-*
 # Programs it put in /usr/local/bin, unless they were there before.
-for prog in ardopcf winetricks chirp contact meshcore-cli; do
+for prog in ardopcf winetricks chirp contact meshcore-cli meshtastic-desktop; do
   if ! grep -qx "$prog" "$BEFORE/usr-local-bin" 2>/dev/null; then
     rm -f "/usr/local/bin/$prog"
   fi
@@ -78,4 +78,7 @@ echo
 echo "Emcomm-CNC is removed."
 $packages || echo "The packages it installed are still there; run with --packages to see and remove them."
 echo "Your own files are kept: ~/.config/emcomm, ~/Recordings, ~/Scanner channels.csv and the apps' settings."
+if flatpak info --system org.meshtastic.MeshtasticDesktop >/dev/null 2>&1; then
+  echo "Meshtastic Desktop is still installed; remove it with: flatpak uninstall org.meshtastic.MeshtasticDesktop"
+fi
 echo "Your account is still in the dialout, plugdev and bluetooth groups (harmless; for radios and USB devices)."
