@@ -68,7 +68,16 @@ launcher_apps:
     app: meshtastic-desktop
     window: meshtastic
     run: [meshtastic-desktop]
-  - { code: MCR, icon: meshcore, name: MeshCore, detail: Mesh text over LoRa, command: meshcore-cli, app: meshcore, run: [emcomm-start, meshcore] }
+  # Meshy, a MeshCore app made for small touch screens (a Flatpak, like Meshtastic's).
+  - code: MCA
+    icon: meshcore-app
+    name: MeshCore
+    detail: Messages · nodes · map
+    command: meshy
+    app: meshy
+    window: meshy
+    run: [meshy]
+  - { code: MCR, icon: meshcore, name: MC text, detail: MeshCore in text, command: meshcore-cli, app: meshcore, run: [emcomm-start, meshcore] }
   - { code: NWR, icon: weather-radio, name: NOAA radio, detail: Alerts · no internet, command: emcomm-nwr, page: nwr }
   - { code: ONL, icon: online, name: Online, detail: Needs the internet, command: emcomm-online, page: online }
   - { code: MAP, icon: map, name: Map, detail: Gateways · stations heard, command: emcomm-map, app: map, run: [emcomm-map], audio: listen }
@@ -95,4 +104,4 @@ launcher_apps:
 # moved in and out, and folders added, renamed or removed, with Arrange tiles on the station.
 launcher_folders:
   - { name: Email, apps: [WL, VHF, VFM, ARD, PKT] }
-  - { name: Mesh & APRS, apps: [MSD, MSH, MCR, APR] }
+  - { name: Mesh & APRS, apps: [MSD, MCA, MSH, MCR, APR] }

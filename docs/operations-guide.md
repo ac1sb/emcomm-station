@@ -143,7 +143,7 @@ If both dots are green, the station is ready.
 3. To keep a record, tap **Logs** (F4). Type the callsign of the station you worked
    (net control, for a check-in) and a note such as "checked in, no traffic", then
    tap **Add note**. The UTC time, frequency and mode are filled in from the radio,
-   and the station's name and town show as you type the callsign.
+   and the station's name, town and DMR ID show as you type the callsign.
 
 ## Write an ICS-213 and send it by radio
 
@@ -213,7 +213,7 @@ save their settings. Turn the radio off after the station.
   Up/Down for the next page.
 - **Folders** group related apps under one tile. Standard folders:
   - **Email:** Winlink mail (Pat), VARA HF, VARA FM, ARDOP, Packet.
-  - **Mesh & APRS:** Meshtastic, Mesh text, MeshCore, APRS.
+  - **Mesh & APRS:** Meshtastic, MeshCore, Mesh text, MC text, APRS.
 - **Home bar:** when an app is open, a thin bar across the top of the screen has
   **⌂ Home**, a button for each open app (tap it to bring that app to the front,
   ✕ to close it), **Rec**, the speaker and microphone icons and the time. So levels
@@ -726,7 +726,12 @@ saves a PDF.
 ### Run a net
 
 1. **New ▾ > Net log** (or F8). Name the net and tap **Start net**.
-2. Check-ins: type the callsign and press Enter (or tap **Check in**).
+2. Check-ins: type the callsign and press Enter (or tap **Check in**). As you type,
+   the line above shows the name, town, licence class and DMR ID from the offline
+   lists (see [Offline callsign and DMR ID lookup](#offline-callsign-and-dmr-id-lookup)).
+   An expired licence shows in red; a US call the FCC list doesn't have is noted,
+   usually a miscopied call. The check-in is logged with the name and town, which
+   also print on the ICS-309.
 3. Traffic: fill in From, To and Message and tap **Log**.
 4. **Undo** removes the last entry.
 5. When you're done, **Close net**.
@@ -752,14 +757,37 @@ can also save a PDF to a USB stick.
 
 - **Contact notes:** your own notes. Type a callsign and a note (traffic passed,
   signal report, net) and tap **Add note**; the UTC time, frequency and mode are
-  filled in from the radio. As you type the callsign, its name, town and licence
-  class show from the offline FCC list (US calls only).
+  filled in from the radio. As you type the callsign, its name, town, licence
+  class and DMR ID show from the offline lists, and the note is saved with the
+  name and town.
 - **JS8Call messages** and **JS8Call all activity.**
 - **WSJT-X contacts.**
 - **Winlink mail.**
 - **Station updates:** the log of the last Update station.
 
 The **Forms** button goes to Forms (F9) and **Recorder** to the Recorder.
+**Look up** opens the callsign and DMR ID search below.
+
+### Offline callsign and DMR ID lookup
+
+The station keeps two lists, so lookups work with no internet:
+
+| List | From | Covers | Where it's kept |
+| --- | --- | --- | --- |
+| FCC amateur licences | FCC ULS weekly file (`l_amat.zip`, roughly 150 MB to download) | US calls: name, town, state, licence class, active or expired | `/var/lib/emcomm/callsigns.db` |
+| DMR IDs | RadioID.net `user.csv` (roughly 20 MB) | Every registered DMR user worldwide: ID, call, name, city, state, country | `/var/lib/emcomm/dmrids.db` |
+
+- **Getting them:** run **Update station** once with the internet connected. After
+  that, each Update station downloads a list again only when the copy is over a week
+  old. Offline, the last lists are kept and keep working. If a list has never
+  downloaded, the update ends with a warning line; everything else still installs.
+- **Look up** (Logs page): type a callsign or a DMR ID. Matches list as you type:
+  calls that start with what you typed, or IDs that start with the digits. Tap one to
+  put the call in the contact note. The line under the box says how old the FCC list
+  is.
+- **In Net control and contact notes**, the line under the callsign shows the same
+  details. Calls outside the US show from the DMR list when the operator has a DMR ID.
+- From a terminal: `emcomm-callsign lookup W1AW 3112345` prints both lists' entries.
 
 ---
 
@@ -957,14 +985,17 @@ page shows the APRS-IS connection and how many packets were heard and passed.
 ## Meshtastic and MeshCore
 
 LoRa text messaging on their own small radios, separate from the station's radio.
-The Mesh & APRS folder has three mesh tiles:
+The Mesh & APRS folder has four mesh tiles:
 
 - **Meshtastic:** Meshtastic's own app, the same one as on Android. Messages and
   channels, the node list with signal and battery, a map, traceroute, telemetry
   and every radio setting, all by touch.
+- **MeshCore:** Meshy, a MeshCore app made for small touch screens. Messages,
+  channels, contacts, a map with routes, and device and repeater settings.
 - **Mesh text:** a plain text client for Meshtastic (`contact`). It also pairs
   Bluetooth radios.
-- **MeshCore:** the MeshCore text client (`meshcore-cli`); type `?` for its commands.
+- **MC text:** the MeshCore text client (`meshcore-cli`); type `?` for its
+  commands. It also pairs Bluetooth radios.
 
 ### Meshtastic
 
@@ -982,10 +1013,25 @@ the same nodes on its Mesh layer.
 
 ⚠ **Meshtastic app not yet tested on this station.**
 
-### Mesh text and MeshCore
+### MeshCore
+
+1. The first tap offers to install it (about 1 GB from Flathub, a few minutes,
+   needs the internet once). After that it works with no internet, and each
+   **Update station** brings it up to date.
+2. Plug the node in by USB, or turn on its Bluetooth, and tap **MeshCore**. Pick
+   the node in its connect list.
+3. **Bluetooth:** if it asks for a PIN it can't take, pair the radio once with
+   **MC text** (below), then pick it again in MeshCore.
+
+The app's own map needs the internet for areas it hasn't shown before. The station
+**Map** works offline and shows the same nodes on its Mesh layer.
+
+⚠ **MeshCore app not yet tested on this station.**
+
+### Mesh text and MC text
 
 1. Plug the node in by USB, or turn on its Bluetooth.
-2. Tap **Mesh text** or **MeshCore**.
+2. Tap **Mesh text** or **MC text**.
 3. With no USB node, it searches for Bluetooth radios for 10 seconds and asks which.
    The first time, it pairs and asks for the PIN: Meshtastic shows it on its screen
    (or uses 123456 on a node without one); MeshCore uses 123456 unless you changed
@@ -995,9 +1041,8 @@ the same nodes on its Mesh layer.
 
 A node takes one connection at a time, so open one mesh tile per node. While a
 tile has the node, the Map's Mesh layer keeps the last list it had. The Mesh
-layer asks the node **Mesh text** or **MeshCore** last used (or the one picked
-below for position), so open Mesh text once if the Meshtastic part of the layer
-stays empty.
+layer asks the node **Mesh text** or **MC text** last used (or the Meshtastic radio
+picked below for position), so open the text tile once if the layer stays empty.
 
 ### Position from a Meshtastic radio
 
@@ -1360,7 +1405,7 @@ app and never transmit:
 | Scanner, Gqrx, NOAA radio alerts, ADS-B aircraft | Broadcastify, the APRS iGate |
 | Map (offline), Library (books already downloaded) | Library downloads, Update station |
 | GPS position and time; position from a Meshtastic radio's GPS | Online callsign lookup with QRZ and aprs.fi (earlier lookups still show) |
-| US callsign name, town and class in Net control and Logs (offline FCC list) | Refreshing the FCC list (Update station, weekly) |
+| Callsign and DMR ID lookup in Net control and Logs (offline FCC and RadioID lists) | Refreshing those lists (Update station, weekly) |
 
 Without a USB GPS or internet, the clock drifts (a Meshtastic radio doesn't set it). Check UTC against WWV (2.5, 5, 10, 15
 MHz) before digital work.

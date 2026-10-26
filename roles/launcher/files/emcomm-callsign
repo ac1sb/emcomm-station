@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""The FCC's amateur licence list, kept on the station so callsigns can be looked
-up with no internet: net control and contact notes fill in the name and town.
+"""The FCC's amateur licence list and RadioID.net's DMR ID list, kept on the station
+so callsigns and DMR IDs can be looked up with no internet: net control and contact
+notes fill in the name and town, and the Look up box finds either.
 
-  emcomm-callsign update [--max-age DAYS]  download the FCC list and rebuild the
-                                           database, when it's older than DAYS
+  emcomm-callsign update [--max-age DAYS]  download both lists and rebuild their
+                                           databases, when older than DAYS
                                            (default 7; 0 always rebuilds)
-  emcomm-callsign build ZIP [DB]           rebuild the database from a downloaded
-                                           l_amat.zip
-  emcomm-callsign lookup CALL...           print what the database has, as JSON
+  emcomm-callsign build ZIP [DB]           rebuild the FCC database from a
+                                           downloaded l_amat.zip
+  emcomm-callsign build-dmr CSV [DB]       rebuild the DMR ID database from a
+                                           downloaded RadioID user.csv
+  emcomm-callsign lookup CALL|ID...        print what the databases have, as JSON
 
-Update station runs `update` as root. The list is the FCC's weekly full file of
-amateur licences (ULS l_amat.zip, about 150 MB). Only active licences and ones
+Update station runs `update` as root. The FCC list is its weekly full file of
+amateur licences (ULS l_amat.zip, roughly 150 MB). Only active licences and ones
 expired within the two-year grace period are kept, so a miscopied or lapsed call
-shows up as such.
+shows up as such. The DMR list is RadioID.net's user.csv (every registered DMR
+user worldwide, roughly 20 MB), so it also covers calls outside the US.
 """
 
 import contextlib
+import csv
 import io
 import json
 import os
@@ -31,6 +36,8 @@ import zipfile
 DB = os.environ.get("EMCOMM_CALLSIGN_DB", "/var/lib/emcomm/callsigns.db")
 URL = os.environ.get("EMCOMM_CALLSIGN_URL", "https://data.fcc.gov/download/pub/uls/complete/l_amat.zip")
 CACHE = os.environ.get("EMCOMM_CALLSIGN_CACHE", "/var/cache/emcomm")
+DMR_DB = os.environ.get("EMCOMM_DMR_DB", "/var/lib/emcomm/dmrids.db")
+DMR_URL = os.environ.get("EMCOMM_DMR_URL", "https://radioid.net/static/user.csv")
 DAY = 24 * 3600
 
 CLASSES = {"E": "Amateur Extra", "A": "Advanced", "G": "General", "P": "Technician Plus",
@@ -126,6 +133,70 @@ def build(zip_path, db_path):
             os.unlink(tmp)
 
 
+def build_dmr(csv_path, db_path):
+    """The DMR ID database from RadioID's user.csv (RADIO_ID, CALLSIGN, FIRST_NAME,
+    LAST_NAME, CITY, STATE, COUNTRY; columns found by name). Written aside and moved
+    into place like the FCC one. Returns how many IDs it holds."""
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(db_path)), suffix=".tmp")
+    os.close(fd)
+    try:
+        with open(csv_path, encoding="utf-8", errors="replace", newline="") as f:
+            reader = csv.reader(f)
+            header = [h.strip().lower() for h in next(reader, [])]
+            col = {name: header.index(name) for name in
+                   ("radio_id", "callsign", "first_name", "last_name", "city", "state", "country") if name in header}
+            if "radio_id" not in col or "callsign" not in col:
+                raise ValueError(f"{csv_path} has no RADIO_ID and CALLSIGN columns; is it RadioID's user.csv?")
+
+            def field(row, name):
+                i = col.get(name)
+                return row[i].strip() if i is not None and i < len(row) else ""
+
+            con = sqlite3.connect(tmp)
+            con.executescript("""
+                PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;
+                CREATE TABLE dmr (id INTEGER PRIMARY KEY, call TEXT, name TEXT, city TEXT, state TEXT,
+                                  country TEXT);
+                CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+            """)
+            con.executemany("INSERT OR REPLACE INTO dmr VALUES (?, ?, ?, ?, ?, ?)", (
+                (int(field(row, "radio_id")), field(row, "callsign").upper(),
+                 " ".join(filter(None, (field(row, "first_name"), field(row, "last_name")))),
+                 field(row, "city"), field(row, "state"), field(row, "country"))
+                for row in reader if field(row, "radio_id").isdigit() and field(row, "callsign")))
+        con.execute("CREATE INDEX dmr_call ON dmr (call)")
+        count = con.execute("SELECT COUNT(*) FROM dmr").fetchone()[0]
+        con.execute("INSERT INTO meta VALUES ('built', ?)", (str(int(time.time())),))
+        con.commit()
+        con.execute("VACUUM")
+        con.close()
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, db_path)
+        return count
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+
+
+def dmr_lookup(key, db_path=DMR_DB):
+    """DMR IDs for a callsign, or the one ID asked for by number: a list of
+    {id, call, name, city, state, country}, lowest ID first; [] when none."""
+    key = str(key).strip().upper()
+    if not key:
+        return []
+    try:
+        with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+            con.row_factory = sqlite3.Row
+            if key.isdigit():
+                rows = con.execute("SELECT * FROM dmr WHERE id = ?", (int(key),)).fetchall()
+            else:
+                rows = con.execute("SELECT * FROM dmr WHERE call = ? ORDER BY id", (key,)).fetchall()
+    except sqlite3.Error:
+        return []
+    return [dict(r) for r in rows]
+
+
 def built(db_path=DB):
     """When the database was built (epoch seconds), or None if there isn't one."""
     try:
@@ -162,6 +233,32 @@ def download(url, dest):
     os.replace(part, dest)
 
 
+def update_dmr(max_age_days=7, db_path=DMR_DB, url=DMR_URL, cache=CACHE):
+    when = built(db_path)
+    if when and max_age_days and time.time() - when < max_age_days * DAY:
+        print(f"The DMR ID list is {int((time.time() - when) / DAY)} days old; not updating yet.")
+        return 0
+    os.makedirs(cache, exist_ok=True)
+    csv_path = os.path.join(cache, "dmr-user.csv")
+    print(f"Downloading the DMR ID list from {url}")
+    try:
+        download(url, csv_path)
+    except OSError as exc:
+        if not when:
+            print(f"Couldn't download the DMR ID list ({exc}). DMR ID lookup needs one download with internet.",
+                  file=sys.stderr)
+            return 1
+        print(f"Couldn't download the DMR ID list ({exc}). "
+              f"Keeping the list from {time.strftime('%Y-%m-%d', time.gmtime(when))}.")
+        return 0
+    try:
+        count = build_dmr(csv_path, db_path)
+    finally:
+        os.unlink(csv_path)
+    print(f"DMR ID list rebuilt: {count} IDs.")
+    return 0
+
+
 def update(max_age_days=7, db_path=DB, url=URL, cache=CACHE):
     when = built(db_path)
     if when and max_age_days and time.time() - when < max_age_days * DAY:
@@ -194,13 +291,21 @@ def main(argv):
         elif len(argv) > 1:
             print(__doc__, file=sys.stderr)
             return 2
-        return update(days)
+        # Each list on its own: one failing to download doesn't stop the other.
+        return max(update(days), update_dmr(days))
     if argv[:1] == ["build"] and len(argv) in (2, 3):
         print(f"{build(argv[1], argv[2] if len(argv) == 3 else DB)} callsigns.")
         return 0
+    if argv[:1] == ["build-dmr"] and len(argv) in (2, 3):
+        print(f"{build_dmr(argv[1], argv[2] if len(argv) == 3 else DMR_DB)} IDs.")
+        return 0
     if argv[:1] == ["lookup"] and len(argv) > 1:
-        for call in argv[1:]:
-            print(json.dumps(lookup(call) or {"call": call.upper(), "found": False}))
+        for key in argv[1:]:
+            dmr = dmr_lookup(key)
+            call = dmr[0]["call"] if key.strip().isdigit() and dmr else key.upper()
+            found = lookup(call) or {"call": call, "found": False}
+            found["dmr"] = dmr if key.strip().isdigit() else dmr_lookup(call)
+            print(json.dumps(found))
         return 0
     print(__doc__, file=sys.stderr)
     return 2

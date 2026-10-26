@@ -96,6 +96,8 @@ class Refreshing(unittest.TestCase):
         try:
             self.assertTrue(mesh.flatpak_running("org.meshtastic.MeshtasticDesktop"))
             self.assertTrue(self.old[2]("meshtastic"))
+            Done.stdout = "page.codeberg.sesivany.Meshy\n"
+            self.assertTrue(self.old[2]("meshcore"))
             Done.stdout = "org.mozilla.firefox\n"
             self.assertFalse(mesh.flatpak_running("org.meshtastic.MeshtasticDesktop"))
         finally:

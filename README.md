@@ -97,7 +97,7 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   While arranging, pick a tile, go to another page and tap a tile or an empty
   place to move it there; **Remove page** folds the page shown into the one
   before it. Folders hold related apps under one tile: **Email** (Winlink mail,
-  VARA HF, VARA FM) and **Mesh & APRS** (Meshtastic, Mesh text, MeshCore, APRS) come as
+  VARA HF, VARA FM) and **Mesh & APRS** (Meshtastic, MeshCore, Mesh text, MC text, APRS) come as
   standard. Tap a folder to open it; Esc or ‹ Home closes it. The quickest way
   to file an app is its long-press (or right-click) menu: **Move to a folder**
   lists the folders and **New folder…**, and an app in a folder has **Take it
@@ -119,7 +119,8 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   Winlink mail, VARA HF and VARA FM (under Wine), ARDOP (ardopcf), Direwolf for
   packet, Xastir for APRS, the Meshtastic (`contact`) and MeshCore
   (`meshcore-cli`) clients for LoRa mesh radios, Meshtastic's own desktop app
-  (Flatpak from Flathub, installed from its tile), and CHIRP for programming
+  and Meshy for MeshCore (Flatpaks from Flathub, installed from their tiles),
+  and CHIRP for programming
   handhelds and mobiles. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
   once, in Settings. Callsign and grid are filled in for each app.
 - **Library** (tile): offline books from Kiwix, readable with no internet. With
@@ -157,7 +158,10 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
     they print on the ICS-309. Contact notes on the Logs page do the same.
     Update station downloads the list (about 150 MB, kept only while it builds)
     when it's over a week old and the station is online; offline, the last list
-    is kept. Calls outside the US aren't in it.
+    is kept. Calls outside the US aren't in it. RadioID.net's DMR ID list (every
+    registered DMR user, worldwide) is kept and refreshed the same way: the line
+    shows a call's DMR IDs, and **Look up** on the Logs page searches by callsign
+    or DMR ID as you type.
   - **ICS-309 Communications Log** fills in the log for the net picked in the
     list (else the open or last net), and **ICS-205 Radio Communications Plan**
     fills in the plan from My frequencies (receive and transmit frequency, tone,
@@ -252,7 +256,7 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   blue minor; tap one for what it is and when it ends). They're fetched when the
   station is online, at most every 10 minutes, and kept offline until each one
   ends. **Mesh** shows the Meshtastic (teal) and MeshCore (magenta) nodes that
-  have sent a position, as the radio the Mesh text or MeshCore tile last
+  have sent a position, as the radio the Mesh text or MC text tile last
   connected to (USB or Bluetooth) knows them: tap one for when it was heard,
   SNR, hops and battery. The radio is asked when the map opens, with no
   internet needed; while its tile is open the last list stays.
@@ -365,7 +369,7 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   `~/.config/emcomm/direwolf-igate.custom.conf` (iGate) or
   `direwolf-aprs.custom.conf` (APRS tile with the iGate off).
 - **Meshtastic and MeshCore:** plug the node in by USB, or turn on its Bluetooth,
-  and tap its tile (Mesh text or MeshCore). The tile finds the node's USB port (skipping the radio's CAT
+  and tap its tile (Mesh text or MC text). The tile finds the node's USB port (skipping the radio's CAT
   and PTT ports). With no USB node it searches for Bluetooth radios for 10 seconds
   and asks which one; the first time, it pairs and asks for the radio's PIN
   (Meshtastic shows it on its screen, or uses 123456 on a node without one;
@@ -373,10 +377,12 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   offered by name, next to any USB nodes and "Search for a Bluetooth radio".
   Bluetooth needs an adapter in the station computer (most mini-PCs and laptops
   have one). Mesh text opens `contact`, a full-screen
-  text client for messages, nodes and settings; MeshCore opens `meshcore-cli`,
+  text client for messages, nodes and settings; MC text opens `meshcore-cli`,
   where `?` lists its commands. The **Meshtastic** tile is Meshtastic's own
   app (the Android app's desktop build) with messages, nodes, a map and every
-  setting by touch; pair a Bluetooth radio once with Mesh text first.
+  setting by touch; pair a Bluetooth radio once with Mesh text first. The
+  **MeshCore** tile is Meshy, a touch-friendly MeshCore app (GTK) with messages,
+  contacts, a map and device settings.
 - **CHIRP:** for programming a handheld or mobile over its programming cable (the
   FT-710 and FT-891 don't need it). The station keeps
   `~/My frequencies for CHIRP.csv` up to date with the FM channels from My

@@ -203,6 +203,10 @@ def main():
     test_callsign.fake_zip(fcc_zip)
     os.environ["EMCOMM_CALLSIGN_DB"] = os.path.join(tmp.name, "callsigns.db")
     test_callsign.cs.build(fcc_zip, os.environ["EMCOMM_CALLSIGN_DB"])
+    dmr_csv = os.path.join(tmp.name, "user.csv")
+    test_callsign.fake_dmr_csv(dmr_csv)
+    os.environ["EMCOMM_DMR_DB"] = os.path.join(tmp.name, "dmrids.db")
+    test_callsign.cs.build_dmr(dmr_csv, os.environ["EMCOMM_DMR_DB"])
     loader = importlib.machinery.SourceFileLoader("emcomm_launcher", os.path.join(FILES, "emcomm-launcher"))
     spec = importlib.util.spec_from_loader("emcomm_launcher", loader)
     L = importlib.util.module_from_spec(spec)
@@ -518,6 +522,42 @@ def main():
                 widget.foreach(walk)
         walk(dialog.get_content_area())
         return found
+
+    # ---- Logs > Look up: matches by callsign and by DMR ID as typed; a pick fills the note ----
+    win.stack.set_visible_child_name("logs")
+    pump(0.5)
+    fits("Logs with the Look up button")
+    seen = {}
+
+    def look_up(dialog):
+        search = dialog_widgets(dialog, Gtk.SearchEntry)[0]
+        listbox = dialog_widgets(dialog, Gtk.ListBox)[0]
+
+        def lines():
+            return [r.get_child().get_text() for r in listbox.get_children()]
+        search.set_text("KC1")
+        search.emit("search-changed")
+        seen["call"] = lines()
+        search.set_text("311234")
+        search.emit("search-changed")
+        seen["id"] = lines()
+        if os.environ.get("EMCOMM_SHOT"):
+            from gi.repository import Gdk
+            pump(0.4)
+            gdkwin = dialog.get_window()
+            Gdk.pixbuf_get_from_window(gdkwin, 0, 0, gdkwin.get_width(), gdkwin.get_height()).savev(
+                os.environ["EMCOMM_SHOT"].replace(".png", "-lookup.png"), "png", [], [])
+        listbox.emit("row-activated", listbox.get_children()[0])
+        return Gtk.ResponseType.CLOSE
+    answer_dialog(look_up)
+    win._lookup_dialog()
+    pump(0.3)
+    check(seen.get("call") and seen["call"][0].startswith("KC1ABC · John Q Smith") and "DMR 3112345" in seen["call"][0],
+          f"look up by call: {seen.get('call')}")
+    check(seen.get("id") and seen["id"][0].startswith("DMR 3112345 · KC1ABC"), f"look up by DMR ID: {seen.get('id')}")
+    check(win.note_call.get_text() == "KC1ABC" and "DMR 3112345" in win.note_lookup.get_text(),
+          f"picked call fills the note: {win.note_lookup.get_text()}")
+    win.note_call.set_text("")
 
     win.stack.set_visible_child_name("station-radio")
     pump(2.5)
