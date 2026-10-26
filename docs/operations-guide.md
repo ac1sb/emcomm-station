@@ -211,7 +211,7 @@ save their settings. Turn the radio off after the station.
   Up/Down for the next page.
 - **Folders** group related apps under one tile. Standard folders:
   - **Email:** Winlink mail (Pat), VARA HF, VARA FM, ARDOP, Packet.
-  - **Mesh & APRS:** Meshtastic, Mesh text, MeshCore, APRS.
+  - **Mesh & APRS:** Meshtastic, MeshCore, Mesh text, MC text, APRS.
 - **Home bar:** when an app is open, a thin bar across the top of the screen has
   **⌂ Home**, a button for each open app (tap it to bring that app to the front,
   ✕ to close it), **Rec**, the speaker and microphone icons and the time. So levels
@@ -954,14 +954,17 @@ page shows the APRS-IS connection and how many packets were heard and passed.
 ## Meshtastic and MeshCore
 
 LoRa text messaging on their own small radios, separate from the station's radio.
-The Mesh & APRS folder has three mesh tiles:
+The Mesh & APRS folder has four mesh tiles:
 
 - **Meshtastic:** Meshtastic's own app, the same one as on Android. Messages and
   channels, the node list with signal and battery, a map, traceroute, telemetry
   and every radio setting, all by touch.
+- **MeshCore:** Meshy, a MeshCore app made for small touch screens. Messages,
+  channels, contacts, a map with routes, and device and repeater settings.
 - **Mesh text:** a plain text client for Meshtastic (`contact`). It also pairs
   Bluetooth radios.
-- **MeshCore:** the MeshCore text client (`meshcore-cli`); type `?` for its commands.
+- **MC text:** the MeshCore text client (`meshcore-cli`); type `?` for its
+  commands. It also pairs Bluetooth radios.
 
 ### Meshtastic
 
@@ -979,10 +982,25 @@ the same nodes on its Mesh layer.
 
 ⚠ **Meshtastic app not yet tested on this station.**
 
-### Mesh text and MeshCore
+### MeshCore
+
+1. The first tap offers to install it (about 1 GB from Flathub, a few minutes,
+   needs the internet once). After that it works with no internet, and each
+   **Update station** brings it up to date.
+2. Plug the node in by USB, or turn on its Bluetooth, and tap **MeshCore**. Pick
+   the node in its connect list.
+3. **Bluetooth:** if it asks for a PIN it can't take, pair the radio once with
+   **MC text** (below), then pick it again in MeshCore.
+
+The app's own map needs the internet for areas it hasn't shown before. The station
+**Map** works offline and shows the same nodes on its Mesh layer.
+
+⚠ **MeshCore app not yet tested on this station.**
+
+### Mesh text and MC text
 
 1. Plug the node in by USB, or turn on its Bluetooth.
-2. Tap **Mesh text** or **MeshCore**.
+2. Tap **Mesh text** or **MC text**.
 3. With no USB node, it searches for Bluetooth radios for 10 seconds and asks which.
    The first time, it pairs and asks for the PIN: Meshtastic shows it on its screen
    (or uses 123456 on a node without one); MeshCore uses 123456 unless you changed
@@ -992,8 +1010,8 @@ the same nodes on its Mesh layer.
 
 A node takes one connection at a time, so open one mesh tile per node. While a
 tile has the node, the Map's Mesh layer keeps the last list it had. The Mesh
-layer asks the node **Mesh text** or **MeshCore** last used, so open Mesh text
-once if the Meshtastic part of the layer stays empty.
+layer asks the node **Mesh text** or **MC text** last used, so open the text
+tile once if the layer stays empty.
 
 ---
 

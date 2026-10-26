@@ -5,10 +5,10 @@
                                 it knows, and save them (run by the map in the background)
   emcomm-mesh-nodes --show      print what's saved
 
-The radio is the one the Mesh text (Meshtastic) or MeshCore tile last connected to
+The radio is the one the Mesh text or MC text tile last connected to
 (USB or Bluetooth, remembered in ~/.config/emcomm/mesh-meshtastic.json and
 mesh-meshcore.json). A radio takes one connection at a time, so a radio whose tile
-(or the Meshtastic app) is open is left alone and its last list kept. Positions are what each node last
+(or its full app) is open is left alone and its last list kept. Positions are what each node last
 sent over the mesh; none of this needs the internet.
 
 Saved to ~/.cache/emcomm/mesh/nodes.js as window.MESHNODES = {meshtastic: {...},
@@ -29,7 +29,8 @@ CONFIG = os.path.join(HOME, ".config/emcomm/mesh-{}.json")
 OUT = os.environ.get("EMCOMM_MESH_DIR", os.path.join(HOME, ".cache/emcomm/mesh"))
 VENV = os.environ.get("EMCOMM_MESH_VENVS", "/opt/emcomm") + "/{}"
 CLIENTS = {"meshtastic": "contact", "meshcore": "meshcore-cli"}  # the tile's program for each
-FLATPAKS = {"meshtastic": "org.meshtastic.MeshtasticDesktop"}  # the Meshtastic tile's Flatpak
+# The full apps on the Meshtastic and MeshCore tiles (Flatpaks)
+FLATPAKS = {"meshtastic": "org.meshtastic.MeshtasticDesktop", "meshcore": "page.codeberg.sesivany.Meshy"}
 TIMEOUT = 45  # seconds for one radio to answer
 
 
