@@ -154,7 +154,10 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
     they print on the ICS-309. Contact notes on the Logs page do the same.
     Update station downloads the list (about 150 MB, kept only while it builds)
     when it's over a week old and the station is online; offline, the last list
-    is kept. Calls outside the US aren't in it.
+    is kept. Calls outside the US aren't in it. RadioID.net's DMR ID list (every
+    registered DMR user, worldwide) is kept and refreshed the same way: the line
+    shows a call's DMR IDs, and **Look up** on the Logs page searches by callsign
+    or DMR ID as you type.
   - **ICS-309 Communications Log** fills in the log for the net picked in the
     list (else the open or last net), and **ICS-205 Radio Communications Plan**
     fills in the plan from My frequencies (receive and transmit frequency, tone,

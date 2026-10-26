@@ -66,6 +66,19 @@ def fake_zip(path):
             zf.writestr(name, "\r\n".join(lines) + "\r\n")
 
 
+def fake_dmr_csv(path):
+    """A small RadioID user.csv: two IDs for one US call (listed out of order), one for a
+    call the FCC list has, a Canadian, and a row with no ID."""
+    rows = ["RADIO_ID,CALLSIGN,FIRST_NAME,LAST_NAME,CITY,STATE,COUNTRY",
+            "3112346,KC1ABC,John,Smith,Manchester Center,Vermont,United States",
+            "3112345,KC1ABC,John,Smith,Manchester Center,Vermont,United States",
+            "3100001,W1AW,Arrl,,Newington,Connecticut,United States",
+            "3021234,VE2ABC,Marie,Tremblay,Montreal,Quebec,Canada",
+            ",N0ID,No,Id,,,"]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\r\n".join(rows) + "\r\n")
+
+
 class Build(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -115,6 +128,42 @@ class Build(unittest.TestCase):
             self.assertFalse(cs.is_us_call(call), call)
 
 
+class BuildDmr(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.csv = os.path.join(self.tmp.name, "user.csv")
+        self.db = os.path.join(self.tmp.name, "lib/dmrids.db")
+        fake_dmr_csv(self.csv)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_build_and_look_up_by_call_and_id(self):
+        self.assertEqual(cs.build_dmr(self.csv, self.db), 4)
+        self.assertEqual([d["id"] for d in cs.dmr_lookup("kc1abc", self.db)], [3112345, 3112346])
+        ve = cs.dmr_lookup("3021234", self.db)
+        self.assertEqual([(d["call"], d["name"], d["city"], d["country"]) for d in ve],
+                         [("VE2ABC", "Marie Tremblay", "Montreal", "Canada")])
+        self.assertEqual(cs.dmr_lookup("N0ID", self.db), [])
+        self.assertEqual(os.listdir(os.path.dirname(self.db)), ["dmrids.db"])
+
+    def test_columns_found_by_name(self):
+        with open(self.csv, "w", encoding="utf-8") as f:
+            f.write("callsign,radio_id,country\nKC1ABC,3112345,United States\n")
+        cs.build_dmr(self.csv, self.db)
+        self.assertEqual(cs.dmr_lookup("3112345", self.db)[0]["call"], "KC1ABC")
+
+    def test_not_radioid_csv(self):
+        with open(self.csv, "w", encoding="utf-8") as f:
+            f.write("a,b\n1,2\n")
+        with self.assertRaises(ValueError):
+            cs.build_dmr(self.csv, self.db)
+        self.assertFalse(os.path.exists(self.db))
+
+    def test_no_list(self):
+        self.assertEqual(cs.dmr_lookup("KC1ABC", self.db), [])
+
+
 class Update(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -153,6 +202,22 @@ class Update(unittest.TestCase):
         self.assertIn("Keeping the list from", out)
         self.assertIsNotNone(cs.lookup("KC1ABC", self.db))
 
+    def test_dmr_update_downloads_builds_and_keeps_old_list_offline(self):
+        csv_path = os.path.join(self.tmp.name, "user.csv")
+        fake_dmr_csv(csv_path)
+        dmr_db = os.path.join(self.tmp.name, "dmrids.db")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            first = cs.update_dmr(db_path=dmr_db, url="file://" + csv_path, cache=self.cache)
+            again = cs.update_dmr(db_path=dmr_db, url="file:///nowhere.csv", cache=self.cache, max_age_days=0)
+            missing = cs.update_dmr(db_path=os.path.join(self.tmp.name, "none.db"), url="file:///nowhere.csv",
+                                    cache=self.cache)
+        self.assertEqual((first, again, missing), (0, 0, 1))
+        self.assertIn("DMR ID list rebuilt: 4 IDs", out.getvalue())
+        self.assertIn("Keeping the list from", out.getvalue())
+        self.assertEqual(os.listdir(self.cache), [])
+        self.assertEqual(len(cs.dmr_lookup("KC1ABC", dmr_db)), 2)
+
     def test_offline_with_no_list_fails(self):
         rc, out = self.run_update(url="file:///nowhere.zip")
         self.assertEqual(rc, 1)
@@ -176,6 +241,10 @@ class Launcher(unittest.TestCase):
         fake_zip(zip_path)
         cls.db = os.path.join(cls.tmp.name, "callsigns.db")
         cs.build(zip_path, cls.db)
+        csv_path = os.path.join(cls.tmp.name, "user.csv")
+        fake_dmr_csv(csv_path)
+        cls.dmr = os.path.join(cls.tmp.name, "dmrids.db")
+        cs.build_dmr(csv_path, cls.dmr)
 
     @classmethod
     def tearDownClass(cls):
@@ -193,6 +262,29 @@ class Launcher(unittest.TestCase):
         self.assertEqual(s("", self.db), ("", False))
         missing = os.path.join(self.tmp.name, "none.db")
         self.assertIn("run Update station once", s("KC1ABC", missing)[0])
+
+    def test_summaries_with_dmr_ids(self):
+        s = self.L.callsign_summary
+        self.assertEqual(s("KC1ABC", self.db, self.dmr),
+                         ("KC1ABC · John Q Smith · Manchester Center, VT · Amateur Extra · DMR 3112345, 3112346",
+                          False))
+        self.assertEqual(s("VE2ABC", self.db, self.dmr),
+                         ("VE2ABC · Marie Tremblay · Montreal, Quebec, Canada · DMR 3021234", False))
+        self.assertEqual(s("K1OLD", self.db, self.dmr)[1], True)
+        self.assertEqual(self.L.dmr_ids_text([{"id": n} for n in (1, 2, 3, 4)]), "DMR 1, 2 +2 more")
+
+    def test_look_up_box(self):
+        search = self.L.lookup_search
+        calls = [c for c, _line, _p in search("k", db=self.db, dmr_db=self.dmr)]
+        self.assertEqual(calls, ["K1OLD", "KC1ABC"])
+        self.assertEqual([c for c, _l, _p in search("kc1abc", db=self.db, dmr_db=self.dmr)], ["KC1ABC"])
+        self.assertEqual([c for c, _l, _p in search("ve", db=self.db, dmr_db=self.dmr)], ["VE2ABC"])
+        by_id = search("311234", db=self.db, dmr_db=self.dmr)
+        self.assertEqual([line.split(" · ")[0] for _c, line, _p in by_id], ["DMR 3112345", "DMR 3112346"])
+        self.assertTrue(by_id[0][1].startswith("DMR 3112345 · KC1ABC · John Q Smith"))
+        self.assertEqual(search("3021234", db=self.db, dmr_db=self.dmr)[0][0], "VE2ABC")
+        self.assertEqual(search("99", db=self.db, dmr_db=self.dmr), [])
+        self.assertEqual(search("", db=self.db, dmr_db=self.dmr), [])
 
     def test_entry_message_names_who_checked_in(self):
         e = {"message": "Checked in", "name": "John Q Smith", "city": "Manchester Center", "state": "VT"}
