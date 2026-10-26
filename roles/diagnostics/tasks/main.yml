@@ -7,3 +7,4 @@
   loop:
     - emcomm-diag
     - emcomm-ptt-test
+    - emcomm-mesh-check

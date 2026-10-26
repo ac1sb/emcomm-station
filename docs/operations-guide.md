@@ -114,6 +114,7 @@ Look across the top of the screen:
 | --- | --- | --- |
 | ● **Rig 14.074.000** (green dot and a frequency) | The station is talking to the radio | Radio off, or its USB cable is out. Turn it on, plug it in, wait 10 seconds |
 | ● **Radio audio** (green dot) | The radio's sound card is plugged in | Same: check the USB cable |
+| Speaker and microphone icons | Tap for the listening speaker's volume, or the radio's To radio and From radio levels ([Levels](#levels)) | A microphone with a line through it: the radio's sound card isn't plugged in |
 | **UTC** time | Times on everything are UTC | If it's wrong, tell whoever runs the station: digital modes need the right time |
 | ▲ **weather alerts** (red) | Weather alerts in force near you | Tap it to read them |
 
@@ -204,9 +205,10 @@ save their settings. Turn the radio off after the station.
 
 - **Top bar:** callsign, grid square (from the GPS when one is plugged in, or
   **Mesh** from a Meshtastic radio's GPS, see [Position from a Meshtastic
-  radio](#position-from-a-meshtastic-radio)), local
-  time and UTC, network status, weather alerts in force, **Rec**, ⌨ (on-screen
-  keyboard) and **⏻** (Settings, Diagnostics, Power).
+  radio](#position-from-a-meshtastic-radio)), local time and UTC, network status,
+  weather alerts in force, **Rec**, the speaker and microphone icons (sound levels,
+  see [Levels](#levels)), ⌨ (on-screen keyboard) and **⏻** (Settings, Diagnostics,
+  Power).
 - **Home:** the app tiles, 18 to a page. Swipe sideways, tap ◀ ▶ or press Page
   Up/Down for the next page.
 - **Folders** group related apps under one tile. Standard folders:
@@ -214,7 +216,8 @@ save their settings. Turn the radio off after the station.
   - **Mesh & APRS:** Meshtastic, Mesh text, MeshCore, APRS.
 - **Home bar:** when an app is open, a thin bar across the top of the screen has
   **⌂ Home**, a button for each open app (tap it to bring that app to the front,
-  ✕ to close it) and the time.
+  ✕ to close it), **Rec**, the speaker and microphone icons and the time. So levels
+  can be changed while WSJT-X or VARA is on the screen.
 
 Tapping a tile whose app is already open brings it to the front; it does not start
 a second copy. While an app starts, its tile shows **Opening…**. If it shows
@@ -234,7 +237,9 @@ a second copy. While an app starts, its tile shows **Opening…**. If it shows
 | F8 | Net control |
 | F9 | Forms |
 | 1-9 | Open the first nine tiles on the page shown |
+| Ctrl+Alt+T | Terminal |
 | Alt+Tab | Switch between open apps |
+| Volume up, down and mute keys | The listening speaker only, never the radio (on a dedicated station and in the Emcomm-CNC session) |
 
 Every drop-down list can be searched: tap it and type, or start typing on it.
 
@@ -382,6 +387,26 @@ unplugged, their sound goes to a silent output rather than to a speaker.
 
 Set them once per radio and band; they're kept. **Diagnostics > Audio levels** opens
 the same page.
+
+**From any screen:** the top bar (and the Home bar over other apps) has a speaker
+icon and a microphone icon. Tap one and its sliders drop down; tap anywhere else to
+put them away. They're the same levels as Settings > Audio: move one and the other
+moves too.
+
+- **Speaker icon:** the **Listening speaker** volume, with a mute button, and which
+  speaker it's playing on. The icon shows the volume, or a crossed-out speaker when
+  it's muted or there's no listening speaker. To pick a different speaker, tap
+  **Audio settings**.
+- **Microphone icon:** the radio's **To radio** and **From radio** levels, with the
+  meters. Tune or transmit and watch the radio's ALC while you move **To radio**.
+
+![The top bar's microphone icon, with the radio's levels](guide/audio-topbar.png)
+
+The keyboard's volume keys change the listening speaker too, never the radio: on a
+station the radio is the default speaker, so the usual volume keys would change the
+transmit level. (In desktop mode with Emcomm-CNC in a window, your desktop's own
+volume keys and menu still work as before; while the radio is the default speaker,
+its volume there is **To radio**.)
 
 ### The modem ports
 
@@ -1159,16 +1184,81 @@ both.
 
 ## Diagnostics
 
-**Diagnostics** (⏻ > Diagnostics, or F2): USB devices, radio ports, sound cards,
-services, recent USB events and GPS.
+**Diagnostics** (⏻ > Diagnostics, or F2) opens on a report of USB devices, radio
+ports, sound cards, services, rig control, GPS and time, and recent USB events. The
+list at the top picks one check instead (type to search it):
+
+- **Everything:** the full report (not the mesh radio).
+- **USB devices**, **Radio ports and USB serial ports**, **Sound cards**,
+  **Services**, **Rig control**, **GPS and time**, **USB plugged and unplugged**.
+- **Mesh radio:** asks a USB Meshtastic radio about itself. See below.
+- **Warnings and errors since start-up:** the computer's own log, in UTC.
+
+The buttons on the right:
 
 - **Read frequency:** asks the radio for its frequency through rig control.
 - **PTT test (2 s):** keys the radio for two seconds.
 - **Audio levels:** opens Settings > Audio.
-- **Rig control log:** what rigctld has been doing.
-- **Terminal:** a command line, for when you're asked to run something.
+- **Rig control log:** what rigctld is doing, live, in the terminal.
+- **Terminal** (or Ctrl+Alt+T from anywhere): a command line. See below.
 
-The same report is available over SSH with `emcomm-diag`.
+The same report is available over SSH with `emcomm-diag` (`emcomm-diag mesh` and
+`emcomm-diag log` for the two checks that aren't in it).
+
+### Mesh radio check
+
+Plug the Meshtastic radio in by USB, close the **Meshtastic** and **Mesh text** tiles
+(a radio takes one connection at a time), and pick **Mesh radio** in the list. It
+takes up to a minute and changes nothing on the radio. It shows:
+
+- the radio's name, hardware, firmware, region and role;
+- the GPS: **on**, **switched off** or **none fitted**, and how often it checks and
+  sends its position;
+- whether **Fixed position** is on (a typed-in position, not the GPS);
+- the radio's own position, when the GPS last fixed it (UTC) and how many
+  satellites it saw;
+- **What to do**, when something is wrong: the region not set, the GPS off, no fix
+  yet, or a fix over an hour old.
+
+The station never sets its clock from a Meshtastic radio: it reports time in whole
+seconds only. For the clock with no internet, use a USB GPS.
+
+Which radio it asks: the one picked for the station's position in Settings >
+Devices, else the one Mesh text last used by USB, else the only USB serial port
+that isn't the radio's or the GPS's. It never opens the radio's CAT or PTT port or
+the USB GPS. With more than one possible port it lists them; use the terminal with
+`emcomm-mesh-check --port` and the port's name.
+
+### Terminal
+
+A command line on the station, for checks like the ones above and for when you're
+asked to run something. On a station it runs as the station user (`radio`), with no
+admin rights; for admin work type `su - ` and your admin username, then `sudo -i`.
+In desktop mode it runs as you.
+
+- **Station commands…** lists ready-made commands; type to search. Picking one types
+  it in at the prompt without running it, so you can read or change it first. Tap
+  **⏎ Run** (or press Enter) to run it. Among them: the mesh radio check, Meshtastic's
+  `--info`, `--get position` and `--nodes`, turning the radio's GPS on, which USB
+  serial port is which, watching USB plug and unplug, gpsd, the clock, and the rig
+  control log.
+- The keys under it are the ones the on-screen keyboard lacks or hides: **Esc**,
+  **Tab**, **Ctrl+C** (stops a command), the arrows (↑ ↓ bring back earlier
+  commands), **|**, **~**, **/** and **-**. Tapping the terminal on a touchscreen
+  brings up the on-screen keyboard; ⌨ in the top bar does too.
+- **A−** and **A+** change the text size (kept for next time). **Copy** copies what's
+  selected (drag across it first); **Paste** pastes. With a keyboard, Ctrl+Shift+C
+  and Ctrl+Shift+V.
+- **New** closes the shell and starts another. Typing `exit` ends it; coming back to
+  the page starts a new one.
+- Esc and Ctrl+key presses go to the terminal, not to the launcher. F1 goes Home.
+
+`meshtastic` in the terminal is Meshtastic's own command line, put on the mesh
+radio's port for you: `meshtastic --info` works with no `--port`. Without that,
+Meshtastic would try every USB serial port, the radio's CAT and PTT ports
+included, and opening a PTT port can key the transmitter. Close the Meshtastic and
+Mesh text tiles first. `--host` (a node on the network) and `--ble` work as usual.
+`meshtastic --set ...` does change the radio's settings.
 
 ---
 

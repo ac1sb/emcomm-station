@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""Check a USB Meshtastic radio from the station: its GPS, its position and the settings
+that decide them.
+
+  emcomm-mesh-check [--port PORT]
+                    a summary: name, hardware, firmware, region, the GPS (on, off or not
+                    fitted), the radio's own fix and satellites, and what to do about it.
+                    Changes nothing on the radio. Diagnostics > Mesh radio runs this.
+  meshtastic ...    Meshtastic's own command line (installed as a link to this), on the
+                    mesh radio's port: "meshtastic --info", "meshtastic --get position".
+
+Which port: --port if given; else the Meshtastic radio picked in Settings > Devices for
+the station's position; else the USB port the Mesh text tile last used; else the only
+USB serial port that isn't the radio's or the GPS's. Never the radio's CAT or PTT port
+or the USB GPS: opening a PTT port can key the transmitter, and Meshtastic's own search
+for a radio would try them. A radio takes one connection at a time, so nothing here
+opens it while the Meshtastic or Mesh text tile has it.
+"""
+
+import glob
+import json
+import os
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+CONFIG = os.path.join(HOME, ".config/emcomm/mesh-{}.json")
+VENV = os.environ.get("EMCOMM_MESH_VENVS", "/opt/emcomm") + "/meshtastic"
+SERIAL_DIR = os.environ.get("EMCOMM_SERIAL_DIR", "/dev/serial/by-id")
+RADIO_PORTS = ("/dev/rig-cat", "/dev/rig-ptt", "/dev/rig2-cat", "/dev/rig2-ptt", "/dev/gps0")
+FLATPAK = "org.meshtastic.MeshtasticDesktop"  # the Meshtastic tile
+CLIENT = "contact"  # the Mesh text tile
+TIMEOUT = 45  # seconds for the radio to answer
+# Ways of reaching a radio that aren't a USB port: passed to meshtastic as they are.
+OTHER_LINKS = ("--host", "--tcp", "-t", "--ble", "-b", "--ble-scan")
+PORT_OPTIONS = ("--port", "--serial", "-s")  # meshtastic's names for the USB port
+NO_RADIO = ("-h", "--help", "--version", "--support", "--ble-scan")  # meshtastic options that open nothing
+
+
+# ---- which port ---------------------------------------------------------------------
+
+def saved_port():
+    """The mesh radio's port the station already knows: Settings > Devices, then the Mesh text tile."""
+    for name, key in (("gps", "port"), ("meshtastic", "address")):
+        try:
+            with open(CONFIG.format(name), encoding="utf-8") as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(saved, dict) or (name == "meshtastic" and saved.get("via") != "usb"):
+            continue
+        port = saved.get(key)
+        if isinstance(port, str) and os.path.isabs(port):
+            return port
+    return None
+
+
+def is_radio_port(port):
+    """Whether port is the radio's CAT or PTT port or the USB GPS."""
+    real = os.path.realpath(port)
+    return any(os.path.exists(p) and os.path.realpath(p) == real for p in RADIO_PORTS)
+
+
+def serial_ports():
+    return sorted(glob.glob(os.path.join(SERIAL_DIR, "*")))
+
+
+def pick_port(given=None):
+    """(port, None) or (None, why not)."""
+    if given:
+        if is_radio_port(given):
+            return None, f"{given} is the radio's CAT or PTT port or the GPS. Pick the Meshtastic radio's port."
+        return given, None
+    port = saved_port()
+    if port and os.path.exists(port) and not is_radio_port(port):
+        return port, None
+    others = [p for p in serial_ports() if not is_radio_port(p)]
+    if len(others) == 1:
+        return others[0], None
+    if not others:
+        why = "No USB serial port other than the radio's and the GPS's. Is the Meshtastic radio plugged in, " \
+              "with a data cable (some USB cables only charge)?"
+    else:
+        why = "More than one USB serial port could be the Meshtastic radio. Pick it with --port:\n" + \
+              "\n".join(f"  {p}" for p in others)
+    if port:
+        why = f"The saved Meshtastic port {port} isn't plugged in.\n" + why
+    return None, why
+
+
+def in_use():
+    """Whether the Meshtastic or Mesh text tile has the radio now."""
+    try:
+        out = subprocess.run(["flatpak", "ps", "--columns=application"], capture_output=True,
+                             text=True, timeout=10, check=False).stdout
+        if FLATPAK in out.split():
+            return "the Meshtastic tile"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                argv = [os.path.basename(a.decode(errors="replace")) for a in f.read().split(b"\0")[:2] if a]
+        except OSError:
+            continue
+        if CLIENT in argv:
+            return "the Mesh text tile"
+    return None
+
+
+# ---- asking the radio (inside the Meshtastic client's own Python) ---------------------
+
+def inner(port):
+    """Runs in the client's environment: print what the radio says about itself as JSON."""
+    try:
+        from google.protobuf.json_format import MessageToDict  # pylint: disable=import-outside-toplevel
+        from meshtastic.serial_interface import SerialInterface  # pylint: disable=import-outside-toplevel
+        iface = SerialInterface(port, timeout=TIMEOUT)
+        try:
+            local = iface.localNode.localConfig
+            nodes = list((iface.nodes or {}).values())
+            metadata = getattr(iface, "metadata", None)
+            data = {"my": iface.getMyNodeInfo() or {},
+                    "metadata": MessageToDict(metadata) if metadata else {},
+                    "config": {name: MessageToDict(getattr(local, name)) for name in ("device", "position", "lora")},
+                    "nodes": len(nodes),
+                    "nodes_with_position": sum(1 for n in nodes if (n.get("position") or {}).get("latitude"))}
+        finally:
+            iface.close()
+        print(json.dumps(data, default=str))
+    except Exception as err:  # serial and protocol errors all end up here
+        print(json.dumps({"error": str(err) or type(err).__name__}))
+    return 0
+
+
+def ask(port):
+    python = os.path.join(VENV, "bin", "python3")
+    if not os.path.exists(python):
+        return {"error": "Meshtastic's client isn't installed. Install the Mesh text tile, or run Update station."}
+    try:
+        done = subprocess.run([python, os.path.abspath(__file__), "--inner", port],
+                              capture_output=True, text=True, timeout=TIMEOUT + 15, check=False)
+        lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
+        return json.loads(lines[-1]) if lines else {"error": "No answer from the radio."}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {"error": "No answer from the radio."}
+
+
+# ---- the summary ----------------------------------------------------------------------
+
+def _num(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def utc(seconds):
+    return time.strftime("%Y-%m-%d %H:%M", time.gmtime(seconds)) + "Z"
+
+
+def ago(seconds):
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes} min ago"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h {minutes % 60} min ago"
+    return f"{minutes // 1440} days ago"
+
+
+def gps_state(position):
+    """on, off or none (no GPS fitted), from the radio's position settings."""
+    mode = position.get("gpsMode")
+    if mode == "ENABLED":
+        return "on"
+    if mode == "NOT_PRESENT":
+        return "none"
+    if mode is None and position.get("gpsEnabled"):
+        return "on"  # older firmware: gps_enabled, before gps_mode
+    return "off"  # DISABLED, which a radio leaves out because it's 0
+
+
+def summarize(data, port, now=None):
+    """The lines emcomm-mesh-check prints."""
+    now = now or time.time()
+    real = os.path.realpath(port)
+    lines = [f"Meshtastic radio on {port}" + (f" ({real})" if real != port else "")]
+    if data.get("error"):
+        lines.append(f"  No answer: {data['error']}")
+        lines.append("  Check the cable and that no other program has the port, then try again.")
+        return lines
+    my, meta, config = data.get("my") or {}, data.get("metadata") or {}, data.get("config") or {}
+    user, pos = my.get("user") or {}, my.get("position") or {}
+    position, lora, device = config.get("position") or {}, config.get("lora") or {}, config.get("device") or {}
+    todo = []
+
+    name = user.get("longName") or "(no name)"
+    short = f" ({user['shortName']})" if user.get("shortName") else ""
+    lines.append(f"  Name:      {name}{short} {user.get('id') or ''}".rstrip())
+    hardware = meta.get("hwModel") or user.get("hwModel") or "unknown"
+    lines.append(f"  Hardware:  {hardware}, firmware {meta.get('firmwareVersion') or 'unknown'}")
+    region = lora.get("region") or "UNSET"
+    lines.append(f"  Region:    {region}, role {device.get('role') or 'CLIENT'}")
+    if region == "UNSET":
+        todo.append("The region isn't set, so the radio won't transmit. Set it in the Meshtastic app "
+                    "(LoRa > Region), or: meshtastic --set lora.region US")
+
+    gps = gps_state(position)
+    every = _num(position.get("gpsUpdateInterval")) or 120  # 0 means the firmware's 2 minutes
+    send = _num(position.get("positionBroadcastSecs")) or 900  # 0 means 15 minutes
+    smart = ", smart position on" if position.get("positionBroadcastSmartEnabled") else ""
+    lines.append(f"  GPS:       {dict(on='on', off='switched off', none='none fitted')[gps]}"
+                 + (f", checks every {every} s, sends its position every {send} s{smart}" if gps == "on" else ""))
+    fixed = bool(position.get("fixedPosition"))
+    lines.append(f"  Fixed position: {'on (a typed-in position, not the GPS)' if fixed else 'off'}")
+    if gps == "off":
+        todo.append("Turn the GPS on in the Meshtastic app (Position > GPS mode: Enabled), "
+                    "or: meshtastic --set position.gps_mode ENABLED")
+    elif gps == "none":
+        todo.append("This radio has no GPS, so it can't place the station. A USB GPS (u-blox, such as "
+                    "a VK-162) can, and sets the clock too.")
+    if fixed:
+        todo.append("Fixed position is on, so the radio reports the typed-in position, not its GPS. "
+                    "To use the GPS: meshtastic --remove-position")
+
+    lat, lon = _num(pos.get("latitude")), _num(pos.get("longitude"))
+    source = pos.get("locationSource") or ""
+    when = _num(pos.get("time"))
+    sats = _num(pos.get("satsInView"))
+    if lat is None or lon is None or (lat == 0 and lon == 0):
+        lines.append("  Position:  none")
+        if gps == "on" and not fixed:
+            todo.append("No GPS fix yet. The GPS needs a clear view of the sky; a first fix can take 5 to "
+                        "15 minutes. Put the radio by a window or outside.")
+    else:
+        alt = _num(pos.get("altitude"))
+        text = f"{lat:.5f}, {lon:.5f}" + (f", {alt} m" if alt is not None else "")
+        if when:
+            text += f"; fixed {utc(when)} ({ago(max(0, now - when))})"
+        if sats is not None:
+            text += f", {sats} satellites"
+        if source == "LOC_MANUAL":
+            text += " (typed in, not from the GPS)"
+        lines.append(f"  Position:  {text}")
+        if when and now - when > 3600 and gps == "on" and source != "LOC_MANUAL":
+            todo.append("The last fix is over an hour old: the GPS may have lost the sky.")
+    lines.append(f"  Nodes:     {data.get('nodes', 0)} heard, {data.get('nodes_with_position', 0)} with a position")
+    lines.append("  Time:      never taken from a Meshtastic radio (whole seconds only)")
+    if todo:
+        lines.append("What to do:")
+        lines.extend(f"  - {item}" for item in todo)
+    return lines
+
+
+def check(argv):
+    given = None
+    if argv[:1] == ["--port"] and len(argv) == 2:
+        given = argv[1]
+    elif argv:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    port, why = pick_port(given)
+    if not port:
+        print(why)
+        return 1
+    if not os.access(port, os.R_OK | os.W_OK):
+        print(f"Can't open {port}: no permission. The station user needs to be in the dialout group; "
+              "run Update station, then restart.")
+        return 1
+    busy = in_use()
+    if busy:
+        print(f"{busy.capitalize()} has the Meshtastic radio. Close it and try again.")
+        return 1
+    print("\n".join(summarize(ask(port), port)))
+    return 0
+
+
+# ---- meshtastic, on the mesh radio's port ----------------------------------------------
+
+def meshtastic(argv):
+    """Meshtastic's own command line, kept off the radio's CAT and PTT ports."""
+    program = os.path.join(VENV, "bin", "meshtastic")
+    if not os.path.exists(program):
+        print("Meshtastic's command line isn't installed. Install the Mesh text tile, or run Update station.",
+              file=sys.stderr)
+        return 1
+    words = [a.split("=", 1)[0] for a in argv]
+    if not argv or any(w in NO_RADIO for w in words):
+        os.execv(program, [program] + argv)
+        return 1
+    if not any(w in OTHER_LINKS for w in words):
+        given, rest = None, list(argv)
+        for i, word in enumerate(words):
+            if word in PORT_OPTIONS:
+                if "=" in argv[i]:
+                    given, rest = argv[i].split("=", 1)[1], argv[:i] + argv[i + 1:]
+                elif i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                    given, rest = argv[i + 1], argv[:i] + argv[i + 2:]
+                else:  # --port alone means "find one", which could be the radio's: we find it instead
+                    rest = argv[:i] + argv[i + 1:]
+                break
+        port, why = pick_port(given or None)
+        if not port:
+            print(why, file=sys.stderr)
+            return 1
+        if not given:
+            print(f"(on {port})", file=sys.stderr)
+        argv = ["--port", port] + rest
+        busy = in_use()
+        if busy:
+            print(f"{busy.capitalize()} has the Meshtastic radio. Close it and try again.", file=sys.stderr)
+            return 1
+    os.execv(program, [program] + argv)
+    return 1
+
+
+def main(argv):
+    if len(argv) == 2 and argv[0] == "--inner":
+        return inner(argv[1])
+    if os.path.basename(sys.argv[0]) == "meshtastic":
+        return meshtastic(argv)
+    return check(argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

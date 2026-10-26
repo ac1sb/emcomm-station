@@ -152,6 +152,7 @@ def main():
     fake_audio = os.path.join(tmp.name, "emcomm-audio")
     status = {"radio_sink": "alsa_output.usb-radio", "radio_source": "alsa_input.usb-radio",
               "speaker": "alsa_output.pci-analog", "volumes": {"to_radio": 40, "from_radio": 55, "speaker": 70},
+              "muted": {"to_radio": False, "from_radio": False, "speaker": False},
               "speakers": [{"name": "alsa_output.pci-analog", "description": "Built-in Audio Analog Stereo",
                             "kind": "builtin"},
                            {"name": "alsa_output.usb-headset", "description": "USB Headset", "kind": "usb"}],
@@ -695,6 +696,46 @@ def main():
     pump(0.3)
     check(not win.audio_meter_procs, "level meters stop when the page closes")
 
+    # ---- the top bar's speaker and microphone: the same levels, dropped down from an icon ----
+    top = [(kind, b) for kind, b, _img in win.audio_icons if isinstance(b, Gtk.MenuButton)]
+    check([k for k, _b in top] == ["speaker", "radio"],
+          f"speaker and microphone icons in the top bar: {[k for k, _b in top]}")
+    check(win.audio_icons[0][2].get_icon_name()[0] == "audio-volume-high-symbolic", "speaker icon shows 70 %")
+    speaker_btn, radio_btn = (b for _k, b in top)
+    speaker_btn.set_active(True)
+    pump(1.5)
+    check(win.audio_watchers == {"top speaker"}, f"speaker panel open: {win.audio_watchers}")
+    panel_view = next(v for v in win.audio_views if set(v) == {"speaker", "_where"} and v["speaker"]["scale"]
+                      .get_ancestor(Gtk.Popover))
+    check(round(panel_view["speaker"]["scale"].get_value()) == 70, "the panel reads the speaker's level")
+    check("Built-in Audio Analog Stereo" in panel_view["_where"][1].get_text(),
+          f"says where it plays: {panel_view['_where'][1].get_text()}")
+    panel_view["speaker"]["scale"].set_value(30)
+    check(round(win.audio_sliders["speaker"].get_value()) == 30, "Settings > Audio's slider follows the panel's")
+    check(win.audio_icons[0][2].get_icon_name()[0] == "audio-volume-low-symbolic", "speaker icon shows 30 %")
+    panel_view["speaker"]["mute"].set_active(True)
+    check(win.audio_icons[0][2].get_icon_name()[0] == "audio-volume-muted-symbolic", "muted: speaker icon says so")
+    speaker_btn.set_active(False)
+    radio_btn.set_active(True)
+    pump(1.5)
+    check(win.audio_watchers == {"top radio"} and set(win.audio_meter_procs) <= {"to_radio", "from_radio"},
+          f"microphone panel open, meters running: {win.audio_watchers}")
+    check(win.get_preferred_width()[0] <= 1024, f"top bar with both icons fits 1024 px ({win.get_preferred_width()[0]})")
+    radio_btn.set_active(False)
+    pump(0.5)
+    check(not win.audio_watchers and not win.audio_meter_procs, "meters stop when the panel closes")
+    # The Home bar's own copies, over other apps, in a window of their own.
+    bar_btn = next(b for kind, b, _img in win.audio_icons if kind == "radio" and not isinstance(b, Gtk.MenuButton))
+    win.home_bar.show_all()  # only a station's (or the Emcomm-CNC session's) shows by itself
+    pump(0.5)
+    win.home_bar.toggle_audio("radio", bar_btn)
+    pump(1)
+    drop = win.home_bar.audio_panels["radio"]
+    check(drop.get_visible() and "bar radio" in win.audio_watchers, "Home bar: microphone panel drops down")
+    win.home_bar.toggle_audio("radio", bar_btn)
+    pump(0.3)
+    check(not drop.get_visible() and not win.audio_watchers, "Home bar: tapped again, it goes away")
+
     # ---- tapping a tile: a flash, then "Opening…" until the app's window appears ----
     win.stack.set_visible_child_name("home")
     pump(0.5)
@@ -735,6 +776,53 @@ def main():
         folder.clicked()
         check(folder.get_style_context().has_class("tapped") and win.stack.get_visible_child_name() == "folder",
               "folder tap flashes and opens")
+
+    # Diagnostics: a searchable list of checks, the mesh radio only when picked.
+    win.stack.set_visible_child_name("home")
+    pump(0.2)
+    win.stack.set_visible_child_name("diagnostics")
+    pump(0.5)
+    check(win.diag_check.get_active_id() == "all" and "mesh" in [i for i, _ in win.diag_check.items],
+          "Diagnostics: list of checks, Everything first")
+    check(win.output.get_buffer().get_text(*win.output.get_buffer().get_bounds(), False).startswith(
+        "$ emcomm-diag all"), "Diagnostics runs Everything when it opens")
+    # Terminal: a shell as this user, touch keys, and station commands typed in at the prompt.
+    if L.Vte is None:
+        print("skipped: the terminal (gir1.2-vte-2.91 isn't installed)")
+    else:
+        def screen_text():
+            try:
+                return win.terminal.get_text_format(L.Vte.Format.TEXT) or ""
+            except AttributeError:  # VTE before 0.76
+                return win.terminal.get_text(None, None)[0] or ""
+
+        win.open_terminal()
+        pump(2)
+        check(win.stack.get_visible_child_name() == "terminal" and win.term_pid, "Terminal: a shell started")
+        check("Station terminal" not in screen_text() and "Terminal, as" in screen_text(),
+              "Terminal: says whose shell it is (desktop mode here)")
+        who = next(n for n, (_l, cmd) in enumerate(L.TERMINAL_COMMANDS) if cmd == "id")
+        win.term_commands.set_active_id(str(who))
+        pump(0.5)
+        check(win.term_commands.get_active_id() is None and win.term_commands.label.get_text() == "Station commands…",
+              "Terminal: the list goes back to its title once a command is typed in")
+        win._terminal_send("\r")
+        pump(1.5)
+        check("uid=" in screen_text(), "Terminal: a station command runs with Enter")
+        esc = L.Gdk.Event.new(L.Gdk.EventType.KEY_PRESS)
+        esc.keyval, esc.state = L.Gdk.KEY_Escape, 0
+        check(win._on_key(win, esc) is False and win.stack.get_visible_child_name() == "terminal",
+              "Terminal: Esc is the terminal's, not Home")
+        page = win.stack.get_child_by_name("terminal")
+        need = page.get_preferred_width()[0]
+        check(need <= 1024, f"Terminal: fits 1024 px (needs {need})")
+        old_pid = win.term_pid
+        win._terminal_restart()
+        pump(1.5)
+        check(win.term_pid and win.term_pid != old_pid, "Terminal: New starts another shell")
+        os.kill(win.term_pid, 9)
+        pump(1)
+        check(win.term_pid is None and "The shell ended" in screen_text(), "Terminal: says when the shell ends")
 
     # a tile added after the operator arranged Home joins its standard folder
     apps = [{"code": c} for c in ("MSH", "MSD", "APR", "WEB")]

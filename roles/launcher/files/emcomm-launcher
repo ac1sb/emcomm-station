@@ -40,6 +40,11 @@ try:
 except (ImportError, ValueError):
     GdkX11 = None
 try:
+    gi.require_version("Vte", "2.91")
+    from gi.repository import Vte  # noqa: E402  (the terminal; without it, Terminal opens xterm)
+except (ImportError, ValueError):
+    Vte = None
+try:
     gi.require_version("Poppler", "0.18")
     from gi.repository import Poppler  # noqa: E402  (draws the ICS-213 form)
 except (ImportError, ValueError):
@@ -134,8 +139,44 @@ AUDIO_CHOICES = [
      "(VARA, fldigi, WSJT-X, JS8Call, Direwolf, ARDOP) are still moved onto the radio's sound card; "
      "with it closed, set each one to the radio's sound card in its own settings."),
 ]
+# The levels Settings > Audio and the top bar's speaker and microphone panels set.
+AUDIO_LEVELS = {"to_radio": ("To radio", "Transmit audio from the radio apps"),
+                "from_radio": ("From radio", "Receive audio into the radio apps"),
+                "speaker": ("Listening speaker", "The Scanner, Gqrx, the browser, recordings")}
 EXIT_LOG_OUT = 10  # exit status that ends the Emcomm-CNC login session (see emcomm-session)
 KEYBOARD_CMD = os.environ.get("EMCOMM_KEYBOARD", "onboard").split()
+# Diagnostics: the checks in its list, as emcomm-diag sections (mesh asks the radio, so isn't in all).
+DIAG_CHECKS = [("all", "Everything (not the mesh radio)"), ("usb", "USB devices"),
+               ("ports", "Radio ports and USB serial ports"), ("audio", "Sound cards"), ("services", "Services"),
+               ("rig", "Rig control"), ("gps", "GPS and time"), ("events", "USB plugged and unplugged, last 30 min"),
+               ("mesh", "Mesh radio: GPS, position and settings (asks the radio)"),
+               ("log", "Warnings and errors since start-up")]
+# Diagnostics > Terminal: what its Station commands list types in at the prompt (Enter runs it).
+TERMINAL_PATH = os.path.expanduser("~/.config/emcomm/terminal.json")
+TERMINAL_COMMANDS = [
+    ("Mesh radio: GPS, position and settings", "emcomm-mesh-check"),
+    ("Mesh radio: everything it reports", "meshtastic --info"),
+    ("Mesh radio: position settings", "meshtastic --get position"),
+    ("Mesh radio: nodes it has heard", "meshtastic --nodes"),
+    ("Mesh radio: turn its GPS on", "meshtastic --set position.gps_mode ENABLED"),
+    ("USB serial ports (which is which)", "ls -l /dev/serial/by-id/"),
+    ("USB devices", "lsusb"),
+    ("USB serial messages since start-up", "journalctl -k -b --utc -o short-iso --no-pager | "
+     "grep -iE 'ttyUSB|ttyACM|cp210x|ch341|usb [0-9-]+:' | tail -n 30"),
+    ("Watch USB plug and unplug (Ctrl+C stops)", "journalctl -kf --utc -o short-iso | grep -iE 'usb|tty'"),
+    ("GPS: what gpsd sees", "gpspipe -w -n 10"),
+    ("Time: how good the clock is", "chronyc tracking; chronyc sources"),
+    ("Rig control log (Ctrl+C stops)", "journalctl -fu rigctld --utc -o short-iso"),
+    ("Station report", "emcomm-diag"),
+    ("Warnings and errors since start-up", "journalctl -b -p warning --utc -o short-iso --no-pager | tail -n 60"),
+    ("This computer's network address", "hostname -I"),
+    ("Disk space", "df -h / ~"),
+    ("Who I am and my groups", "id"),
+    ("Become your admin user (asks its password)", "su - "),
+]
+# The touch keys under the terminal: (label, what the key sends).
+TERMINAL_KEYS = [("Esc", "\x1b"), ("Tab", "\t"), ("Ctrl+C", "\x03"), ("↑", "\x1b[A"), ("↓", "\x1b[B"),
+                 ("←", "\x1b[D"), ("→", "\x1b[C"), ("|", "|"), ("~", "~"), ("/", "/"), ("-", "-")]
 TEXT_SIZES = [(1.0, "Normal"), (1.25, "Large"), (1.5, "Extra large")]
 ROTATIONS = [("normal", "Normal"), ("left", "Turned left"), ("right", "Turned right"), ("inverted", "Upside down")]
 HOME_BAR_HEIGHT = 48  # pixels at normal text size
@@ -180,6 +221,8 @@ menuitem:hover { background: $hover; }
 .navbtn { background: $bar; border: 1px solid $line; border-radius: 10px; color: $text;
           font-size: 16px; min-height: 52px; padding: 0 16px; }
 .navbtn:hover { background: $hover; }
+.termkey { min-height: 44px; min-width: 0; padding: 0 6px; font-family: 'IBM Plex Mono', monospace; }
+.terminal-frame { border: 1px solid $line; border-radius: 6px; background: $surface; padding: 4px; }
 .danger { border-color: $danger; color: $danger_text; background: $danger_bg; }
 .title { font-size: 20px; font-weight: 600; }
 entry.formfield, textview.formfield text { background: #FFFBE6; color: #10161C; font-size: 15px;
@@ -245,6 +288,11 @@ radiobutton radio:checked { background-color: $accent_fill; border-color: $accen
 .homebar .linked .navbtn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .homebar .linked .navbtn:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0;
                                       border-left-width: 0; padding: 0 10px; }
+.audio-drop-down { background: $surface; border: 1px solid $line; }
+.navbtn.audio-icon { padding: 0 10px; }
+.level-name, popover .level-name { color: $text; }
+.navbtn.mute { min-height: 40px; padding: 0 10px; }
+.navbtn.mute:checked { background: alpha($accent_fill, 0.22); border-color: $accent_fill; }
 .homebar-clock { font-family: 'IBM Plex Mono', monospace; font-size: 16px; color: $muted; }
 textview, textview text { background: $surface; color: $text; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
 """)
@@ -2154,6 +2202,47 @@ class PickList(Gtk.Button):
         else:
             listbox.grab_focus()
 
+class AudioDropDown(Gtk.Window):
+    """The Home bar's speaker or microphone panel. Its own window, as the Home bar is only a
+    strip across the top of the screen: a popover can't hang below it. Goes away on a tap
+    anywhere else, on Escape, or on its button again."""
+
+    def __init__(self, launcher, kind):
+        super().__init__(title="Emcomm-CNC audio levels")
+        self.launcher, self.kind = launcher, kind
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        self.set_decorated(False)
+        self.set_keep_above(True)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_resizable(False)
+        frame = Gtk.Box()
+        frame.get_style_context().add_class("audio-drop-down")
+        frame.add(launcher._audio_panel(kind, self.hide))
+        self.add(frame)
+        self.shown_at = 0
+        self.connect("focus-out-event", lambda *_: time.time() - self.shown_at > 0.5 and self.hide())
+        self.connect("key-press-event", lambda _w, e: e.keyval == Gdk.KEY_Escape and self.hide())
+        self.connect("show", lambda *_: launcher._audio_watch(f"bar {kind}", True))
+        self.connect("hide", lambda *_: launcher._audio_watch(f"bar {kind}", False))
+
+    def drop_down(self, button):
+        """Show right under `button`, its right edge in line with the button's, on the screen."""
+        self.show_all()
+        if not button.get_window():
+            return
+        _ok, ox, oy = button.get_window().get_origin()
+        alloc = button.get_allocation()
+        width = self.get_preferred_size()[1].width
+        display = Gdk.Display.get_default()
+        monitor = display.get_monitor_at_window(button.get_window()) or display.get_monitor(0)
+        geom = monitor.get_geometry()
+        x = max(geom.x, min(ox + alloc.x + alloc.width - width, geom.x + geom.width - width))
+        self.move(x, oy + alloc.y + alloc.height + 4)
+        self.shown_at = time.time()
+        self.present_with_time(Gtk.get_current_event_time())
+
+
 class HomeBar(Gtk.Window):
     """A thin bar across the top of the screen, above every app, with Home, the
     local and UTC clock and the on-screen keyboard. Apps open below it; the launcher, when
@@ -2191,6 +2280,12 @@ class HomeBar(Gtk.Window):
         self.clock = Gtk.Label()
         self.clock.get_style_context().add_class("homebar-clock")
         box.pack_end(self.clock, False, False, 0)
+        # The speaker's and the radio's levels over any app, as on the launcher's top bar.
+        self.audio_panels = {}
+        for kind in ("radio", "speaker"):
+            button = launcher._audio_icon_button(kind, Gtk.Button())
+            button.connect("clicked", lambda b, k=kind: self.toggle_audio(k, b))
+            box.pack_end(button, False, False, 0)
         # Recording (and Broadcastify) at a glance, from any app; tap for the Recorder page.
         self.rec = Gtk.Button(label="Rec")
         self.rec.get_style_context().add_class("navbtn")
@@ -2236,6 +2331,19 @@ class HomeBar(Gtk.Window):
             self.apps_box.pack_start(pair, False, False, 0)
         self.apps_box.show_all()
         return True
+
+    def toggle_audio(self, kind, button):
+        """Drop the speaker or microphone panel down under its button, or put it away."""
+        panel = self.audio_panels.get(kind)
+        if panel is None:
+            panel = self.audio_panels[kind] = AudioDropDown(self.launcher, kind)
+        for other in self.audio_panels.values():
+            if other is not panel:
+                other.hide()
+        if panel.get_visible():
+            panel.hide()
+        else:
+            panel.drop_down(button)
 
     def bring_forward(self, wid):
         wmctrl("-i", "-a", hex(wid))
@@ -2299,6 +2407,10 @@ class Launcher(Gtk.Window):
         self._filling = False
         self.default_audio_card = None
         self.audio_router = None  # emcomm-audio watch
+        # Every set of level sliders (Settings > Audio, the speaker and microphone panels), what's
+        # showing one now, and the top bars' speaker and microphone icons.
+        self.audio_views, self.audio_watchers, self.audio_icons = [], set(), []
+        self.audio_info, self.audio_touched, self.audio_meter_procs = {}, {}, {}
         self.rig_hz = None  # where the radio is, from the last status check
         self._poll_lock = threading.Lock()  # one status check at a time
         self._audio_lock = threading.Lock()  # the default-audio choice and the check that applies it
@@ -2334,6 +2446,8 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._forms_page(), "forms")
         self.stack.add_named(self._ics213_editor(), "ics213-edit")
         self.stack.add_named(self._recorder_page(), "recorder")
+        if Vte is not None:
+            self.stack.add_named(self._terminal_page(), "terminal")
         root.pack_start(self.stack, True, True, 0)
 
         self._tick_clock()
@@ -2475,7 +2589,15 @@ class Launcher(Gtk.Window):
     def _on_key(self, _widget, event):
         """Esc/F1 Home, F2 Diagnostics, F3 Settings, F4 Logs, F5 Reference, F6 Wi-Fi, F7 Online,
         F8 Net control, F9 Forms, 1-9 open a tile on Home, Page Up/Down change Home page,
-        Ctrl+M minimize (desktop mode)."""
+        Ctrl+M minimize (desktop mode), Ctrl+Alt+T terminal. In the terminal, Esc and Ctrl+M
+        are the terminal's."""
+        ctrl_alt = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK
+        if event.state & ctrl_alt == ctrl_alt and event.keyval in (Gdk.KEY_t, Gdk.KEY_T):
+            self.open_terminal()
+            return True
+        if self.stack.get_visible_child_name() == "terminal" and (
+                event.keyval == Gdk.KEY_Escape or event.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK)):
+            return False
         if event.state & Gdk.ModifierType.CONTROL_MASK and event.keyval in (Gdk.KEY_m, Gdk.KEY_M):
             self.minimize()
             return True
@@ -2532,6 +2654,17 @@ class Launcher(Gtk.Window):
         self.clock = Gtk.Label()
         self.clock.get_style_context().add_class("mono")
         bar.pack_end(self.clock, False, False, 0)
+        # The speaker and microphone: tap for their levels, without going to Settings > Audio.
+        audio = Gtk.Box(spacing=6)
+        for kind in ("speaker", "radio"):
+            button = self._audio_icon_button(kind, Gtk.MenuButton())
+            panel = Gtk.Popover(relative_to=button, position=Gtk.PositionType.BOTTOM)
+            panel.get_style_context().add_class("station-menu")
+            panel.add(self._audio_panel(kind, panel.popdown))
+            panel.connect("notify::visible", lambda p, _x, k=kind: self._audio_watch(f"top {k}", p.get_visible()))
+            button.set_popover(panel)
+            audio.pack_start(button, False, False, 0)
+        bar.pack_end(audio, False, False, 0)
         self.audio_status = Gtk.Label()
         bar.pack_end(self.audio_status, False, False, 0)
         # Tap the network status to open the Wi-Fi page.
@@ -2608,6 +2741,8 @@ class Launcher(Gtk.Window):
                 gps = gps_fix() if os.path.exists(GPS_DEV) else "absent"
                 mesh = None if isinstance(gps, tuple) else self._mesh_fix()
                 GLib.idle_add(self._show_status, freq, audio, net, gps, mesh)
+                if not self.audio_watchers:  # else the 2 s refresh keeps them up to date
+                    GLib.idle_add(self._audio_show_icons, audio_status())
                 signature = devices_signature()
                 if signature != self._devices_seen:
                     self._devices_seen = signature
@@ -3393,6 +3528,7 @@ class Launcher(Gtk.Window):
         self.css_provider.load_from_data(scaled_css(self.colours, self.text_scale).encode())
         Gtk.StyleContext.add_provider_for_screen(screen, self.css_provider,
                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self._colour_terminal()
 
     def _set_theme(self, name):
         self._apply_theme(name)
@@ -4026,41 +4162,15 @@ class Launcher(Gtk.Window):
         body.pack_start(now, False, False, 0)
 
         levels = self._section("Levels")
-        grid = Gtk.Grid(column_spacing=14, row_spacing=6)
-        self.audio_sliders, self.audio_meters, self.audio_values = {}, {}, {}
-        rows = (("to_radio", "To radio", "Transmit audio from the radio apps"),
-                ("from_radio", "From radio", "Receive audio into the radio apps"),
-                ("speaker", "Listening speaker", "The Scanner, Gqrx, the browser, recordings"))
-        for row, (key, name, detail) in enumerate(rows):
-            names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            names.pack_start(Gtk.Label(label=name, xalign=0), False, False, 0)
-            small = Gtk.Label(label=detail, xalign=0)
-            small.get_style_context().add_class("muted")
-            names.pack_start(small, False, False, 0)
-            grid.attach(names, 0, row * 2, 1, 2)
-            scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
-            scale.set_draw_value(False)
-            scale.set_hexpand(True)
-            scale.set_valign(Gtk.Align.END)
-            scale.connect("value-changed", lambda s, k=key: self._audio_set_volume(k, s.get_value()))
-            grid.attach(scale, 1, row * 2, 1, 1)
-            value = Gtk.Label(label="", xalign=1, width_chars=5)
-            value.get_style_context().add_class("muted")
-            grid.attach(value, 2, row * 2, 1, 1)
-            self.audio_sliders[key], self.audio_values[key] = scale, value
-            if key != "speaker":
-                # Inset like the slider's trough, so the two line up.
-                meter = Gtk.LevelBar(min_value=0, max_value=60, valign=Gtk.Align.START, margin_start=10,
-                                     margin_end=10)
-                meter.set_size_request(-1, 10)
-                for offset in (Gtk.LEVEL_BAR_OFFSET_LOW, Gtk.LEVEL_BAR_OFFSET_HIGH, Gtk.LEVEL_BAR_OFFSET_FULL):
-                    meter.remove_offset_value(offset)
-                grid.attach(meter, 1, row * 2 + 1, 1, 1)
-                self.audio_meters[key] = meter
+        grid, view = self._audio_level_rows(("to_radio", "from_radio", "speaker"))
+        self.audio_sliders = {k: v["scale"] for k, v in view.items()}
+        self.audio_values = {k: v["value"] for k, v in view.items()}
+        self.audio_meters = {k: v["meter"] for k, v in view.items() if "meter" in v}
         levels.pack_start(grid, False, False, 0)
         hint = Gtk.Label(xalign=0, wrap=True, label=(
-            "Transmit: raise To radio until the radio's ALC just starts to move, then back off a little. "
-            "Receive: set From radio so the meter sits about a third of the way on band noise."))
+            "Transmit: set To radio once (about 40-60 %) and trim each app's own level, keeping the radio's "
+            "ALC at a third of its scale or less. Receive: set From radio so the meter sits about a third of "
+            "the way on band noise. The speaker and microphone icons on the top bar have these too."))
         hint.get_style_context().add_class("muted")
         levels.pack_start(hint, False, False, 0)
         body.pack_start(levels, False, False, 0)
@@ -4119,21 +4229,144 @@ class Launcher(Gtk.Window):
             when.pack_start(self.audio_quiet, False, False, 6)
         body.pack_start(when, False, False, 0)
 
-        self.audio_info, self.audio_touched, self.audio_meter_procs = {}, {}, {}
         self._audio_streams_shown = None
-        page.connect("map", lambda *_: self._audio_shown(True))
-        page.connect("unmap", lambda *_: self._audio_shown(False))
+        page.connect("map", lambda *_: self._audio_watch("page", True))
+        page.connect("unmap", lambda *_: self._audio_watch("page", False))
         return page
 
-    def _audio_shown(self, shown):
-        """While the page is up: refresh every 2 s and run the level meters."""
-        if not shown:
+    def _audio_level_rows(self, keys, panel=False):
+        """A grid of level sliders (and, for the radio's two, meters under them), kept in step
+        with every other set: moving one moves the same slider everywhere."""
+        grid = Gtk.Grid(column_spacing=14, row_spacing=6)
+        view = {}
+        for row, key in enumerate(keys):
+            name, detail = AUDIO_LEVELS[key]
+            names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            title = Gtk.Label(label=name, xalign=0)
+            title.get_style_context().add_class("level-name")
+            names.pack_start(title, False, False, 0)
+            small = Gtk.Label(label=detail, xalign=0)
+            small.get_style_context().add_class("muted")
+            names.pack_start(small, False, False, 0)
+            grid.attach(names, 0, row * 2, 1, 2)
+            scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+            scale.set_draw_value(False)
+            scale.set_hexpand(True)
+            scale.set_size_request(160, -1)
+            scale.set_valign(Gtk.Align.END)
+            scale.connect("value-changed", lambda s, k=key: self._audio_set_volume(k, s.get_value(), s))
+            grid.attach(scale, 1, row * 2, 1, 1)
+            value = Gtk.Label(label="", xalign=1, width_chars=5)
+            value.get_style_context().add_class("muted")
+            grid.attach(value, 2, row * 2, 1, 1)
+            view[key] = {"scale": scale, "value": value}
+            if key == "speaker":
+                # Mute and back, at the same level: no desktop volume menu to do it on a station.
+                mute = Gtk.ToggleButton(tooltip_text="Mute the listening speaker", valign=Gtk.Align.CENTER)
+                mute.add(Gtk.Image.new_from_icon_name("audio-volume-muted-symbolic", Gtk.IconSize.BUTTON))
+                mute.get_style_context().add_class("navbtn")
+                mute.get_style_context().add_class("mute")
+                mute.set_can_focus(not panel)  # else a panel opens with it ringed, as if it were on
+                mute.connect("toggled", lambda b, k=key: self._audio_set_mute(k, b.get_active()))
+                grid.attach(mute, 3, row * 2, 1, 2)
+                view[key]["mute"] = mute
+            else:
+                # Inset like the slider's trough, so the two line up.
+                meter = Gtk.LevelBar(min_value=0, max_value=60, valign=Gtk.Align.START, margin_start=10,
+                                     margin_end=10)
+                meter.set_size_request(-1, 10)
+                for offset in (Gtk.LEVEL_BAR_OFFSET_LOW, Gtk.LEVEL_BAR_OFFSET_HIGH, Gtk.LEVEL_BAR_OFFSET_FULL):
+                    meter.remove_offset_value(offset)
+                grid.attach(meter, 1, row * 2 + 1, 1, 1)
+                view[key]["meter"] = meter
+        self.audio_views.append(view)
+        return grid, view
+
+    def _audio_panel(self, kind, close):
+        """The top bar's drop-down for the speaker icon (the listening speaker, with mute) or the
+        microphone icon (the radio's To radio and From radio, with meters): a shortcut to the
+        levels on Settings > Audio. `close` hides the drop-down."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=14)
+        box.set_size_request(420, -1)
+        title = Gtk.Label(label="LISTENING SPEAKER" if kind == "speaker" else "RADIO AUDIO", xalign=0)
+        title.get_style_context().add_class("section-title")
+        box.pack_start(title, False, False, 0)
+        grid, view = self._audio_level_rows(("speaker",) if kind == "speaker" else ("to_radio", "from_radio"),
+                                            panel=True)
+        box.pack_start(grid, False, False, 0)
+        where = Gtk.Label(xalign=0, wrap=True, max_width_chars=44)
+        where.get_style_context().add_class("muted")
+        box.pack_start(where, False, False, 0)
+        view["_where"] = (kind, where)
+
+        def settings(*_):
+            close()
+            self.show_page("audio")
+        more = self._navbtn("Audio settings", settings)
+        more.set_halign(Gtk.Align.END)
+        box.pack_start(more, False, False, 0)
+        box.show_all()
+        return box
+
+    def _audio_icon_button(self, kind, button):
+        """Put the speaker or microphone icon on a top bar button; the icon follows the levels."""
+        image = Gtk.Image.new_from_icon_name(
+            "audio-volume-high-symbolic" if kind == "speaker" else "audio-input-microphone-symbolic",
+            Gtk.IconSize.LARGE_TOOLBAR)
+        if button.get_child():
+            button.remove(button.get_child())  # a menu button's own arrow
+        button.add(image)
+        button.get_style_context().add_class("navbtn")
+        button.get_style_context().add_class("audio-icon")
+        button.set_valign(Gtk.Align.CENTER)
+        button.set_can_focus(False)  # Settings > Audio has the same sliders for the keyboard
+        button.set_tooltip_text("Listening speaker volume" if kind == "speaker" else "Radio audio levels")
+        self.audio_icons.append((kind, button, image))
+        return button
+
+    def _audio_show_icons(self, info):
+        """The speaker icon shows the listening speaker's volume, or muted when it's muted or
+        there's none; the microphone icon shows whether the radio's sound card is there."""
+        info = info or {}
+        volume = (info.get("volumes") or {}).get("speaker")
+        muted = (info.get("muted") or {}).get("speaker")
+        if not info.get("speaker") or muted or not volume:
+            speaker = "audio-volume-muted-symbolic"
+            tip = ("Listening speaker muted" if muted else "No listening speaker: other sound is silent"
+                   if not info.get("speaker") else "Listening speaker at 0 %")
+        else:
+            speaker = ("audio-volume-low-symbolic" if volume < 34 else "audio-volume-medium-symbolic"
+                       if volume < 67 else "audio-volume-high-symbolic")
+            tip = f"Listening speaker {volume} %"
+        radio = bool(info.get("radio_sink") or info.get("radio_source"))
+        for kind, button, image in self.audio_icons:
+            if kind == "speaker":
+                image.set_from_icon_name(speaker, Gtk.IconSize.LARGE_TOOLBAR)
+                button.set_tooltip_text(tip)
+            else:
+                image.set_from_icon_name("audio-input-microphone-symbolic" if radio else
+                                         "microphone-disabled-symbolic", Gtk.IconSize.LARGE_TOOLBAR)
+                button.set_tooltip_text("Radio audio levels" if radio else
+                                        "Radio audio levels: the radio's sound card isn't plugged in")
+        return False
+
+    def _audio_watch(self, who, shown):
+        """While Settings > Audio or a speaker or microphone panel is showing: refresh every 2 s and
+        run the level meters. `who` names which one."""
+        if shown:
+            self.audio_watchers.add(who)
+        else:
+            self.audio_watchers.discard(who)
+        if not self.audio_watchers:
             self._audio_meters(None)
             if getattr(self, "audio_timer", None):
                 GLib.source_remove(self.audio_timer)
                 self.audio_timer = None
             return
-        self._audio_refresh()
+        if not shown:
+            return
+        if who == "page":
+            self._audio_refresh()
         self._audio_status()
         if not getattr(self, "audio_timer", None):
             self.audio_timer = GLib.timeout_add_seconds(2, lambda: self._audio_status() or True)
@@ -4146,25 +4379,52 @@ class Launcher(Gtk.Window):
         threading.Thread(target=work, daemon=True).start()
 
     def _audio_show_status(self, info):
-        if not self.stack.get_visible_child_name() == "audio":
+        if not self.audio_watchers:
             return False
         self.audio_info = info or {}
         self._audio_meters(self.audio_info)
+        self._audio_show_icons(self.audio_info)
         self._filling = True
         volumes = self.audio_info.get("volumes") or {}
+        muted = self.audio_info.get("muted") or {}
         available = {"to_radio": self.audio_info.get("radio_sink"), "from_radio": self.audio_info.get("radio_source"),
                      "speaker": self.audio_info.get("speaker")}
-        for key, scale in self.audio_sliders.items():
-            scale.set_sensitive(bool(available[key]) and volumes.get(key) is not None)
-            value = volumes.get(key)
-            # Not while a finger is on it: the slider would jump back under it.
-            if value is not None and time.time() - self.audio_touched.get(key, 0) > 3:
-                scale.set_value(min(100, value))
-            self.audio_values[key].set_text(f"{round(scale.get_value())} %" if scale.get_sensitive() else "")
+        for view in self.audio_views:
+            for key, parts in view.items():
+                if key == "_where":
+                    self._audio_show_where(*parts)
+                    continue
+                scale = parts["scale"]
+                usable = bool(available[key]) and volumes.get(key) is not None
+                scale.set_sensitive(usable)
+                value = volumes.get(key)
+                # Not while a finger is on it: the slider would jump back under it.
+                if value is not None and time.time() - self.audio_touched.get(key, 0) > 3:
+                    scale.set_value(min(100, value))
+                parts["value"].set_text(f"{round(scale.get_value())} %" if usable else "")
+                if "mute" in parts:
+                    parts["mute"].set_sensitive(usable)
+                    if time.time() - self.audio_touched.get(key, 0) > 3:
+                        parts["mute"].set_active(bool(muted.get(key)))
         self._audio_fill_speakers()
         self._filling = False
         self._audio_fill_streams()
         return False
+
+    def _audio_show_where(self, kind, label):
+        """The line under a panel's sliders: where the sound plays, or why the sliders are off."""
+        info = self.audio_info
+        if kind == "speaker":
+            current = info.get("speaker")
+            name = next((s["description"] for s in info.get("speakers") or [] if s["name"] == current), current)
+            label.set_text(f"Playing on {name}. The radio apps never play here." if current else
+                           "No speaker other than the radio is connected, so other sound is silent. "
+                           "Plug in headphones or a speaker.")
+        elif info.get("radio_sink") or info.get("radio_source"):
+            label.set_text("To radio: the radio's ALC a third of its scale or less. "
+                           "From radio: the meter about a third up on band noise.")
+        else:
+            label.set_text("The radio's sound card isn't plugged in.")
 
     def _audio_fill_speakers(self):
         info, choice = self.audio_info, self.audio["listen_sink"]
@@ -4261,16 +4521,45 @@ class Launcher(Gtk.Window):
                 run_if_installed(["pactl", "move-sink-input", str(stream["index"]), speaker])
         GLib.timeout_add(600, lambda: self._audio_status() and False)
 
-    def _audio_set_volume(self, key, value):
+    def _audio_node(self, key):
+        return {"to_radio": self.audio_info.get("radio_sink"), "from_radio": self.audio_info.get("radio_source"),
+                "speaker": self.audio_info.get("speaker")}[key]
+
+    def _audio_set_volume(self, key, value, moved=None):
         if self._filling:
             return
         self.audio_touched[key] = time.time()
-        name = {"to_radio": self.audio_info.get("radio_sink"), "from_radio": self.audio_info.get("radio_source"),
-                "speaker": self.audio_info.get("speaker")}[key]
-        self.audio_values[key].set_text(f"{round(value)} %")
+        # The same slider in the other sets follows this one.
+        self._filling = True
+        for view in self.audio_views:
+            if key in view:
+                if view[key]["scale"] is not moved:
+                    view[key]["scale"].set_value(value)
+                view[key]["value"].set_text(f"{round(value)} %")
+        self._filling = False
+        name = self._audio_node(key)
         if name:
             kind = "set-source-volume" if key == "from_radio" else "set-sink-volume"
             run_if_installed(["pactl", kind, name, f"{round(value)}%"])
+        if key == "speaker":
+            volumes = self.audio_info.setdefault("volumes", {})
+            volumes["speaker"] = round(value)
+            self._audio_show_icons(self.audio_info)
+
+    def _audio_set_mute(self, key, muted):
+        if self._filling:
+            return
+        self.audio_touched[key] = time.time()
+        self._filling = True
+        for view in self.audio_views:
+            if "mute" in view.get(key, {}):
+                view[key]["mute"].set_active(muted)
+        self._filling = False
+        name = self._audio_node(key)
+        if name:
+            run_if_installed(["pactl", "set-sink-mute", name, "1" if muted else "0"])
+        self.audio_info.setdefault("muted", {})[key] = muted
+        self._audio_show_icons(self.audio_info)
 
     def _audio_meters(self, info):
         """Run a level meter on the radio's transmit and receive audio (None: stop them)."""
@@ -4285,7 +4574,7 @@ class Launcher(Gtk.Window):
             if proc and (proc.poll() is not None or getattr(proc, "device", None) != wanted.get(key)):
                 proc.terminate()
                 self.audio_meter_procs.pop(key)
-                GLib.idle_add(self.audio_meters[key].set_value, 0)
+                GLib.idle_add(self._audio_meter_level, key, 0)
             if key in wanted and key not in self.audio_meter_procs:
                 proc = self._audio_meter(key, wanted[key])
                 if proc:  # none without parec: tried again at the next refresh
@@ -4299,16 +4588,21 @@ class Launcher(Gtk.Window):
         except OSError:
             return None
         proc.device = device
-        meter = self.audio_meters[key]
 
         def read():
             while True:
                 chunk = proc.stdout.read(800)  # 50 ms
                 if not chunk:
                     return
-                GLib.idle_add(meter.set_value, max(0.0, 60 + peak_db(chunk)))
+                GLib.idle_add(self._audio_meter_level, key, max(0.0, 60 + peak_db(chunk)))
         threading.Thread(target=read, daemon=True).start()
         return proc
+
+    def _audio_meter_level(self, key, level):
+        for view in self.audio_views:
+            if "meter" in view.get(key, {}):
+                view[key]["meter"].set_value(level)
+        return False
 
     def _audio_refresh(self):
         if self.desktop:
@@ -8147,7 +8441,15 @@ class Launcher(Gtk.Window):
         title = Gtk.Label(label="Diagnostics", xalign=0)
         title.get_style_context().add_class("title")
         header.pack_start(title, False, False, 0)
-        header.pack_end(self._navbtn("Refresh", lambda *_: self._run_into_output(["emcomm-diag", "all"])), False, False, 0)
+        # Which check: picking one runs it.
+        self.diag_check = PickList()
+        for check_id, label in DIAG_CHECKS:
+            self.diag_check.append(check_id, label)
+        self.diag_check.set_active_id("all")
+        self.diag_check.set_size_request(360, -1)
+        self.diag_check.connect("changed", lambda *_: self._run_check())
+        header.pack_start(self.diag_check, False, False, 0)
+        header.pack_end(self._navbtn("Refresh", lambda *_: self._run_check()), False, False, 0)
         page.pack_start(header, False, False, 0)
 
         body = Gtk.Box(spacing=16)
@@ -8162,13 +8464,24 @@ class Launcher(Gtk.Window):
         actions.pack_start(self._navbtn("Read frequency", lambda *_: self._run_into_output(["emcomm-diag", "rig"])), False, False, 0)
         actions.pack_start(self._navbtn("PTT test (2 s)", self._confirm_ptt, "danger"), False, False, 0)
         actions.pack_start(self._navbtn("Audio levels", lambda *_: self.stack.set_visible_child_name("audio")), False, False, 0)
-        actions.pack_start(self._navbtn("Rig control log", lambda *_: run_detached(["xterm", "-fa", "IBM Plex Mono", "-fs", "11", "-e", "journalctl", "-f", "-u", "rigctld"])), False, False, 0)
-        actions.pack_start(self._navbtn("Terminal", lambda *_: run_detached(["xterm", "-fa", "IBM Plex Mono", "-fs", "12"])), False, False, 0)
+        actions.pack_start(self._navbtn("Rig control log", lambda *_: self.open_terminal("journalctl -fu rigctld --utc -o short-iso\n")), False, False, 0)
+        actions.pack_start(self._navbtn("Terminal  Ctrl+Alt+T", lambda *_: self.open_terminal()), False, False, 0)
         body.pack_start(actions, False, False, 0)
         page.pack_start(body, True, True, 0)
 
-        page.connect("map", lambda *_: self._run_into_output(["emcomm-diag", "all"]))
+        # The mesh radio is only asked when that check is picked, not every time the page opens.
+        page.connect("map", lambda *_: self._diag_shown())
         return page
+
+    def _diag_shown(self):
+        if self.diag_check.get_active_id() == "all":
+            self._run_check()
+        else:
+            self.diag_check.set_active_id("all")  # which runs it
+
+    def _run_check(self):
+        check = self.diag_check.get_active_id() or "all"
+        self._run_into_output(["emcomm-diag", check], timeout=90 if check == "mesh" else 30)
 
     def _confirm_ptt(self, *_):
         dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
@@ -8180,14 +8493,16 @@ class Launcher(Gtk.Window):
         if response == Gtk.ResponseType.OK:
             self._run_into_output(["emcomm-ptt-test", "2"])
 
-    def _run_into_output(self, argv):
+    def _run_into_output(self, argv, timeout=30):
         buf = self.output.get_buffer()
         buf.set_text(f"$ {' '.join(argv)}\n")
+        if argv[-1] == "mesh":
+            buf.insert(buf.get_end_iter(), "Asking the mesh radio; this can take up to a minute…\n")
 
         def work():
             try:
                 result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                        text=True, timeout=30)
+                                        text=True, timeout=timeout)
                 text = result.stdout
             except (OSError, subprocess.TimeoutExpired) as exc:
                 text = f"failed: {exc}\n"
@@ -8195,6 +8510,201 @@ class Launcher(Gtk.Window):
 
         threading.Thread(target=work, daemon=True).start()
 
+
+    # ---- terminal ------------------------------------------------------
+
+    def _terminal_page(self):
+        """Diagnostics > Terminal: a command line as the station's own user (on a station,
+        radio, which has no admin rights), with touch keys and a searchable list of station
+        commands that types one in for Enter to run."""
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=12)
+        header = Gtk.Box(spacing=8)
+        header.pack_start(self._navbtn("‹ Diagnostics", lambda *_: self.stack.set_visible_child_name("diagnostics")),
+                          False, False, 0)
+        title = Gtk.Label(label="Terminal", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        self.term_commands = PickList()
+        for n, (label, _command) in enumerate(TERMINAL_COMMANDS):
+            self.term_commands.append(str(n), label)
+        self.term_commands.set_size_request(300, -1)
+        self.term_commands.set_tooltip_text("Types a station command in at the prompt; Enter runs it")
+        self.term_commands.connect("changed", self._terminal_command_picked)
+        self.term_commands.label.set_text("Station commands…")
+        header.pack_start(self.term_commands, False, False, 0)
+        for label, tip, handler in (("New", "Close this shell and start a new one", self._terminal_restart),
+                                    ("Paste", "Paste  Ctrl+Shift+V", lambda *_: self.terminal.paste_clipboard()),
+                                    ("Copy", "Copy what's selected  Ctrl+Shift+C", self._terminal_copy),
+                                    ("A+", "Bigger text", lambda *_: self._terminal_zoom(1.1)),
+                                    ("A−", "Smaller text", lambda *_: self._terminal_zoom(1 / 1.1))):
+            btn = self._navbtn(label, handler)
+            btn.set_tooltip_text(tip)
+            btn.set_can_focus(False)  # typing stays in the terminal
+            header.pack_end(btn, False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        self.terminal = Vte.Terminal()
+        self.terminal.set_scrollback_lines(5000)
+        self.terminal.set_font(Pango.FontDescription.from_string("IBM Plex Mono, DejaVu Sans Mono, monospace 13"))
+        saved = read_json(TERMINAL_PATH, {})
+        scale = saved.get("font_scale") if isinstance(saved, dict) else None
+        self.terminal.set_font_scale(scale if isinstance(scale, (int, float)) and 0.6 <= scale <= 2.5 else 1.0)
+        self.terminal.set_mouse_autohide(True)
+        self.terminal.connect("child-exited", self._terminal_exited)
+        self.terminal.connect("key-press-event", self._terminal_key)
+        self.terminal.connect("focus-in-event", self._terminal_focused)
+        self.term_pid = None
+        self._colour_terminal()
+        frame = Gtk.Box()
+        frame.get_style_context().add_class("terminal-frame")
+        frame.pack_start(self.terminal, True, True, 0)
+        scrollbar = Gtk.Scrollbar(orientation=Gtk.Orientation.VERTICAL, adjustment=self.terminal.get_vadjustment())
+        frame.pack_start(scrollbar, False, False, 0)
+        page.pack_start(frame, True, True, 0)
+
+        keys = Gtk.Box(spacing=6)
+        for label, sends in TERMINAL_KEYS:
+            key = self._navbtn(label, lambda _b, text=sends: self._terminal_send(text))
+            key.get_style_context().add_class("termkey")
+            key.set_can_focus(False)
+            keys.pack_start(key, True, True, 0)
+        run = self._navbtn("⏎  Run", lambda *_: self._terminal_send("\r"), "primary")
+        run.set_can_focus(False)
+        run.set_size_request(120, -1)
+        keys.pack_start(run, False, False, 0)
+        page.pack_start(keys, False, False, 0)
+
+        page.connect("map", lambda *_: self._terminal_shown())
+        return page
+
+    def open_terminal(self, command=None):
+        """The terminal page, with command typed in (and run, if it ends in a newline).
+        Without the terminal library (before Update station), xterm as before."""
+        if Vte is None:
+            argv = ["xterm", "-fa", "IBM Plex Mono", "-fs", "12"]
+            run_detached(argv + (["-e", "bash", "-c", command.strip() + "; exec bash"] if command else []))
+            return
+        self.stack.set_visible_child_name("terminal")
+        if command:
+            # A shell that's only just starting reads its input once it's ready.
+            GLib.timeout_add(300 if self.term_pid is None else 0, lambda: self._terminal_send(command) and False)
+
+    def _terminal_shown(self):
+        if self.term_pid is None:
+            self._spawn_shell()
+        self.terminal.grab_focus()
+
+    def _spawn_shell(self):
+        shell = os.environ.get("SHELL") or "/bin/bash"
+        if not os.access(shell, os.X_OK):
+            shell = "/bin/bash"
+        self.term_pid = 0  # starting
+        self._terminal_banner()
+        self.terminal.spawn_async(Vte.PtyFlags.DEFAULT, os.path.expanduser("~"), [shell, "-l"],
+                                  ["TERM=xterm-256color", "EMCOMM_TERMINAL=1"], GLib.SpawnFlags.DEFAULT,
+                                  None, None, -1, None, self._shell_started, None)
+
+    def _shell_started(self, _terminal, pid, error, *_):
+        if error is not None or pid < 0:
+            self.term_pid = None
+            self._terminal_say(f"The shell didn't start: {error.message if error else 'unknown error'}")
+        else:
+            self.term_pid = pid
+
+    def _terminal_banner(self):
+        try:
+            import pwd  # pylint: disable=import-outside-toplevel
+            user = pwd.getpwuid(os.getuid()).pw_name
+        except (ImportError, KeyError):
+            user = os.environ.get("USER", "")
+        if self.desktop:
+            who = f"Terminal, as {user}."
+        else:
+            who = f"Station terminal as {user}, no admin rights (for those: su - youradmin, then sudo -i)."
+        self._terminal_say(who + "\nStation commands… (above) types a check in; Enter or ⏎ Run runs it.")
+
+    def _terminal_say(self, text):
+        """A line from the station, dimmed, written straight to the screen (not to the shell)."""
+        self.terminal.feed(("\x1b[2m" + text.replace("\n", "\r\n") + "\x1b[0m\r\n").encode())
+
+    def _terminal_send(self, text):
+        """Type text in, as if from the keyboard."""
+        if self.term_pid:
+            self.terminal.feed_child(text.encode())
+        self.terminal.grab_focus()
+
+    def _terminal_command_picked(self, picker):
+        index = picker.get_active_id()
+        if index is None:
+            return
+        picker.set_active(-1)
+        picker.label.set_text("Station commands…")
+        self._terminal_send("\x15" + TERMINAL_COMMANDS[int(index)][1])  # Ctrl+U clears a half-typed line first
+
+    def _terminal_exited(self, _terminal, _status):
+        self.term_pid = None
+        self._terminal_say("\r\nThe shell ended. Tap New, or come back to this page, for another.")
+
+    def _terminal_restart(self, *_):
+        if self.term_pid:
+            try:
+                os.killpg(os.getpgid(self.term_pid), signal.SIGHUP)
+            except OSError:
+                pass
+            self.term_pid = None
+        self.terminal.reset(True, True)
+        self._spawn_shell()
+        self.terminal.grab_focus()
+
+    def _terminal_copy(self, *_):
+        if self.terminal.get_has_selection():
+            self.terminal.copy_clipboard_format(Vte.Format.TEXT)
+
+    def _terminal_zoom(self, factor):
+        scale = min(2.5, max(0.6, self.terminal.get_font_scale() * factor))
+        self.terminal.set_font_scale(scale)
+        write_json(TERMINAL_PATH, {"font_scale": round(scale, 2)})
+
+    def _terminal_key(self, _terminal, event):
+        """Ctrl+Shift+C and Ctrl+Shift+V copy and paste, as in other terminals."""
+        mods = event.state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK)
+        if mods == Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK:
+            if event.keyval in (Gdk.KEY_C, Gdk.KEY_c):
+                self._terminal_copy()
+                return True
+            if event.keyval in (Gdk.KEY_V, Gdk.KEY_v):
+                self.terminal.paste_clipboard()
+                return True
+        return False
+
+    def _terminal_focused(self, *_):
+        """Tapped on a touchscreen: bring up the on-screen keyboard, as a text box does."""
+        if time.monotonic() - self.last_touch < 1.0:
+            GLib.idle_add(lambda: self._show_keyboard(auto=True) and False)
+        return False
+
+    def _colour_terminal(self):
+        """The terminal in the station's theme. Night red keeps every colour red."""
+        if not hasattr(self, "terminal"):
+            return
+        c = self.colours
+
+        def rgba(hex_colour):
+            colour = Gdk.RGBA()
+            colour.parse(hex_colour)
+            return colour
+
+        palette = None
+        if self.theme == "night":
+            palette = [rgba(x) for x in [c["bg"], c["danger"], c["text"], c["accent"], c["muted"], c["accent"],
+                                         c["label"], c["text"]] * 2]
+        elif self.theme in ("light", "sunlight"):
+            palette = [rgba(x) for x in ["#000000", "#B3261E", "#1B6E20", "#7A4A00", "#0B3C9C", "#7B1FA2",
+                                         "#00695C", "#5F6368", "#3C4043", "#C62828", "#2E7D32", "#8D5A00",
+                                         "#1565C0", "#8E24AA", "#00796B", "#1D1F22"]]
+        self.terminal.set_colors(rgba(c["text"]), rgba(c["surface"]), palette)
+        self.terminal.set_color_cursor(rgba(c["accent"]))
+        self.terminal.set_color_cursor_foreground(rgba(c["bg"]))
 
 def one_launcher():
     """Desktop mode, opened from the app menu: one launcher per person. Opening Emcomm-CNC

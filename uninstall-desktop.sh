@@ -54,6 +54,10 @@ rm -f /usr/share/applications/emcomm-cnc.desktop /usr/share/xsessions/emcomm-cnc
   /usr/share/icons/hicolor/scalable/apps/emcomm-cnc.svg
 gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null
 rm -rf /usr/share/emcomm /opt/emcomm /var/cache/emcomm
+# meshtastic: Meshtastic's command line through emcomm-mesh-check, unless it was someone else's.
+if [ "$(readlink /usr/local/bin/meshtastic 2>/dev/null)" = /usr/local/bin/emcomm-mesh-check ]; then
+  rm -f /usr/local/bin/meshtastic
+fi
 rm -f /var/log/emcomm-update.log /var/log/emcomm-update.log.1
 
 if $packages && [ -f "$BEFORE/packages" ]; then
