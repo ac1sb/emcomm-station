@@ -105,7 +105,7 @@ def main(argv):
                 show_banner("done", f"✓ Saved {name}. Carrying on…")
                 GLib.timeout_add_seconds(2, win.destroy)
             else:
-                show_banner("done", f"✓ Saved {name} to Downloads.")
+                show_banner("done", f"✓ Saved {name} to Downloads. Open it from the Files tile.")
 
         def on_failed(_download, err):
             failed.append(err)

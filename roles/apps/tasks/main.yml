@@ -56,6 +56,15 @@
   tags: [qsstv]
   when: apps_install | bool
 
+# LibreOffice shows Word, Excel and PowerPoint attachments on the Files page (as a
+# PDF) and edits them. Installed when the Files page first needs it.
+- name: Install LibreOffice for attachments
+  ansible.builtin.apt:
+    name: [libreoffice-writer, libreoffice-calc, libreoffice-impress, libreoffice-gtk3]
+    install_recommends: false
+  tags: [libreoffice]
+  when: apps_install | bool
+
 - name: Install Xastir and Direwolf for APRS
   ansible.builtin.apt:
     name: [xastir, direwolf]

@@ -53,6 +53,7 @@ Every time and date the station writes (forms, logs, recordings, net logs) is in
 - [fldigi, flamp and flmsg](#fldigi-flamp-and-flmsg)
 - [SSTV: pictures over the air (QSSTV)](#sstv-pictures-over-the-air-qsstv)
 - [Forms: ICS-213 messages, nets, ICS-309 and ICS-205](#forms-ics-213-messages-nets-ics-309-and-ics-205)
+- [Files: Winlink attachments and downloads](#files-winlink-attachments-and-downloads)
 - [Logs](#logs)
 - [Recorder and Broadcastify](#recorder-and-broadcastify)
 - [Reference and the Winlink gateway finder](#reference-and-the-winlink-gateway-finder)
@@ -514,7 +515,8 @@ opens in its own window. Pat doesn't make sound itself; it hands each message to
    (the gateway finder on the Reference page lists the nearest ones). Pat sets the
    radio to the gateway's dial frequency and connects.
 6. Watch the VARA window: the waterfall, the signal-to-noise figure and the
-   transfer. When it disconnects, received mail is in Pat's inbox.
+   transfer. When it disconnects, received mail is in Pat's inbox. Attachments
+   (PDFs, photos, Word and Excel files) open on the **Files** page.
 
 **VARA HF settings** (VARA's own Settings menu, once):
 
@@ -786,6 +788,37 @@ Every entry gets the UTC time. The open net stays at the top of the Forms list w
 
 Both are saved in `~/ICS forms` and open with a **Print** button; the print dialog
 can also save a PDF to a USB stick.
+
+---
+
+## Files: Winlink attachments and downloads
+
+**Files** (tile) shows the files that come to the station, newest first:
+
+- **Winlink attachments:** every file attached to a message in Pat's mailbox (in,
+  out, sent and archive), read straight from the mailbox: nothing to download first.
+  Each one is listed with its sender and subject.
+- **Downloads:** files saved to `~/Downloads`, such as a file opened from Pat's
+  window or the Browser.
+- **SSTV pictures:** pictures QSSTV has received.
+
+Tap a file to see it. The list on the left has a search box (name, sender or
+subject) and a menu to show one kind only.
+
+| File | Shown as |
+| --- | --- |
+| PDF | The pages, one under the other |
+| Photos and pictures (JPEG, PNG, GIF…) | The picture, fitted to the screen |
+| Word, Excel, PowerPoint, OpenDocument, RTF | The pages, made by LibreOffice |
+| Text, CSV, KML, GPX | The text |
+
+- **Print** prints a PDF, an office file or a picture. The print dialog can also save
+  a PDF, for a USB stick.
+- **Edit in LibreOffice** opens a Word, Excel or text file to change it. A Winlink
+  attachment is saved in `~/Winlink attachments`, one folder per message, so a
+  filled-in spreadsheet can be attached to a reply from there.
+- **LibreOffice** is installed the first time an office file is opened (about 300 MB,
+  needs the internet once); the page offers it.
 
 ---
 
@@ -1594,6 +1627,7 @@ serial port).
 | ICS-309 and ICS-205 | `~/ICS forms` |
 | ICS-213 messages | `~/.nbems/ICS/messages` (written), `~/.nbems/WRAP/recv` (received), `~/.nbems/WRAP/send` (sent) |
 | Recordings | `~/Recordings` |
+| Winlink attachments opened on the Files page | `~/Winlink attachments` |
 | Library books | `~/Library` |
 | Pat (Winlink) | `~/.config/pat/config.json` |
 | Offline FCC callsign list | `/var/lib/emcomm/callsigns.db` |

@@ -36,7 +36,7 @@ jobs:
           roles/launcher/files/emcomm-backup roles/radio/files/emcomm-recorder roles/radio/files/emcomm-stream roles/kiosk/files/emcomm-display
           roles/apps/files/emcomm-scanner roles/apps/files/emcomm-mesh-nodes roles/radio/files/emcomm-igate
           roles/kiosk/files/emcomm-splash roles/radio/files/emcomm-find-radio roles/launcher/files/emcomm-callsign
-          roles/launcher/files/emcomm-guide roles/diagnostics/files/emcomm-mesh-check
+          roles/launcher/files/emcomm-guide roles/diagnostics/files/emcomm-mesh-check roles/launcher/files/emcomm-files
           callback_plugins/emcomm_times.py
       - name: Helper tests
         run: |
@@ -61,6 +61,7 @@ jobs:
           python tests/test_splash.py
           python tests/test_callsign.py
           python tests/test_update_times.py
+          python tests/test_files.py
           python tests/test_guide.py
           python tests/test_gi_versions.py
 

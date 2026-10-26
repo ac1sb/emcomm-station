@@ -55,6 +55,7 @@ STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 PRESETS_DIR = os.environ.get("EMCOMM_PRESETS", "/usr/share/emcomm/radios")
 FAKE_DEVICES = os.environ.get("EMCOMM_FAKE_DEVICES")  # JSON file of devices, for testing without hardware
 BACKUP_CMD = os.environ.get("EMCOMM_BACKUP", "emcomm-backup")
+FILES_CMD = os.environ.get("EMCOMM_FILES", "emcomm-files")
 APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply-settings").split()
 FIND_CMD = os.environ.get("EMCOMM_FIND", "sudo -n /usr/local/sbin/emcomm-find-radio").split()
 UPDATE_CMD = os.environ.get("EMCOMM_UPDATE", "sudo -n /usr/local/sbin/emcomm-update").split()
@@ -2533,6 +2534,7 @@ class Launcher(Gtk.Window):
         self.stack.add_named(self._recorder_page(), "recorder")
         if Vte is not None:
             self.stack.add_named(self._terminal_page(), "terminal")
+        self.stack.add_named(self._files_page(), "files")
         root.pack_start(self.stack, True, True, 0)
 
         self._tick_clock()
@@ -6273,6 +6275,339 @@ class Launcher(Gtk.Window):
         dialog.show_all()
         dialog.run()
         dialog.destroy()
+
+    # ---- Files: Winlink attachments, downloads and SSTV pictures -----------
+    # emcomm-files lists them (attachments straight out of Pat's mailbox) and turns
+    # Word, Excel and the like into a PDF with LibreOffice; PDFs and pictures are
+    # drawn here, so they read the same in every theme and print from here.
+
+    FILE_SOURCES = [("all", "All files"), ("winlink", "Winlink attachments"), ("downloads", "Downloads"),
+                    ("sstv", "SSTV pictures")]
+
+    def _files_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")),
+                          False, False, 0)
+        title = Gtk.Label(label="Files", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        self.files_filter = PickList()
+        for value, label in self.FILE_SOURCES:
+            self.files_filter.append(value, label)
+        self.files_filter.set_active_id("all")
+        self.files_filter.connect("changed", lambda *_: self._files_fill())
+        header.pack_start(self.files_filter, False, False, 0)
+        self.files_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.files_status.get_style_context().add_class("muted")
+        header.pack_start(self.files_status, True, True, 0)
+        self.files_edit_btn = self._navbtn("Edit in LibreOffice", lambda *_: self._files_edit())
+        self.files_print_btn = self._navbtn("Print", lambda *_: self._files_print(), "primary")
+        header.pack_end(self.files_print_btn, False, False, 0)
+        header.pack_end(self.files_edit_btn, False, False, 0)
+        header.pack_end(self._navbtn("Refresh", lambda *_: self._files_load()), False, False, 0)
+        page.pack_start(header, False, False, 0)
+
+        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL, wide_handle=True)
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.files_search = Gtk.SearchEntry(placeholder_text="Search: name, sender or subject")
+        self.files_search.connect("search-changed", lambda *_: self._files_fill())
+        left.pack_start(self.files_search, False, False, 0)
+        self.files_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.BROWSE)
+        self.files_list.connect("row-selected", self._files_selected)
+        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroller.add(self.files_list)
+        left.pack_start(scroller, True, True, 0)
+        left.set_size_request(320, -1)
+        paned.pack1(left, False, False)
+
+        self.files_view = Gtk.Stack()
+        self.files_pdf = Gtk.DrawingArea()
+        self.files_pdf.connect("draw", self._files_draw_pdf)
+        self.files_pdf.connect("size-allocate", lambda *_: self._files_fit())
+        self.files_pdf_scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.files_pdf_scroller.add(self.files_pdf)
+        self.files_view.add_named(self.files_pdf_scroller, "pdf")
+        self.files_image = Gtk.DrawingArea()
+        self.files_image.connect("draw", self._files_draw_image)
+        self.files_view.add_named(self.files_image, "image")
+        self.files_text = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                       left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        text_scroller = Gtk.ScrolledWindow()
+        text_scroller.add(self.files_text)
+        self.files_view.add_named(text_scroller, "text")
+        note = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, valign=Gtk.Align.CENTER, margin=24)
+        self.files_note = Gtk.Label(wrap=True, max_width_chars=50, justify=Gtk.Justification.CENTER)
+        self.files_note.get_style_context().add_class("muted")
+        self.files_spinner = Gtk.Spinner()
+        self.files_install_btn = self._navbtn("Install LibreOffice", lambda *_: self._files_install(), "primary")
+        self.files_install_btn.set_halign(Gtk.Align.CENTER)
+        for widget in (self.files_spinner, self.files_note, self.files_install_btn):
+            widget.set_no_show_all(True)
+            note.pack_start(widget, False, False, 0)
+        self.files_view.add_named(note, "note")
+        paned.pack2(self.files_view, True, False)
+        page.pack_start(paned, True, True, 0)
+
+        self.files_found, self.files_item, self.files_path = [], None, None
+        self.files_doc, self.files_pixbuf, self.files_job = None, None, 0
+        page.connect("map", lambda *_: self._files_load())
+        return page
+
+    def _files_load(self):
+        """Ask emcomm-files for the list (in the background: a big mailbox takes a moment)."""
+        def work():
+            try:
+                out = subprocess.run([FILES_CMD, "--list"], capture_output=True, text=True, timeout=30,
+                                     check=False).stdout
+                found = [json.loads(line) for line in out.splitlines() if line.strip()]
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                found = []
+            GLib.idle_add(lambda: (setattr(self, "files_found", found), self._files_fill()) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    @staticmethod
+    def _files_key(item):
+        return (item.get("message"), item.get("index"), item.get("path"))
+
+    def _files_fill(self):
+        source = self.files_filter.get_active_id() or "all"
+        words = self.files_search.get_text().lower().split()
+        shown = []
+        for item in self.files_found:
+            text = " ".join(str(item.get(k, "")) for k in ("name", "from", "subject", "box")).lower()
+            if (source == "all" or item.get("source") == source) and all(w in text for w in words):
+                shown.append(item)
+        keep = self._files_key(self.files_item) if self.files_item else None
+        for child in self.files_list.get_children():
+            self.files_list.remove(child)
+        for item in shown:
+            row = Gtk.ListBoxRow()
+            row.item = item
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin=8)
+            name = Gtk.Label(label=item.get("name", ""), xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE)
+            name.get_style_context().add_class("tile-name")
+            if item.get("source") == "winlink":
+                detail = f"{item.get('box', '')} · {item.get('from', '')} · {item.get('subject', '')}"
+            else:
+                detail = {"downloads": "Downloads", "sstv": "SSTV picture"}.get(item.get("source"), "")
+            note = Gtk.Label(label=f"{item.get('when', '')} · {detail}", xalign=0,
+                             ellipsize=Pango.EllipsizeMode.END)
+            note.get_style_context().add_class("tile-detail")
+            box.pack_start(name, False, False, 0)
+            box.pack_start(note, False, False, 0)
+            row.add(box)
+            self.files_list.add(row)
+        if not shown:
+            hint = Gtk.Label(xalign=0, wrap=True, margin=12, label=(
+                "No files match." if self.files_found else
+                "Nothing here yet.\n\nAttachments on Winlink mail show here by themselves, as do files "
+                "saved to Downloads and pictures QSSTV receives."))
+            hint.get_style_context().add_class("muted")
+            row = Gtk.ListBoxRow(selectable=False, activatable=False)
+            row.add(hint)
+            self.files_list.add(row)
+        self.files_list.show_all()
+        rows = [r for r in self.files_list.get_children() if hasattr(r, "item")]
+        if not rows:
+            self.files_item = None
+            self._files_note("Pick a file on the left.")
+            return
+        pick = next((r for r in rows if self._files_key(r.item) == keep), rows[0])
+        self.files_list.select_row(pick)
+
+    def _files_selected(self, _box, row):
+        item = getattr(row, "item", None) if row else None
+        if item is None or (self.files_item and self._files_key(item) == self._files_key(self.files_item)
+                            and self.files_path):
+            return
+        self.files_item, self.files_path, self.files_doc, self.files_pixbuf = item, None, None, None
+        self.files_job += 1
+        job = self.files_job
+        self._update_files_buttons()
+        self._files_note("Opening…", busy=True)
+
+        def work():
+            path, pdf, error = None, None, None
+            try:
+                if item.get("source") == "winlink":
+                    path = self._files_run("--extract", item["message"], str(item["index"]))
+                else:
+                    path = item["path"]
+                if item.get("kind") == "office" and self._files_have_office():
+                    pdf = self._files_run("--pdf", path)
+            except RuntimeError as exc:
+                error = str(exc)
+            GLib.idle_add(lambda: self._files_show(job, item, path, pdf, error) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    @staticmethod
+    def _files_run(*args):
+        result = subprocess.run([FILES_CMD, *args], capture_output=True, text=True, timeout=200, check=False)
+        if result.returncode != 0 or not result.stdout.strip():
+            raise RuntimeError(result.stderr.strip() or "it couldn't be read")
+        return result.stdout.strip()
+
+    @staticmethod
+    def _files_have_office():
+        return bool(shutil.which("soffice") or shutil.which("libreoffice"))
+
+    def _files_show(self, job, item, path, pdf, error):
+        if job != self.files_job:
+            return  # another file was picked meanwhile
+        self.files_path = path
+        kind = item.get("kind")
+        where = {"winlink": "Saved in ~/Winlink attachments", "downloads": "In ~/Downloads",
+                 "sstv": "Received by QSSTV"}.get(item.get("source"), "")
+        self.files_status.set_text(f"{item.get('name', '')} · {self._files_size(item.get('size', 0))} · {where}")
+        if error:
+            self._files_note(f"Couldn't open it: {error}")
+        elif kind == "office" and not pdf:
+            self._files_note("Word, Excel and PowerPoint files are shown with LibreOffice, which isn't "
+                             "installed yet (about 300 MB from the internet).", install=True)
+        elif kind in ("pdf", "office"):
+            try:
+                self.files_doc = Poppler.Document.new_from_file(GLib.filename_to_uri(pdf or path, None), None)
+            except (GLib.Error, TypeError, AttributeError) as exc:
+                self._files_note(f"Couldn't show this PDF: {getattr(exc, 'message', exc)}")
+            else:
+                self.files_view.set_visible_child_name("pdf")
+                self._files_fit()
+                self.files_pdf.queue_draw()
+                self.files_pdf_scroller.get_vadjustment().set_value(0)
+        elif kind == "image":
+            try:
+                self.files_pixbuf = GdkPixbuf.Pixbuf.new_from_file(path)
+            except GLib.Error as exc:
+                self._files_note(f"Couldn't show this picture: {exc.message}")
+            else:
+                self.files_view.set_visible_child_name("image")
+                self.files_image.queue_draw()
+        elif kind == "text":
+            try:
+                with open(path, "rb") as f:
+                    text = f.read(2_000_000).decode("utf-8", errors="replace")
+            except OSError as exc:
+                self._files_note(f"Couldn't read it: {exc}")
+            else:
+                self.files_text.get_buffer().set_text(text)
+                self.files_view.set_visible_child_name("text")
+        else:
+            self._files_note(f"The station can't show this kind of file. It's saved as\n{path}")
+        self._update_files_buttons()
+
+    @staticmethod
+    def _files_size(size):
+        for unit in ("bytes", "KB", "MB"):
+            if size < 1024 or unit == "MB":
+                return f"{size:.0f} {unit}" if unit == "bytes" else f"{size:.1f} {unit}"
+            size /= 1024
+        return ""
+
+    def _files_note(self, text, busy=False, install=False):
+        self.files_note.set_text(text)
+        self.files_note.show()
+        self.files_spinner.set_visible(busy)
+        if busy:
+            self.files_spinner.start()
+        else:
+            self.files_spinner.stop()
+        self.files_install_btn.set_visible(install)
+        self.files_view.set_visible_child_name("note")
+
+    def _update_files_buttons(self):
+        kind = self.files_item.get("kind") if self.files_item else None
+        self.files_print_btn.set_sensitive(bool(self.files_doc or self.files_pixbuf))
+        self.files_edit_btn.set_visible(kind in ("office", "text") and self._files_have_office())
+        self.files_edit_btn.set_sensitive(bool(self.files_path))
+
+    def _files_fit(self):
+        """Pages one under the other, as wide as the view."""
+        if not self.files_doc:
+            return
+        width = max(1, self.files_pdf_scroller.get_allocated_width() - 4)
+        height = 0
+        for i in range(self.files_doc.get_n_pages()):
+            w, h = self.files_doc.get_page(i).get_size()
+            height += h * width / w + 12
+        if self.files_pdf.get_size_request()[1] != int(height):
+            self.files_pdf.set_size_request(-1, int(height))
+
+    def _files_draw_pdf(self, widget, cr):
+        if not self.files_doc:
+            return False
+        width = widget.get_allocated_width()
+        _x1, top, _x2, bottom = cr.clip_extents()
+        y = 0
+        for i in range(self.files_doc.get_n_pages()):
+            page = self.files_doc.get_page(i)
+            w, h = page.get_size()
+            scale = width / w
+            if y + h * scale >= top and y <= bottom:  # only the pages in sight
+                cr.save()
+                cr.translate(0, y)
+                cr.rectangle(0, 0, width, h * scale)
+                cr.set_source_rgb(1, 1, 1)
+                cr.fill()
+                cr.scale(scale, scale)
+                page.render(cr)
+                cr.restore()
+            y += h * scale + 12
+        return False
+
+    def _files_draw_image(self, widget, cr):
+        if not self.files_pixbuf:
+            return False
+        w, h = widget.get_allocated_width(), widget.get_allocated_height()
+        pw, ph = self.files_pixbuf.get_width(), self.files_pixbuf.get_height()
+        scale = min(w / pw, h / ph)
+        cr.translate((w - pw * scale) / 2, (h - ph * scale) / 2)
+        cr.scale(scale, scale)
+        Gdk.cairo_set_source_pixbuf(cr, self.files_pixbuf, 0, 0)
+        cr.paint()
+        return False
+
+    def _files_print(self):
+        doc, pixbuf = self.files_doc, self.files_pixbuf
+        if not doc and not pixbuf:
+            return
+
+        def draw_page(_op, context, number):
+            cr = context.get_cairo_context()
+            if doc:
+                page = doc.get_page(number)
+                w, h = page.get_size()
+                scale = min(context.get_width() / w, context.get_height() / h)
+                cr.scale(scale, scale)
+                page.render_for_printing(cr)
+            else:
+                pw, ph = pixbuf.get_width(), pixbuf.get_height()
+                scale = min(context.get_width() / pw, context.get_height() / ph)
+                cr.scale(scale, scale)
+                Gdk.cairo_set_source_pixbuf(cr, pixbuf, 0, 0)
+                cr.paint()
+
+        op = Gtk.PrintOperation(n_pages=doc.get_n_pages() if doc else 1, use_full_page=False,
+                                job_name=self.files_item.get("name", "File") if self.files_item else "File")
+        op.connect("draw-page", draw_page)
+        try:
+            op.run(Gtk.PrintOperationAction.PRINT_DIALOG, self)
+        except GLib.Error as exc:
+            self.files_status.set_text(f"Couldn't print: {exc.message}")
+
+    def _files_edit(self):
+        if self.files_path and self._files_have_office():
+            run_detached(["libreoffice", self.files_path])
+            self.files_status.set_text("Opening in LibreOffice. Save there to keep your changes in this file.")
+
+    def _files_install(self):
+        if self._confirm("Install LibreOffice?", "It's downloaded from the internet (about 300 MB), which takes "
+                         "a few minutes. It shows Word, Excel and PowerPoint files here, and edits them."):
+            self.files_item = None
+            self._run_in_terminal("Installing LibreOffice", UPDATE_CMD + ["--app", "libreoffice"],
+                                  self._files_load)
 
     def _show_callsign(self, entry, label):
         """Under a callsign field: name, town and licence class from the FCC list, or
