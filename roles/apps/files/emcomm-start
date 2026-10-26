@@ -1,7 +1,7 @@
 #!/bin/bash
 # Start a radio app from a launcher tile, with its settings filled in from the
 # station settings first.
-# Usage: emcomm-start js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore|sdr
+# Usage: emcomm-start js8call|wsjtx|fldigi|qsstv|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore|sdr
 set -u
 
 STATE="$HOME/.local/state/emcomm"
@@ -114,7 +114,7 @@ in_terminal() {
 }
 
 case "${1:-}" in
-  js8call|wsjtx|fldigi)
+  js8call|wsjtx|fldigi|qsstv)
     # Rig control through rigctld, as Settings > Radio says, plus the callsign and grid.
     emcomm-app-setup "$1" >/dev/null
     exec "$1"
@@ -247,7 +247,7 @@ case "${1:-}" in
     exit 0
     ;;
   *)
-    echo "usage: $0 js8call|wsjtx|fldigi|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore|sdr" >&2
+    echo "usage: $0 js8call|wsjtx|fldigi|qsstv|flmsg|pat|vara-hf|vara-fm|packet|ardop|aprs|meshtastic|meshcore|sdr" >&2
     exit 2
     ;;
 esac

@@ -49,6 +49,13 @@
   tags: [packet]
   when: apps_install | bool
 
+- name: Install QSSTV for pictures over the air (SSTV)
+  ansible.builtin.apt:
+    name: qsstv
+    install_recommends: false
+  tags: [qsstv]
+  when: apps_install | bool
+
 - name: Install Xastir and Direwolf for APRS
   ansible.builtin.apt:
     name: [xastir, direwolf]

@@ -54,6 +54,7 @@ launcher_apps:
   - { code: MSG, icon: ics213, name: Forms, detail: ICS-213 · nets · 309 · 205, command: emcomm-ics, page: forms }
   - { code: "213", icon: flmsg, name: flmsg, detail: Other NBEMS forms, command: flmsg, app: flmsg, run: [emcomm-start, flmsg] }
   - { code: FLD, icon: fldigi, name: fldigi, detail: Digital modes · flamp, command: fldigi, app: fldigi, run: [emcomm-start, fldigi] }
+  - { code: SST, icon: sstv, name: SSTV, detail: Pictures over the air, command: qsstv, app: qsstv, run: [emcomm-start, qsstv] }
   - { code: PKT, icon: packet, name: Packet, detail: Winlink packet, command: direwolf, app: packet, run: [emcomm-start, packet] }
   - { code: ARD, icon: ardop, name: ARDOP, detail: Winlink HF modem, command: ardopcf, app: ardop, run: [emcomm-start, ardop] }
   - { code: APR, icon: aprs, name: APRS, detail: Xastir · map and messages, command: xastir, app: aprs, run: [emcomm-start, aprs] }

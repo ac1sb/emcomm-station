@@ -93,6 +93,24 @@ class AppSetupTest(unittest.TestCase):
                      "SplitMode=split_mode_emulate"):
             self.assertIn(line + "\n", ini)
 
+    def test_qsstv(self):
+        conf = os.path.join(self.home, ".config/ON4QZ/qsstv_9.0.conf")
+        os.makedirs(os.path.dirname(conf))
+        with open(conf, "w") as f:
+            f.write("[PERSONAL]\ncallsign=NOCALL\nqth=NOWHERE\n\n[radio1]\nbaudrate=9600\nenableCAT=false\n"
+                    'radioModel="29001 ADAT www.adat.ch,ADT-200A"\nserialPort=/dev/ttyS0\n')
+        rig, commands = self.fake_rigctld("USB")
+        self.assertEqual(self.run_helper("qsstv", EMCOMM_RIGCTLD=rig), conf)
+        ini = self.read(conf)
+        # QSSTV names a model by its number right-aligned in 5 characters; any other
+        # spelling and Hamlib quits it at start ("Hash collision!!! Fatal error!!").
+        for line in ("callsign=AC1SB", "locator=FN31pr", "qth=NOWHERE", "baudrate=9600", "enableCAT=true",
+                     'radioModel="    2 Hamlib,NET rigctl"', f"serialPort={rig}", "pttType=5", "useVOX=false"):
+            self.assertIn(line + "\n", ini)
+        self.assertEqual(commands, ["m", "M PKTUSB 0"])  # QSSTV doesn't set the mode itself
+        self.set_station(callsign="AC1SB", ptt_method="NONE")
+        self.assertIn("useVOX=true\n", self.read(self.run_helper("qsstv", EMCOMM_RIGCTLD=rig)))
+
     def test_wsjtx_keeps_operator_settings_and_backs_up(self):
         path = os.path.join(self.home, ".config/WSJT-X.ini")
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -158,7 +176,7 @@ class AppSetupTest(unittest.TestCase):
         out = self.run_helper("radio", PATH=bin_dir)
         states = {r["app"]: r["state"] for r in map(json.loads, out.splitlines())}
         self.assertEqual(states, {"wsjtx": "updated", "js8call": "not installed", "fldigi": "updated",
-                                  "pat": "left alone", "xastir": "not installed"})
+                                  "qsstv": "not installed", "pat": "left alone", "xastir": "not installed"})
         self.assertTrue(os.path.exists(os.path.join(self.home, ".config/WSJT-X.ini")))
         self.assertFalse(os.path.exists(os.path.join(self.home, ".config/pat/config.json")))
         out = self.run_helper("radio", PATH=bin_dir)

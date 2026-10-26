@@ -51,6 +51,7 @@ Every time and date the station writes (forms, logs, recordings, net logs) is in
 - [WSJT-X (FT8)](#wsjt-x-ft8)
 - [JS8Call](#js8call)
 - [fldigi, flamp and flmsg](#fldigi-flamp-and-flmsg)
+- [SSTV: pictures over the air (QSSTV)](#sstv-pictures-over-the-air-qsstv)
 - [Forms: ICS-213 messages, nets, ICS-309 and ICS-205](#forms-ics-213-messages-nets-ics-309-and-ics-205)
 - [Logs](#logs)
 - [Recorder and Broadcastify](#recorder-and-broadcastify)
@@ -315,8 +316,8 @@ port. rigctld handles the radio model and PTT method chosen in Settings.
 
 ### Letting the station set up the apps
 
-**Settings > Radio** has a box: **Let Emcomm-CNC set up WSJT-X, JS8Call, fldigi, Pat
-and Xastir for this radio**. It's off until you tick it (it explains what it changes
+**Settings > Radio** has a box: **Let Emcomm-CNC set up WSJT-X, JS8Call, fldigi,
+QSSTV, Pat and Xastir for this radio**. It's off until you tick it (it explains what it changes
 and asks first). With it ticked, Emcomm-CNC writes the settings in the table above,
 plus the mode for digital apps, split, your callsign and grid, into each of those
 apps: when you tap **Save and use this radio**, when Emcomm-CNC starts, and each time
@@ -342,8 +343,8 @@ change its frequency, so two transmitting apps will fight.
 The station keeps two kinds of sound apart:
 
 - **Radio apps** send and receive audio through the radio's sound card: WSJT-X,
-  JS8Call, fldigi (and flamp), VARA HF and VARA FM, ARDOP, Direwolf (Packet and
-  APRS).
+  JS8Call, fldigi (and flamp), QSSTV, VARA HF and VARA FM, ARDOP, Direwolf (Packet
+  and APRS).
 - **Everything else** plays on the **Listening speaker** (Settings > Audio): the
   Scanner, Gqrx, the browser, the Library, recordings, alert sounds. If there's no
   listening speaker, they play into a silent output. Nothing that isn't a radio app
@@ -440,6 +441,7 @@ VARA HF and VARA FM share port 8300, so only one of them can run at a time.
 | FT8 | **WSJT-X** | | |
 | JS8 | **JS8Call** | | |
 | PSK, MT63, Olivia, etc. | **fldigi** | **flamp** or **flmsg** if needed | |
+| Send or receive a picture (SSTV) | **SSTV** | | |
 | Send an ICS-213 by radio | **Forms** (F9) | it offers **Start fldigi** | |
 | APRS | **APRS** | | Starts Direwolf and Xastir together |
 | Listen on a scanner | **Scanner** or **Gqrx** | | Uses an SDR dongle, not the radio |
@@ -681,6 +683,42 @@ station's own **Forms** page instead (next section), which shows ICS-213s on FEM
 form and sends them through fldigi. Use the **flmsg** tile for its other forms. The
 station keeps flmsg on UTC (dates `2026-10-21`, times `1356Z`) and in its full
 window.
+
+---
+
+## SSTV: pictures over the air (QSSTV)
+
+**What it's for:** sending a picture by radio with no internet: a photo of damage, a
+map with markings, a filled-in paper form. Tap **SSTV**; the first tap offers to
+install it.
+
+- **Receive:** QSSTV listens all the time it's open and decodes any picture it
+  hears (Mode **Auto**). Pictures are saved in `~/qsstv/rx_sstv` and shown under
+  **Gallery**.
+- **Send:** **Transmit** tab, open the picture, pick the mode, then the transmit
+  button. Agree the mode with the other station first. **Robot 36** (36 s) or
+  **Martin 1** (about 2 min) are common; slower modes give a cleaner picture on a
+  weak signal.
+- **Where:** 14.230 MHz USB is the usual HF SSTV calling frequency; on VHF/UHF use
+  the frequency your group agrees, on FM.
+
+With the Settings > Radio box ticked, the station fills in your callsign, locator and
+the rig control below each time QSSTV is opened from its tile, and puts the radio in
+the profile's mode for digital apps (DATA-U or USB). Otherwise, set these once.
+
+**Options > Configuration > Cat interface**
+
+| Setting | Value |
+| --- | --- |
+| Enable Hamlib Cat Interface | ticked |
+| Radio Model | **2 Hamlib, NET rigctl** |
+| Serial Port/Host | **127.0.0.1:4532** |
+| PTT Control via | **CAT (Data port)** (on a radio with no PTT, the station turns on QSSTV's VOX instead) |
+
+**Options > Configuration > Sound:** **PulseAudio** (the default). The station moves QSSTV onto the
+radio's sound card.
+
+⚠ **QSSTV not yet tested on this station's radios.**
 
 ---
 
@@ -1217,7 +1255,7 @@ and tap **Save and use this radio**. Each radio has its own light, **Test CAT** 
 ![Apps on radio 2](guide/radio2-apps.png)
 
 **Apps…** picks which apps use radio 2, under **On radio 2**: WSJT-X, JS8Call,
-fldigi, **Packet and APRS (Direwolf)** and **VARA FM**. A ticked app uses radio 2's rig
+fldigi, QSSTV, **Packet and APRS (Direwolf)** and **VARA FM**. A ticked app uses radio 2's rig
 control and sound card; the rest use radio 1. With the "set up the apps" box ticked,
 the station points those apps at radio 2 for you. Without it, set a radio-2 app's rig
 control to **127.0.0.1:4533** by hand (the rest of its settings are as in its chapter).
@@ -1363,6 +1401,7 @@ each row's note as its assignment, for example "ARES command net").
 | ICS-213 to another fldigi/flmsg station on VHF/UHF or HF | fldigi (MT63-2000L) | Forms > pick it > **Send by radio** |
 | Message to an agency email address, or out of the area | Winlink | [Send an ICS-213 by Winlink](#send-an-ics-213-by-winlink) |
 | Long list or file (shelter roster, spreadsheet) | flamp through fldigi | Open fldigi, then flamp |
+| Photo of damage, a map or a filled-in paper form | SSTV (QSSTV) | [SSTV](#sstv-pictures-over-the-air-qsstv) |
 | Short text when HF is poor | JS8Call | Directed message to the station's callsign |
 
 Received ICS-213s from fldigi appear on the Forms page by themselves. Pick one and
