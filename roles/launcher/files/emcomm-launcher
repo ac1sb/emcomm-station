@@ -1906,6 +1906,7 @@ def checked_in(net):
 # Offline callsign lookup: emcomm-callsign keeps the FCC's amateur licence list in
 # this database (Update station refreshes it weekly when online).
 CALLSIGN_DB = os.environ.get("EMCOMM_CALLSIGN_DB", "/var/lib/emcomm/callsigns.db")
+DMR_DB = os.environ.get("EMCOMM_DMR_DB", "/var/lib/emcomm/dmrids.db")  # RadioID.net's DMR IDs
 CALLSIGN_CLASSES = {"E": "Amateur Extra", "A": "Advanced", "G": "General", "P": "Technician Plus",
                     "T": "Technician", "N": "Novice"}
 US_CALL = re.compile(r"(?:A[A-L]|[KNW][A-Z]?)[0-9][A-Z]{1,3}")  # what the FCC issues
@@ -1947,28 +1948,111 @@ def callsign_list_date(db=None):
         return ""
 
 
-def callsign_summary(call, db=None):
+def dmr_lookup(key, db=None):
+    """DMR IDs from RadioID's list (emcomm-callsign keeps it beside the FCC one): for a
+    callsign, its IDs; for a number, that ID. A list of {id, call, name, city, state,
+    country}, lowest ID first; [] when none or no list. Raises nothing."""
+    db = db or DMR_DB
+    key = str(key).strip().upper()
+    if not key or not os.path.exists(db):
+        return []
+    try:
+        con = _callsign_db(db)
+        if key.isdigit():
+            rows = con.execute("SELECT id, call, name, city, state, country FROM dmr WHERE id = ?",
+                               (int(key),)).fetchall()
+        else:
+            rows = con.execute("SELECT id, call, name, city, state, country FROM dmr WHERE call = ? ORDER BY id",
+                               (key,)).fetchall()
+        con.close()
+    except (sqlite3.Error, OverflowError):
+        return []
+    return [dict(zip(("id", "call", "name", "city", "state", "country"), r)) for r in rows]
+
+
+def dmr_ids_text(ids):
+    """'DMR 3112345', 'DMR 3112345, 3112346', or 'DMR 3112345 +2 more'."""
+    if not ids:
+        return ""
+    shown = ", ".join(str(d["id"]) for d in ids[:2])
+    return f"DMR {shown}" + (f" +{len(ids) - 2} more" if len(ids) > 2 else "")
+
+
+def dmr_place(d):
+    return ", ".join(filter(None, [d["city"], d["state"], d["country"]]))
+
+
+def callsign_summary(call, db=None, dmr_db=None):
     """(line to show under a callsign field, whether it's a problem to look at)."""
     call = call.strip().upper()
     if not call:
         return "", False
     db = db or CALLSIGN_DB
     found = callsign_lookup(call, db)
+    dmr = dmr_lookup(call, dmr_db)
     if found:
         place = ", ".join(filter(None, [found["city"], found["state"]]))
         kind = CALLSIGN_CLASSES.get(found["class"], found["class"] or "Club")
-        parts = [found["call"], found["name"], place, kind]
+        parts = [found["call"], found["name"], place, kind, dmr_ids_text(dmr)]
         if found["status"] != "A":
             parts.append(f"licence expired {found['expires']}" if found["expires"] else "licence expired")
             return " · ".join(filter(None, parts)), True
         return " · ".join(filter(None, parts)), False
     listed = callsign_list_date(db)
+    if dmr:  # outside the US, or a US call the FCC list doesn't have (yet)
+        parts = [call, dmr[0]["name"], dmr_place(dmr[0]), dmr_ids_text(dmr)]
+        if listed and US_CALL.fullmatch(call):
+            parts.append(f"not in the FCC list from {listed}")
+        return " · ".join(filter(None, parts)), False
     if not listed:
         return "Callsign lookup needs the FCC list: run Update station once with internet.", False
     if not US_CALL.fullmatch(call):
         return f"{call}: not a US call, so not in the FCC list.", False
     return f"{call} isn't in the FCC list from {listed}. Check the call.", False
 
+
+def lookup_search(text, limit=30, db=None, dmr_db=None):
+    """What the Look up box lists as it's typed: callsigns starting with the text (FCC and
+    DMR lists), or DMR IDs starting with the digits typed. A list of
+    (call, line, problem), an exact match first."""
+    db, dmr_db = db or CALLSIGN_DB, dmr_db or DMR_DB
+    text = "".join(text.split()).upper()
+    if not text:
+        return []
+    calls = []
+    if text.isdigit():
+        if os.path.exists(dmr_db):
+            try:
+                con = _callsign_db(dmr_db)
+                low, high = int(text), int(text) + 1  # every ID whose digits start with these
+                ranges = [(low * 10 ** n, high * 10 ** n) for n in range(0, 9 - len(text) + 1)]
+                rows = []
+                for lo, hi in ranges:
+                    rows += con.execute("SELECT id, call FROM dmr WHERE id >= ? AND id < ? ORDER BY id LIMIT ?",
+                                        (lo, hi, limit)).fetchall()
+                con.close()
+            except (sqlite3.Error, OverflowError):
+                rows = []
+            out = []
+            for dmr_id, call in rows[:limit]:
+                line, problem = callsign_summary(call, db, dmr_db)
+                line = line.replace(" · " + dmr_ids_text(dmr_lookup(call, dmr_db)), "")  # the ID leads instead
+                out.append((call, f"DMR {dmr_id} · {line}", problem))
+            return out
+        return []
+    upper = text + "\uffff"
+    for path, query in ((db, "SELECT call FROM calls WHERE call >= ? AND call < ? ORDER BY call LIMIT ?"),
+                        (dmr_db, "SELECT DISTINCT call FROM dmr WHERE call >= ? AND call < ? ORDER BY call LIMIT ?")):
+        if not os.path.exists(path):
+            continue
+        try:
+            con = _callsign_db(path)
+            calls += [r[0] for r in con.execute(query, (text, upper, limit)).fetchall()]
+            con.close()
+        except sqlite3.Error:
+            pass
+    calls = sorted(set(calls), key=lambda c: (c != text, len(c), c))[:limit]
+    return [(c, *callsign_summary(c, db, dmr_db)) for c in calls]
 
 
 class PickList(Gtk.Button):
@@ -5701,6 +5785,7 @@ class Launcher(Gtk.Window):
         header.pack_end(self._navbtn("Recorder", lambda *_: self.stack.set_visible_child_name("recorder")),
                         False, False, 0)
         header.pack_end(self._navbtn("Refresh", lambda *_: self._show_log()), False, False, 0)
+        header.pack_end(self._navbtn("Look up", lambda *_: self._lookup_dialog()), False, False, 0)
         page.pack_start(header, False, False, 0)
 
         self.log_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
@@ -5725,6 +5810,60 @@ class Launcher(Gtk.Window):
 
         page.connect("map", lambda *_: self._show_log())
         return page
+
+    def _lookup_dialog(self, text=""):
+        """Look up a callsign or DMR ID in the offline FCC and RadioID lists; matches
+        show as it's typed. Tapping one puts the call in the contact note."""
+        dialog = Gtk.Dialog(title="Look up a callsign or DMR ID", transient_for=self, modal=True)
+        dialog.set_default_size(860, 440)
+        dialog.add_buttons("Close", Gtk.ResponseType.CLOSE)
+        box = dialog.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(12)
+        search = Gtk.SearchEntry(placeholder_text="Callsign or DMR ID, e.g. W1AW or 3112345")
+        box.pack_start(search, False, False, 0)
+        listed = callsign_list_date()
+        dmr_listed = os.path.exists(DMR_DB)
+        note = Gtk.Label(xalign=0, wrap=True)
+        note.get_style_context().add_class("muted")
+        note.set_text(" · ".join(filter(None, [
+            f"FCC list from {listed}" if listed else "No FCC list yet",
+            "DMR IDs from RadioID.net" if dmr_listed else "No DMR ID list yet",
+            "" if listed and dmr_listed else "run Update station once with internet"])))
+        box.pack_start(note, False, False, 0)
+        results = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.add(results)
+        box.pack_start(scroller, True, True, 0)
+
+        def pick(_listbox, row):
+            self.note_call.set_text(row.call)
+            dialog.response(Gtk.ResponseType.CLOSE)
+
+        def refresh(*_):
+            for child in results.get_children():
+                results.remove(child)
+            typed = search.get_text().strip()
+            matches = lookup_search(typed)
+            if typed and not matches:
+                matches = [("", callsign_summary(typed)[0] if not typed.isdigit()
+                            else f"DMR ID {typed} isn't in the list.", False)]
+            for call, line, problem in matches:
+                row = Gtk.ListBoxRow(activatable=bool(call))
+                row.call = call
+                label = Gtk.Label(label=line, xalign=0, ellipsize=Pango.EllipsizeMode.END, margin=8)
+                if problem:
+                    label.get_style_context().add_class("error")
+                row.add(label)
+                results.add(row)
+            results.show_all()
+
+        results.connect("row-activated", pick)
+        search.connect("search-changed", refresh)
+        search.set_text(text)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
 
     def _show_callsign(self, entry, label):
         """Under a callsign field: name, town and licence class from the FCC list, or
