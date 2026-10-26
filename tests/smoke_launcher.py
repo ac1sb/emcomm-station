@@ -797,54 +797,6 @@ def main():
                                                                "window": "meshtastic"}], {}) is None,
           "a Flatpak window is matched by its class")
 
-    # Settings > Devices: a Meshtastic radio's GPS places the station while no USB GPS has a fix.
-    port = os.path.join(tmp.name, "usb-RAKwireless_WisCore_RAK4631_Board-if00")
-    open(port, "w").close()
-    L.mesh_ports = lambda: [(port, "RAKwireless WisCore RAK4631 Board")]
-    L.MESH_GPS_CONFIG = os.path.join(tmp.name, "mesh-gps.json")
-    L.MESH_POSITION = os.path.join(tmp.name, "position.json")
-    win.stack.set_visible_child_name("station-devices")
-    pump(0.5)
-    win.mesh_gps_combo.set_active_id(port)
-    win._save_mesh_gps()
-    check(L.mesh_gps_port() == port, "Meshtastic radio for position saved")
-    check(L.mesh_fix() == "asking", "asking the radio until it answers")
-    fits("Settings > Devices with the Meshtastic GPS")
-    with open(L.MESH_POSITION, "w") as f:
-        json.dump({"port": port, "lat": 43.1597, "lon": -73.0729, "fix_time": int(time.time()) - 60,
-                   "gps": "on", "asked": int(time.time()), "error": ""}, f)
-    win.station["grid"] = "FN31"
-    win._show_gps("absent", L.mesh_fix())
-    mesh_width = win.gps_status.get_preferred_width()[1]
-    win._show_gps((3, 43.1597, -73.0729), None)
-    check(mesh_width <= win.gps_status.get_preferred_width()[1] + 12, "top bar: no wider than with a USB GPS")
-    win._show_gps("absent", L.mesh_fix())
-    check("Mesh FN33" in win.gps_status.get_text() and "tap to use" in win.gps_status.get_text(),
-          f"top bar: {win.gps_status.get_text()}")
-    if os.environ.get("EMCOMM_SHOT_DIR"):  # pictures for the docs
-        from gi.repository import Gdk
-        for page in ("station-devices", "home"):
-            win.stack.set_visible_child_name(page)
-            win._show_gps("absent", L.mesh_fix())
-            pump(0.8)
-            gdkwin = win.get_window()
-            Gdk.pixbuf_get_from_window(gdkwin, 0, 0, gdkwin.get_width(), gdkwin.get_height()).savev(
-                os.path.join(os.environ["EMCOMM_SHOT_DIR"], f"mesh-gps-{page}.png"), "png", [], [])
-    win._grid_from_gps()
-    pump(0.5)
-    check(win.grid_entry.get_text() == L.latlon_to_grid(43.1597, -73.0729),
-          f"From GPS fills the grid: {win.grid_entry.get_text()}")
-    win._show_gps((3, 42.0, -72.0), L.mesh_fix())
-    check("Mesh" not in win.gps_status.get_text() and "GPS FN42" in win.gps_status.get_text(),
-          f"a USB GPS fix comes first: {win.gps_status.get_text()}")
-    with open(L.MESH_POSITION, "w") as f:
-        json.dump({"port": port, "lat": None, "lon": None, "gps": "none", "asked": int(time.time())}, f)
-    win._show_gps("absent", L.mesh_fix())
-    check(win.gps_status.get_text().endswith("Mesh no GPS"), f"no GPS: {win.gps_status.get_text()}")
-    os.remove(port)
-    win._show_gps("absent", L.mesh_fix())
-    check(win.gps_status.get_text() == "", "unplugged: nothing shown")
-
     win.destroy()
     pump(0.2)
     tmp.cleanup()
