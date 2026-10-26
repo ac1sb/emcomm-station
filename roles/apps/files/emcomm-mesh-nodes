@@ -4,6 +4,12 @@
   emcomm-mesh-nodes             ask each radio the station has used for the nodes
                                 it knows, and save them (run by the map in the background)
   emcomm-mesh-nodes --show      print what's saved
+  emcomm-mesh-nodes --position [--now]
+                                where the station is, from the GPS in the Meshtastic radio
+                                picked in Settings > Devices (asked at most every 30 minutes
+                                unless --now; run by the top bar while no USB GPS has a fix)
+  emcomm-mesh-nodes --show-position
+                                print that position, for Diagnostics
 
 The radio is the one the Mesh text (Meshtastic) or MeshCore tile last connected to
 (USB or Bluetooth, remembered in ~/.config/emcomm/mesh-meshtastic.json and
@@ -14,6 +20,12 @@ sent over the mesh; none of this needs the internet.
 Saved to ~/.cache/emcomm/mesh/nodes.js as window.MESHNODES = {meshtastic: {...},
 meshcore: {...}}, each {"time", "error", "nodes": [{name, short, lat, lon, heard, ...}]},
 which the map reloads.
+
+The station's own position goes to ~/.cache/emcomm/mesh/position.json: the radio's
+own node, as its GPS last fixed it (a position typed into the radio doesn't count).
+It is position only: a Meshtastic radio reports time in whole seconds, sent whenever
+it gets round to it, so the station clock is never set from it (FT8 needs better
+than a second; a USB GPS does that through gpsd and chrony).
 """
 
 import asyncio
@@ -31,17 +43,40 @@ VENV = os.environ.get("EMCOMM_MESH_VENVS", "/opt/emcomm") + "/{}"
 CLIENTS = {"meshtastic": "contact", "meshcore": "meshcore-cli"}  # the tile's program for each
 FLATPAKS = {"meshtastic": "org.meshtastic.MeshtasticDesktop"}  # the Meshtastic tile's Flatpak
 TIMEOUT = 45  # seconds for one radio to answer
+GPS_CONFIG = CONFIG.format("gps")  # {"port": "/dev/serial/by-id/..."}: Settings > Devices
+POSITION_EVERY = 30 * 60  # seconds between asks for the station's position
+RADIO_PORTS = ("/dev/rig-cat", "/dev/rig-ptt", "/dev/rig2-cat", "/dev/rig2-ptt", "/dev/gps0")
+GPS_MODES = {0: "off", 1: "on", 2: "none"}  # the radio's GPS: switched off, on, not fitted
 
 
 def connection(kind):
-    """("usb", port) or ("ble", address) the tile last used, or None."""
+    """("usb", port) or ("ble", address) the tile last used, or None. A Meshtastic
+    radio picked only for the station's position counts too."""
     try:
         with open(CONFIG.format(kind), encoding="utf-8") as f:
             saved = json.load(f)
         how, where = saved["via"], saved["address"]
     except (OSError, ValueError, KeyError, TypeError):
-        return None
+        port = gps_port() if kind == "meshtastic" else None
+        return ("usb", port) if port else None
     return (how, where) if how in ("usb", "ble") and where else None
+
+
+def gps_port():
+    """The USB port of the Meshtastic radio whose GPS places the station, or None."""
+    try:
+        with open(GPS_CONFIG, encoding="utf-8") as f:
+            port = json.load(f).get("port")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return port if isinstance(port, str) and os.path.isabs(port) else None
+
+
+def is_radio_port(port):
+    """Whether port is the radio's CAT or PTT port or the USB GPS (never opened here:
+    opening a PTT port can key the transmitter)."""
+    real = os.path.realpath(port)
+    return any(os.path.exists(p) and os.path.realpath(p) == real for p in RADIO_PORTS)
 
 
 def flatpak_running(app_id):
@@ -94,6 +129,19 @@ def meshtastic_nodes(nodes, my_num=None):
     return out
 
 
+def own_position(nodes, my_num, gps=None):
+    """This radio's own position, as its GPS last fixed it: {lat, lon, alt, fix_time,
+    source, gps}, with lat/lon None when there's no fix (or only a typed-in position)."""
+    mine = next((n for n in (nodes or {}).values() if my_num is not None and n.get("num") == my_num), {})
+    pos = mine.get("position") or {}
+    lat, lon = _num(pos.get("latitude")), _num(pos.get("longitude"))
+    source = pos.get("locationSource") or ""
+    if lat is None or lon is None or (lat == 0 and lon == 0) or source == "LOC_MANUAL":
+        lat = lon = None
+    return {"lat": lat, "lon": lon, "alt": _num(pos.get("altitude")) if lat is not None else None,
+            "fix_time": _num(pos.get("time")) if lat is not None else None, "source": source, "gps": gps}
+
+
 MESHCORE_TYPES = {1: "Companion", 2: "Repeater", 3: "Room server", 4: "Sensor"}
 
 
@@ -125,7 +173,11 @@ def ask_meshtastic(how, where):
         iface = SerialInterface(where, timeout=TIMEOUT)
     try:
         my_num = getattr(iface.myInfo, "my_node_num", None)
-        return meshtastic_nodes(iface.nodes, my_num)
+        try:
+            gps = GPS_MODES.get(iface.localNode.localConfig.position.gps_mode)
+        except AttributeError:  # older firmware: no gps_mode
+            gps = None
+        return {"nodes": meshtastic_nodes(iface.nodes, my_num), "mine": own_position(iface.nodes, my_num, gps)}
     finally:
         iface.close()
 
@@ -154,8 +206,10 @@ def ask_meshcore(how, where):
 def inner(kind, how, where):
     """Runs inside the client's environment: print the nodes as JSON."""
     try:
-        nodes = ask_meshtastic(how, where) if kind == "meshtastic" else ask_meshcore(how, where)
-        print(json.dumps({"nodes": nodes}))
+        if kind == "meshtastic":
+            print(json.dumps(ask_meshtastic(how, where)))
+        else:
+            print(json.dumps({"nodes": ask_meshcore(how, where)}))
     except Exception as err:  # serial, Bluetooth and protocol errors all end up here
         print(json.dumps({"error": str(err) or type(err).__name__}))
     return 0
@@ -182,22 +236,101 @@ def save(saved):
         os.replace(path + ".tmp", path)
 
 
-def refresh(kind, saved, run=None):
-    """Ask one radio; keep its last list when it can't be asked. Returns the entry saved."""
+def refresh(kind, saved, run=None, found=None):
+    """Ask one radio; keep its last list when it can't be asked. Returns the entry saved.
+    When it's the radio placing the station, its own position is saved too."""
     old = saved.get(kind) or {}
-    found = connection(kind)
+    found = found or connection(kind)
     if found is None:
         return old
     if in_use(kind):
         entry = dict(old, error=f"A {kind.capitalize()} tile has the radio; showing the last list.")
+    elif found[0] == "usb" and is_radio_port(found[1]):
+        entry = dict(old, error="That port is the radio's or the GPS's, not a mesh radio's.")
     else:
         result = (run or ask_in_venv)(kind, *found)
         if "nodes" in result:
             entry = {"time": int(time.time()), "error": "", "nodes": result["nodes"]}
         else:
             entry = dict(old, error=result.get("error") or "No answer from the radio.")
+        port = gps_port()
+        if kind == "meshtastic" and found[0] == "usb" and port and \
+                os.path.realpath(found[1]) == os.path.realpath(port):
+            save_position(port, result)
     saved[kind] = entry
     return entry
+
+
+# ---- the station's own position -------------------------------------------------------
+
+def load_position():
+    try:
+        with open(os.path.join(OUT, "position.json"), encoding="utf-8") as f:
+            saved = json.load(f)
+        return saved if isinstance(saved, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_position(port, result=None, error=""):
+    """Keep what the radio said about itself; on an error keep the last fix with the error."""
+    old = load_position()
+    old = old if old.get("port") == port else {}
+    if result and isinstance(result.get("mine"), dict):
+        entry = dict(result["mine"], error="")
+    else:
+        entry = dict(old, error=error or (result or {}).get("error") or "No answer from the radio.")
+    entry.update(port=port, asked=int(time.time()))
+    os.makedirs(OUT, exist_ok=True)
+    path = os.path.join(OUT, "position.json")
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(entry, f)
+    os.replace(path + ".tmp", path)
+    return entry
+
+
+def position(now=False, run=None):
+    """Ask the Meshtastic radio picked in Settings > Devices where it is, unless it was
+    asked lately. Its node list for the map is refreshed on the way."""
+    port = gps_port()
+    if not port:
+        return None
+    old = load_position()
+    if not now and old.get("port") == port and time.time() - (old.get("asked") or 0) < POSITION_EVERY:
+        return old
+    if not os.path.exists(port):
+        return save_position(port, error="The Meshtastic radio isn't plugged in.")
+    if is_radio_port(port):
+        return save_position(port, error="That port is the radio's or the GPS's. Pick the Meshtastic radio's.")
+    if in_use("meshtastic"):
+        return save_position(port, error="The Meshtastic app has the radio; asking again later.")
+    saved = load()
+    refresh("meshtastic", saved, run=run, found=("usb", port))
+    save(saved)
+    return load_position()
+
+
+def describe_position(entry):
+    """Lines for Diagnostics."""
+    if not gps_port():
+        return ["Meshtastic GPS: off (Settings > Devices)"]
+    lines = [f"Meshtastic GPS: {entry.get('port') or gps_port()}"]
+    if entry.get("lat") is not None:
+        when = entry.get("fix_time")
+        age = f", fixed {time.strftime('%Y-%m-%d %H:%M', time.gmtime(when))}Z" if when else ""
+        lines.append(f"  position {entry['lat']:.5f}, {entry['lon']:.5f}{age}")
+    elif entry.get("gps") == "none":
+        lines.append("  this radio has no GPS")
+    elif entry.get("gps") == "off":
+        lines.append("  the radio's GPS is switched off (Meshtastic app > Position)")
+    elif entry:
+        lines.append("  no fix yet")
+    if entry.get("asked"):
+        lines.append(f"  last asked {time.strftime('%Y-%m-%d %H:%M', time.gmtime(entry['asked']))}Z")
+    if entry.get("error"):
+        lines.append(f"  {entry['error']}")
+    lines.append("  position only: the clock is never set from it")
+    return lines
 
 
 def ask_in_venv(kind, how, where):
@@ -220,7 +353,10 @@ def main(argv):
     if argv == ["--show"]:
         print(json.dumps(load(), indent=1))
         return 0
-    if argv:
+    if argv == ["--show-position"]:
+        print("\n".join(describe_position(load_position())))
+        return 0
+    if argv and argv not in (["--position"], ["--position", "--now"]):
         print(__doc__.strip(), file=sys.stderr)
         return 2
     os.makedirs(OUT, exist_ok=True)
@@ -228,6 +364,9 @@ def main(argv):
         try:  # the map opened twice: one asks the radios, the other leaves them be
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
+            return 0
+        if argv:
+            position(now="--now" in argv)
             return 0
         saved = load()
         for kind in CLIENTS:

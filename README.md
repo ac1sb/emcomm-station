@@ -46,6 +46,10 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   the saved one it says "tap to use", and tapping it (or **From GPS** next to the
   grid in Settings) fills in the new grid, ready to save. Diagnostics shows the
   fix and whether the clock is following the GPS.
+- **Position from a Meshtastic radio:** with no USB GPS fix, the GPS in a
+  USB-connected Meshtastic radio (Settings > Devices) gives the grid square, shown
+  as "Mesh" in the top bar. Position only: Meshtastic time comes in whole seconds
+  with no timing pulse, too rough for FT8, so the clock is never set from it.
 - **Presets** (`radios/`): Yaesu FT-891 with a Digirig, and Yaesu FT-710. Optional
   shortcuts that fill in every radio field at once, even before the radio is plugged in.
 - **Kiosk:** auto-login on the console, X with Openbox only, screen blanking off.

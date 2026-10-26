@@ -97,6 +97,7 @@ show_gps() {
   [ -n "$tpv" ] && echo "$tpv" | grep -oE '"(lat|lon|time)":[^,]*' | tr '\n' ' ' && echo
   chronyc -n tracking 2>/dev/null | grep -E '^(Reference ID|System time|Leap status)' ||
     echo "chrony not running"
+  command -v emcomm-mesh-nodes >/dev/null && emcomm-mesh-nodes --show-position
 }
 
 show_events() {

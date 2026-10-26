@@ -900,6 +900,56 @@ def gps_fix(timeout=2.5):
     return None
 
 
+# A Meshtastic radio's GPS places the station while no USB GPS has a fix. Position only:
+# the radio gives time in whole seconds, too rough for the clock (FT8 needs better).
+MESH_GPS_CONFIG = os.path.expanduser("~/.config/emcomm/mesh-gps.json")  # {"port": by-id path}
+MESH_POSITION = os.path.expanduser("~/.cache/emcomm/mesh/position.json")  # emcomm-mesh-nodes --position
+MESH_FIX_AGE = 6 * 3600  # an older fix isn't shown as where the station is
+
+
+def mesh_gps_port():
+    port = read_json(MESH_GPS_CONFIG, {})
+    port = port.get("port") if isinstance(port, dict) else None
+    return port if isinstance(port, str) and port else None
+
+
+def mesh_ports():
+    """(by-id path, label) of USB serial ports that could be a Meshtastic radio: not the
+    radios' CAT or PTT ports, nor the USB GPS."""
+    taken = {os.path.realpath(p) for p in ("/dev/rig-cat", "/dev/rig-ptt", "/dev/rig2-cat", "/dev/rig2-ptt",
+                                           GPS_DEV) if os.path.exists(p)}
+    found = []
+    for path in sorted(glob.glob("/dev/serial/by-id/*")):
+        if os.path.realpath(path) not in taken:
+            name = os.path.basename(path)
+            name = re.sub(r"^usb-|-if\d+(-port\d+)?$", "", name).replace("_", " ")
+            found.append((path, name))
+    return found
+
+
+def mesh_fix():
+    """The Meshtastic radio's GPS: (lat, lon) for a recent fix, a short reason when there's
+    none, or None when no radio is picked or it isn't plugged in."""
+    port = mesh_gps_port()
+    if not port or not os.path.exists(port):
+        return None
+    pos = read_json(MESH_POSITION, {})
+    if not isinstance(pos, dict) or pos.get("port") != port:
+        return "asking"
+    lat, lon, when = pos.get("lat"), pos.get("lon"), pos.get("fix_time")
+    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+        if not isinstance(when, (int, float)) or time.time() - when < MESH_FIX_AGE:
+            return lat, lon
+        return "fix too old"
+    if pos.get("gps") == "none":
+        return "no GPS"
+    if pos.get("gps") == "off":
+        return "GPS off"
+    if "app has the radio" in (pos.get("error") or ""):
+        return "radio busy"
+    return "no fix yet"
+
+
 def latlon_to_grid(lat, lon):
     """Six-character Maidenhead locator, such as FN31pr."""
     lon = min(max(lon + 180, 0), 359.9999)
@@ -2497,6 +2547,8 @@ class Launcher(Gtk.Window):
         gps_box.connect("button-press-event", lambda *_: self._grid_from_gps())
         bar.pack_end(gps_box, False, False, 0)
         self.gps_grid = None
+        self.gps_from_mesh = False
+        self._mesh_asked = 0.0
         # Weather alerts in force; tap to read them.
         self.rec_status = Gtk.Label()
         rec_box = Gtk.EventBox()
@@ -2554,7 +2606,8 @@ class Launcher(Gtk.Window):
                 GLib.idle_add(lambda: self._audio_router_running() and False)
                 net = self._network_summary()
                 gps = gps_fix() if os.path.exists(GPS_DEV) else "absent"
-                GLib.idle_add(self._show_status, freq, audio, net, gps)
+                mesh = None if isinstance(gps, tuple) else self._mesh_fix()
+                GLib.idle_add(self._show_status, freq, audio, net, gps, mesh)
                 signature = devices_signature()
                 if signature != self._devices_seen:
                     self._devices_seen = signature
@@ -2566,16 +2619,38 @@ class Launcher(Gtk.Window):
         threading.Thread(target=work, daemon=True).start()
         return True
 
-    def _show_gps(self, gps):
-        """Top bar: GPS grid when there's a fix; nothing when no GPS is plugged in."""
+    def _mesh_fix(self):
+        """The Meshtastic radio's fix (see mesh_fix), asking the radio now and then. The
+        helper asks at most every 30 minutes and leaves the radio alone while an app has it."""
+        if not mesh_gps_port():
+            return None
+        if time.time() - self._mesh_asked > 60 and shutil.which("emcomm-mesh-nodes"):
+            self._mesh_asked = time.time()
+            try:
+                subprocess.Popen(["emcomm-mesh-nodes", "--position"], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError:
+                pass
+        return mesh_fix()
+
+    def _show_gps(self, gps, mesh=None):
+        """Top bar: GPS grid when there's a fix; nothing when no GPS is plugged in. Without a
+        USB GPS fix, the Meshtastic radio's GPS (Settings > Devices) stands in."""
         self.gps_grid = latlon_to_grid(gps[1], gps[2]) if isinstance(gps, tuple) else None
-        if gps == "absent":
-            self.gps_status.set_text("")
-        elif self.gps_grid:
+        self.gps_from_mesh = False
+        if not self.gps_grid and isinstance(mesh, tuple):
+            self.gps_grid, self.gps_from_mesh = latlon_to_grid(*mesh), True
+        name = "Mesh" if self.gps_from_mesh else "GPS"
+        if self.gps_grid:
             moved = self.gps_grid[:4].upper() != self.station.get("grid", "")[:4].upper()
             colour = self.colours["accent"] if moved else self.colours["ok"]
             hint = "  (tap to use)" if moved else ""
-            self.gps_status.set_markup(f"<span foreground='{colour}'>●</span>  GPS {self.gps_grid}{hint}")
+            self.gps_status.set_markup(f"<span foreground='{colour}'>●</span>  {name} {self.gps_grid}{hint}")
+        elif gps == "absent" and isinstance(mesh, str):
+            self.gps_status.set_markup(f"<span foreground='{self.colours['muted']}'>○</span>  "
+                                       f"Mesh {GLib.markup_escape_text(mesh)}")
+        elif gps == "absent":
+            self.gps_status.set_text("")
         else:
             words = "no fix yet" if gps is None else "not answering"
             self.gps_status.set_markup(f"<span foreground='{self.colours['muted']}'>○</span>  GPS {words}")
@@ -2592,7 +2667,8 @@ class Launcher(Gtk.Window):
 
     def _set_grid_from_gps(self, grid):
         self.grid_entry.set_text(grid)
-        self._set_message(f"Grid {grid} filled in from the GPS. Tap Save to use it.", True)
+        source = "the Meshtastic radio's GPS" if self.gps_from_mesh else "the GPS"
+        self._set_message(f"Grid {grid} filled in from {source}. Tap Save to use it.", True)
         return False
 
     def _audio_router_running(self):
@@ -2635,7 +2711,7 @@ class Launcher(Gtk.Window):
         connected = (ok and out.strip().startswith("connected")) or has_default_route()
         return ("Network" if connected else "No network"), connected
 
-    def _show_status(self, freq, audio, net=None, gps="absent"):
+    def _show_status(self, freq, audio, net=None, gps="absent", mesh=None):
         if freq:
             self.rig_status.set_markup(f"<span foreground='{self.colours['ok']}'>●</span>  Rig  <tt>{freq}</tt>")
         else:
@@ -2648,7 +2724,7 @@ class Launcher(Gtk.Window):
                    else f"<span foreground='{self.colours['muted']}'>○</span>")
             self.net_status.set_markup(f"{dot}  {GLib.markup_escape_text(net[0])}")
         self.net_connected = bool(net and net[1])
-        self._show_gps(gps)
+        self._show_gps(gps, mesh)
         self._check_radio_alerts()
         self.net_status.set_visible(bool(net))
         self._refresh_tiles()
@@ -4557,6 +4633,7 @@ class Launcher(Gtk.Window):
         self.ptt_port_combo = PickList()
         self.audio_combo = PickList()
         self.gps_combo = PickList()  # long device names are cut off with "…" instead of widening the screen
+        self.mesh_gps_combo = PickList()
 
     def _station_user_page(self):
         hint = ("Your callsign goes into JS8Call, WSJT-X, fldigi, Pat and the ICS forms; the grid square "
@@ -5190,6 +5267,12 @@ class Launcher(Gtk.Window):
         adsb.set_tooltip_text("Keep one RTL-SDR dongle for aircraft (1090 MHz), shown on the map")
         top.pack_start(adsb, False, False, 0)
         body.pack_start(top, False, False, 0)
+        body.pack_start(self._field("Position from a Meshtastic radio's GPS", self.mesh_gps_combo), False, False, 0)
+        note = Gtk.Label(xalign=0, wrap=True, label=(
+            "Used for the grid square when no USB GPS has a fix. Position only: the clock still needs a USB GPS "
+            "or the internet. Asked every 30 minutes, and never while the Meshtastic or Mesh text tile is open."))
+        note.get_style_context().add_class("muted")
+        body.pack_start(note, False, False, 0)
         self.devices_view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
                                          left_margin=12, top_margin=8, wrap_mode=Gtk.WrapMode.WORD_CHAR)
         scroller = Gtk.ScrolledWindow()
@@ -5314,7 +5397,8 @@ class Launcher(Gtk.Window):
                 getattr(self, "editing_radio", 1),
                 self.model_combo.get_active_id(), self.baud_combo.get_active_id(), self.ptt_combo.get_active_id(),
                 self.data_mode_combo.get_active_id(),
-                *(self._chosen(c) for c in (self.cat_combo, self.ptt_port_combo, self.audio_combo, self.gps_combo)))
+                *(self._chosen(c) for c in (self.cat_combo, self.ptt_port_combo, self.audio_combo, self.gps_combo)),
+                self.mesh_gps_combo.get_active_id())
 
     def _settings_shown(self):
         """Show the saved settings and the devices plugged in now, unless there are unsaved
@@ -5383,6 +5467,7 @@ class Launcher(Gtk.Window):
         self._fill_radio(st)
         self.allow_apps_check.set_active(self._app_radio().get("allowed") is True)
         self._fill_match_combo(self.gps_combo, self.serial_ports, st.get("gps_match") or "", fixed=GPS_FIXED)
+        self._fill_mesh_gps(mesh_gps_port() or "")
         self._filling = False
         self._settings_filled = (self.station, self._settings_form())
         for label in self.settings_messages:
@@ -5398,9 +5483,37 @@ class Launcher(Gtk.Window):
         self._fill_match_combo(self.audio_combo, self.sound_cards, current["audio_match"],
                                fixed=[("", "Choose later")])
         self._fill_match_combo(self.gps_combo, self.serial_ports, current["gps_match"], fixed=GPS_FIXED)
+        self._fill_mesh_gps(self.mesh_gps_combo.get_active_id() or "")
         found = len(self.serial_ports) + len(self.sound_cards)
         self._set_message(f"Found {len(self.serial_ports)} serial port(s) and {len(self.sound_cards)} USB sound card(s)."
                           if found else "No USB radio devices found. Plug in the radio and rescan.", found > 0)
+
+    def _fill_mesh_gps(self, current):
+        """Off, or a USB serial port that isn't the radio's or the GPS's (the saved one is
+        kept while it's unplugged)."""
+        self.mesh_gps_combo.remove_all()
+        self.mesh_gps_combo.append("", "Off")
+        ports = mesh_ports()
+        for path, label in ports:
+            self.mesh_gps_combo.append(path, label)
+        if current and current not in dict(ports):
+            self.mesh_gps_combo.append(current, f"{os.path.basename(current)} (not plugged in)")
+        self.mesh_gps_combo.set_active_id(current)
+
+    def _save_mesh_gps(self):
+        """Settings > Devices: which Meshtastic radio places the station. A file of the
+        user's own, so it needs no admin rights; the radio is asked straight away."""
+        port = self.mesh_gps_combo.get_active_id() or ""
+        if port == (mesh_gps_port() or ""):
+            return
+        write_json(MESH_GPS_CONFIG, {"port": port or None})
+        self._mesh_asked = time.time()
+        if port and shutil.which("emcomm-mesh-nodes"):
+            try:
+                subprocess.Popen(["emcomm-mesh-nodes", "--position", "--now"], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError:
+                pass
 
     def _mfg_changed(self, combo):
         self.model_combo.remove_all()
@@ -5414,6 +5527,7 @@ class Launcher(Gtk.Window):
         self.ptt_port_combo.set_sensitive(self.ptt_combo.get_active_id() in ("RTS", "DTR"))
 
     def _save_settings(self, *_):
+        self._save_mesh_gps()
         if getattr(self, "editing_radio", 1) == 2 and self.stack.get_visible_child_name() == "station-radio":
             self._save_radio2()
             return
