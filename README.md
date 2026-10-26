@@ -123,6 +123,10 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   and CHIRP for programming
   handhelds and mobiles. Every app reaches the radio through `rigctld`, so CAT and PTT are set up
   once, in Settings. Callsign and grid are filled in for each app.
+- **Files** (tile): Winlink attachments (read straight from Pat's mailbox),
+  Downloads and received SSTV pictures, with PDFs, pictures and text shown on the
+  page and Word, Excel and PowerPoint files shown through LibreOffice (installed
+  the first time one is opened); Print, and Edit in LibreOffice.
 - **Library** (tile): offline books from Kiwix, readable with no internet. With
   internet, tap **Download** next to a suggested book: WikEM (emergency medicine),
   post-disaster and water guides, Wikipedia's medical articles, Amateur Radio

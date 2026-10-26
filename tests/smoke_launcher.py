@@ -88,6 +88,8 @@ def make_station(root):
         "EMCOMM_SAME_CODES": os.path.join(FILES, "same-codes.csv"), "EMCOMM_LAUNCHER_WINDOWED": "1",
         "EMCOMM_ONLINE": "/bin/false", "EMCOMM_RECORDER": "/bin/false", "EMCOMM_STREAM": "/bin/false",
         "EMCOMM_DISPLAY": "/bin/true", "EMCOMM_BACKUP": "/bin/false", "EMCOMM_KEYBOARD": "/bin/true",
+        "EMCOMM_FILES": os.path.join(FILES, "emcomm-files"),
+        "EMCOMM_PAT_MAILBOX": os.path.join(home, ".local/share/pat/mailbox"),
     })
     return home
 
@@ -863,6 +865,51 @@ def main():
         os.kill(win.term_pid, 9)
         pump(1)
         check(win.term_pid is None and "The shell ended" in screen_text(), "Terminal: says when the shell ends")
+    # Files: a Winlink message's attachments (read out of Pat's mailbox) and Downloads
+    sys.path.insert(0, os.path.join(REPO, "tests"))
+    import test_files
+    from gi.repository import GdkPixbuf
+    picture = os.path.join(tmp.name, "picture.png")
+    GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 64, 48).savev(picture, "png", [], [])
+    with open(os.path.join(FILES, "forms", "ics213.pdf"), "rb") as f:
+        form = f.read()
+    with open(picture, "rb") as f:
+        png = f.read()
+    inbox = os.path.join(home, ".local/share/pat/mailbox/AC1SB/in")
+    os.makedirs(inbox)
+    with open(os.path.join(inbox, "FILES0000001.b2f"), "wb") as f:
+        f.write(test_files.b2f("FILES0000001", "Shelter forms", [("blank 213.pdf", form), ("damage.png", png)]))
+    os.makedirs(os.path.join(home, "Downloads"), exist_ok=True)
+    with open(os.path.join(home, "Downloads", "notes.txt"), "w") as f:
+        f.write("Shelter opens at 1800.\n")
+    win.stack.set_visible_child_name("files")
+    end = time.time() + 10
+    while time.time() < end and len(win.files_found) < 3:
+        pump(0.2)
+    names = sorted(i["name"] for i in win.files_found)
+    check(names == ["blank 213.pdf", "damage.png", "notes.txt"], f"Files lists attachments and downloads: {names}")
+    fits("Files")
+
+    def show(name):
+        row = next(r for r in win.files_list.get_children() if getattr(r, "item", {}).get("name") == name)
+        win.files_list.select_row(row)
+        end = time.time() + 10
+        while time.time() < end and win.files_view.get_visible_child_name() == "note":
+            pump(0.2)
+        pump(0.3)
+        return win.files_view.get_visible_child_name()
+
+    check(show("blank 213.pdf") == "pdf" and win.files_doc and win.files_print_btn.get_sensitive(),
+          "a PDF attachment shows, ready to print")
+    check(os.path.exists(os.path.join(home, "Winlink attachments", "FILES0000001", "blank 213.pdf")),
+          "the attachment is saved in ~/Winlink attachments")
+    check(show("damage.png") == "image" and win.files_pixbuf.get_width() == 64, "a picture attachment shows")
+    check(show("notes.txt") == "text", "a text file shows")
+    win.files_search.set_text("shelter")
+    pump(0.8)
+    shown = [r.item["name"] for r in win.files_list.get_children() if hasattr(r, "item")]
+    check(sorted(shown) == ["blank 213.pdf", "damage.png"], f"search finds by subject: {shown}")
+    win.files_search.set_text("")
 
     # a tile added after the operator arranged Home joins its standard folder
     apps = [{"code": c} for c in ("MSH", "MSD", "APR", "WEB")]
