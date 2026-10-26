@@ -40,6 +40,25 @@
         <maximized>no</maximized>
       </application>
 
+# With no desktop, nothing else answers the keyboard's volume keys. They change the
+# listening speaker: the radio is the default speaker, so the usual keys would change
+# the transmit level.
+- name: Volume keys change the listening speaker in the session
+  ansible.builtin.blockinfile:
+    path: /usr/share/emcomm/openbox/rc.xml
+    insertbefore: "^</keyboard>"
+    marker: "<!-- {mark} emcomm-station volume keys: managed by the playbook -->"
+    block: |
+      <keybind key="XF86AudioRaiseVolume">
+        <action name="Execute"><command>emcomm-audio volume up</command></action>
+      </keybind>
+      <keybind key="XF86AudioLowerVolume">
+        <action name="Execute"><command>emcomm-audio volume down</command></action>
+      </keybind>
+      <keybind key="XF86AudioMute">
+        <action name="Execute"><command>emcomm-audio volume mute</command></action>
+      </keybind>
+
 - name: Add the Emcomm-CNC session to the login screen
   ansible.builtin.copy:
     dest: /usr/share/xsessions/emcomm-cnc.desktop

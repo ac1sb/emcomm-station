@@ -208,6 +208,33 @@ class Helpers(unittest.TestCase):
                          ["builtin", "hdmi", "usb", "bluetooth"])
         self.assertTrue(audio.is_monitor({"name": "x.monitor", "properties": {}}))
 
+    def test_mute(self):
+        self.assertTrue(audio.is_muted({"mute": True}))
+        self.assertFalse(audio.is_muted({"name": "x"}))
+        self.assertIsNone(audio.is_muted(None))
+
+    def test_volume_keys_step_by_five_and_stop_at_full(self):
+        self.assertEqual([audio.new_volume(v, "up") for v in (0, 57, 95, 100)], [5, 60, 100, 100])
+        self.assertEqual([audio.new_volume(v, "down") for v in (0, 3, 57, 60)], [0, 0, 55, 55])
+        self.assertEqual([audio.new_volume(50, v) for v in ("30", "150")], [30, 100])
+
+    def test_volume_keys_change_the_listening_speaker_not_the_radio(self):
+        calls = []
+        speaker = dict(BUILTIN, volume={"front-left": {"value": 32768}})
+        real = (audio.pactl, audio.pactl_list, audio.card_number)
+        audio.pactl = lambda *a, **k: calls.append(a) or ""
+        audio.pactl_list = lambda kind: [RADIO, speaker] if kind == "sinks" else []
+        audio.card_number = lambda link: "2" if link == audio.RADIO_CARD else None
+        try:
+            self.assertEqual(audio.set_speaker_volume("up"), 0)
+            self.assertEqual(audio.set_speaker_volume("mute"), 0)
+            audio.pactl_list = lambda kind: [RADIO] if kind == "sinks" else []
+            self.assertEqual(audio.set_speaker_volume("up"), 1)
+        finally:
+            audio.pactl, audio.pactl_list, audio.card_number = real
+        self.assertEqual(calls, [("set-sink-volume", BUILTIN["name"], "55%"), ("set-sink-mute", BUILTIN["name"], "0"),
+                                 ("set-sink-mute", BUILTIN["name"], "toggle")])
+
     def test_apps_named_by_their_sound_library_show_their_own_name(self):
         qt = stream(1, 1, "QtPulseAudio:4321", "wsjtx")
         self.assertEqual((audio.app_label(qt), audio.app_key(qt)), ("WSJT-X", "wsjtx"))

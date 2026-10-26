@@ -8,6 +8,9 @@
   emcomm-audio speaker        the listening speaker (exits 1 if there's none)
   emcomm-audio radio-source   the radio's receive audio (exits 1 if it isn't plugged in)
   emcomm-audio status         speakers, the radio and what's playing, as JSON
+  emcomm-audio volume up|down|mute|PERCENT
+                              the listening speaker's volume, 5 % a step and never past
+                              100 %, or mute on and off (the keyboard's volume keys)
 
 The radio's sound card (ALSA card "rigaudio") is every app's default speaker,
 so the digital-mode apps reach it with no settings of their own. Anything else
@@ -354,6 +357,47 @@ def volume_percent(node):
     return None
 
 
+def is_muted(node):
+    """A sink's or source's mute, or None when there's no such node."""
+    return bool(node.get("mute")) if node else None
+
+
+VOLUME_STEP = 5
+
+
+def new_volume(current, change):
+    """The volume a volume key or a typed percent leads to: 0-100 %, in steps of 5 from where it is."""
+    if change == "up":
+        return min(100, (current // VOLUME_STEP + 1) * VOLUME_STEP)
+    if change == "down":
+        return max(0, -(-current // VOLUME_STEP) * VOLUME_STEP - VOLUME_STEP)
+    return max(0, min(100, int(change)))
+
+
+def set_speaker_volume(change):
+    """The keyboard's volume keys: the listening speaker only, never the radio. The radio is the
+    default speaker on a station, so the usual "default sink" volume keys would change the
+    transmit level instead."""
+    sinks = pactl_list("sinks")
+    cards = [c for c in (card_number(RADIO_CARD), card_number(APRS_CARD), card_number(RADIO2_CARD)) if c is not None]
+    speaker = listening_speaker(sinks, cards, load_settings()["listen_sink"])
+    if not speaker:
+        print("No speaker other than the radio is connected.", file=sys.stderr)
+        return 1
+    if change == "mute":
+        pactl("set-sink-mute", speaker["name"], "toggle")
+        return 0
+    if change not in ("up", "down") and not change.isdigit():
+        print("emcomm-audio volume up|down|mute|PERCENT", file=sys.stderr)
+        return 2
+    level = new_volume(volume_percent(speaker) or 0, change)
+    pactl("set-sink-volume", speaker["name"], f"{level}%")
+    if change == "up":
+        pactl("set-sink-mute", speaker["name"], "0")  # louder means hear it, as on a desktop
+    print(f"{speaker.get('description') or speaker['name']}: {level} %")
+    return 0
+
+
 def status():
     sinks = pactl_list("sinks")
     sources = pactl_list("sources")
@@ -380,6 +424,8 @@ def status():
         "speaker": speaker["name"] if speaker else None,
         "volumes": {"to_radio": volume_percent(radio_sink), "from_radio": volume_percent(radio_source),
                     "speaker": volume_percent(speaker)},
+        "muted": {"to_radio": is_muted(radio_sink), "from_radio": is_muted(radio_source),
+                  "speaker": is_muted(speaker)},
         "speakers": [{"name": s["name"], "description": s.get("description") or s["name"],
                       "kind": speaker_kind(s)} for s in speakers(sinks, cards)],
         "streams": streams,
@@ -413,6 +459,8 @@ def main(argv):
             return 0
         print("The radio's sound card isn't plugged in.", file=sys.stderr)
         return 1
+    if len(argv) == 2 and argv[0] == "volume":
+        return set_speaker_volume(argv[1])
     if cmd == "status":
         print(json.dumps(status(), indent=2))
         return 0
