@@ -834,7 +834,10 @@ subject) and a menu to show one kind only.
 - **JS8Call messages** and **JS8Call all activity.**
 - **WSJT-X contacts.**
 - **Winlink mail.**
-- **Station updates:** the log of the last Update station.
+- **Station updates:** the log of the last Update station, with each slow step's
+  time and the slowest steps at the end.
+- **Callsign list downloads:** how the last background download of the FCC and DMR
+  ID lists went.
 
 The **Forms** button goes to Forms (F9) and **Recorder** to the Recorder.
 **Look up** opens the callsign and DMR ID search below.
@@ -850,8 +853,11 @@ The station keeps two lists, so lookups work with no internet:
 
 - **Getting them:** run **Update station** once with the internet connected. After
   that, each Update station downloads a list again only when the copy is over a week
-  old. Offline, the last lists are kept and keep working. If a list has never
-  downloaded, the update ends with a warning line; everything else still installs.
+  old. The download (about 170 MB for both) and the rebuild run **in the
+  background** after the update says so, taking a few minutes; lookups use the old
+  list until the new one is ready. Logs > **Callsign list downloads** shows how it
+  went. Offline, the last lists are kept and keep working, and the next Update
+  station with internet tries again.
 - **Look up** (Logs page): type a callsign or a DMR ID. Matches list as you type:
   calls that start with what you typed, or IDs that start with the digits. Tap one to
   put the call in the contact note. The line under the box says how old the FCC list
@@ -1224,11 +1230,38 @@ file, then upload to the radio.
 | Wi-Fi | Networks (also F6) |
 | Accounts | QRZ, HamQTH, aprs.fi key, contact email |
 | Backup | Save settings and lists to a USB stick, or restore |
-| Update station | Latest Emcomm-CNC and apps |
+| Update station | Latest Emcomm-CNC and apps (see [Update station](#update-station)) |
 | Audio | Radio sound card, Levels, Listening speaker, Playing now |
 | APRS iGate | Second radio for APRS |
 | Power | Restart or shut down (desktop: exit) |
 | Home tiles | Arrange and group the apps |
+
+### Update station
+
+**Settings > Update station** downloads the latest Emcomm-CNC and rebuilds the
+station from it, in a window that shows each step. It usually takes a few minutes.
+
+- **Times:** after any step that took more than 5 seconds the window prints
+  `took 1m 12s`. While a step is still running it prints `still working on it` every
+  30 seconds, and at the end it lists **the slowest steps**, so a slow update shows
+  where the time went. The same lines are in Logs > **Station updates**.
+- **Waiting for another program:** only one program at a time can install software.
+  If Ubuntu's or Debian's own updates (unattended-upgrades, Software Updater) are
+  running, the step says `waiting ... for unattended-upgrade to finish` and carries
+  on by itself when they're done (up to 10 minutes). On a desktop computer this is
+  most common in the first half hour after it's turned on. To avoid it, let the
+  computer's own update finish first.
+- **Package lists:** the list of available packages is refreshed only when it's over
+  12 hours old. Nothing in Update station upgrades installed packages (the
+  computer's own updater does that), so this skips nothing it needs. Turning on
+  32-bit packages for VARA makes that refresh bigger, which is why it got slower
+  after VARA was installed.
+- **In the background:** the weekly FCC and DMR ID list downloads (see
+  [Offline callsign and DMR ID lookup](#offline-callsign-and-dmr-id-lookup)).
+- **Not in the background:** apps from Flathub (Meshtastic Desktop, Meshy) are
+  brought up to date in every Update station once they're installed. Their first
+  update after a new Flathub runtime can take several minutes; it shows as one of the
+  slowest steps.
 
 ### Settings > Radio: radio profiles
 
@@ -1495,9 +1528,10 @@ MHz) before digital work.
 
 With internet:
 
-1. **Settings > Update station.** It also refreshes the offline FCC callsign list
-   when it's over a week old (about 150 MB to download). Read Logs > **Station
-   updates** if anything failed.
+1. **Settings > Update station.** It also starts a background download of the
+   offline FCC callsign and DMR ID lists when they're over a week old (about 170 MB).
+   Read Logs > **Station updates** if anything failed, and Logs > **Callsign list
+   downloads** a few minutes later.
 2. **Reference > Nearest Winlink gateways > Update list.**
 3. **Library:** download any new books; check the ones you rely on open.
 4. **Online:** check alerts and propagation load.
@@ -1577,6 +1611,7 @@ serial port).
 | Scanner or Gqrx says the receiver is busy | Settings > Devices > **Free the SDR receiver** |
 | A tile says **Didn't start** | Try again; if it repeats, Logs > Station updates, then Update station |
 | Something stopped working after an update | Logs > **Station updates** shows which step failed |
+| Update station is slow | The end of Logs > **Station updates** lists the slowest steps. **Waiting for unattended-upgrade** means the computer's own updates are running: let them finish first. See [Update station](#update-station) |
 
 ---
 
@@ -1596,6 +1631,8 @@ serial port).
 | Library books | `~/Library` |
 | Pat (Winlink) | `~/.config/pat/config.json` |
 | Offline FCC callsign list | `/var/lib/emcomm/callsigns.db` |
+| Offline DMR ID list | `/var/lib/emcomm/dmrids.db` |
 | Update log | `/var/log/emcomm-update.log` |
+| Callsign list download log | `/var/log/emcomm-callsign.log` |
 
 **Settings > Backup** saves your settings, lists and tile arrangement to a USB stick.

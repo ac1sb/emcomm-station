@@ -218,6 +218,14 @@ class Update(unittest.TestCase):
         self.assertEqual(os.listdir(self.cache), [])
         self.assertEqual(len(cs.dmr_lookup("KC1ABC", dmr_db)), 2)
 
+    def test_due_names_missing_and_old_lists(self):
+        dmr_db = os.path.join(self.tmp.name, "dmrids.db")
+        lists = [("FCC callsign", self.db), ("DMR ID", dmr_db)]
+        self.assertEqual(cs.due(7, lists), ["FCC callsign", "DMR ID"])
+        self.run_update(url=self.url)
+        self.assertEqual(cs.due(7, lists), ["DMR ID"])
+        self.assertEqual(cs.due(0, lists), ["FCC callsign", "DMR ID"])
+
     def test_offline_with_no_list_fails(self):
         rc, out = self.run_update(url="file:///nowhere.zip")
         self.assertEqual(rc, 1)

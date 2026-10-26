@@ -1795,6 +1795,7 @@ LOG_SOURCES = [
     ("wsjtx", "WSJT-X contacts", "~/.local/share/WSJT-X/wsjtx.log"),
     ("pat", "Winlink mail", None),
     ("update", "Station updates", "/var/log/emcomm-update.log"),
+    ("callsign", "Callsign list downloads", "/var/log/emcomm-callsign.log"),
 ]
 
 
