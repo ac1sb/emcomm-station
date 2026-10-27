@@ -9,12 +9,15 @@ starts when the audio rises above the threshold (-40 dBFS unless given) and
 ends a few seconds after it falls back. --all records everything, in files of
 up to an hour. Files are 8 kHz mono WAV in ~/Recordings/DATE/, named with the
 UTC time, frequency and mode. Other apps can use the radio's audio meanwhile.
+Nothing is deleted to make room: when the disk is nearly full (DISK_STOP) it pauses
+until recordings are deleted, and the launcher warns well before that.
 """
 
 import array
 import json
 import math
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -29,7 +32,9 @@ CHUNK = RATE // 10 * 2          # 100 ms of 16-bit mono
 PRE_ROLL = 5                     # chunks kept from before the signal (0.5 s)
 HANG = 30                        # chunks of quiet before a file ends (3 s)
 MAX_CHUNKS = 3600 * 10           # an hour per file
-MAX_BYTES = 2 * 1024 ** 3        # the oldest recordings go once ~/Recordings passes this (2 GB)
+DISK_STOP = 95                   # % of the disk used: recording pauses, so the system keeps room
+MIN_FREE = 512 * 1024 ** 2       # and below this much free, on a small disk
+ROOM_CHECK = 100                 # chunks between disk checks while a file is open (10 s)
 RIGCTLD = ("127.0.0.1", 4532)
 AUDIO_CMD = os.environ.get("EMCOMM_AUDIO", "emcomm-audio")
 
@@ -92,35 +97,25 @@ def file_name(now=None, freq=None, mode=None):
     return os.path.join(folder, " ".join(parts) + ".wav")
 
 
-def prune(folder=RECORDINGS, limit=MAX_BYTES):
-    """Delete the oldest recordings until the folder holds at most `limit` bytes, so
-    recording everything can't fill the disk. Returns how many went."""
-    found = []
-    for day in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
-        day_path = os.path.join(folder, day)
-        if os.path.isdir(day_path):
-            for name in sorted(os.listdir(day_path)):
-                if name.endswith((".wav", ".wav.part")):
-                    path = os.path.join(day_path, name)
-                    try:
-                        found.append((path, os.path.getsize(path)))
-                    except OSError:
-                        pass
-    total, gone = sum(size for _path, size in found), 0
-    for path, size in found:  # day folders, then names, sort oldest first
-        if total <= limit:
-            break
-        try:
-            os.remove(path)
-        except OSError:
-            continue
-        total -= size
-        gone += 1
-        try:
-            os.rmdir(os.path.dirname(path))  # the day's folder, once it's empty
-        except OSError:
-            pass
-    return gone
+def disk_room(folder=RECORDINGS):
+    """(percent of the disk used, bytes free) for the disk the recordings go on, or None."""
+    path = folder
+    while not os.path.exists(path) and os.path.dirname(path) != path:
+        path = os.path.dirname(path)  # ~/Recordings before its first recording
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+    return 100 * usage.used / usage.total if usage.total else 0, usage.free
+
+
+def out_of_room(folder=RECORDINGS):
+    """Why recording must pause for space, or None while there's room."""
+    room = disk_room(folder)
+    if room and (room[0] >= DISK_STOP or room[1] < MIN_FREE):
+        return (f"Paused: the disk is {room[0]:.0f}% full. Delete recordings (or other files) and "
+                "recording carries on by itself.")
+    return None
 
 
 def write_status(**status):
@@ -165,7 +160,7 @@ def run(everything=False, threshold=-40.0):
                               "--channels=1", "--latency-msec=100", "--client-name=Recorder"],
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     seg, out, path, since, last_status = Segmenter(threshold, everything), None, None, None, 0
-    failed = False
+    failed, full, written = False, None, 0
     try:
         while not stopping:
             chunk = parec.stdout.read(CHUNK)
@@ -175,9 +170,19 @@ def run(everything=False, threshold=-40.0):
                              recording=False)
                 return 1
             action, chunks = seg.feed(chunk)
+            if action == "start" or (out and written % ROOM_CHECK == 0):
+                full = out_of_room()
+            if full and out:  # keep what's recorded so far
+                out.close()
+                os.replace(path + ".part", path)
+                out = None
+            if full:
+                action = None
+            elif action == "start" or (action == "write" and not out and seg.open):
+                action = "start"  # room again (or never had it) during a signal: start a file
             try:
                 if action == "start":
-                    prune()
+                    written = 0
                     path = file_name(freq=rig_query("f"), mode=rig_query("m"))
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     out = wave.open(path + ".part", "wb")
@@ -187,6 +192,7 @@ def run(everything=False, threshold=-40.0):
                     since = time.time()
                 if out:
                     out.writeframes(b"".join(chunks))
+                    written += 1
                 if action == "stop" and out:
                     out.close()
                     os.replace(path + ".part", path)
@@ -201,8 +207,11 @@ def run(everything=False, threshold=-40.0):
                 return 1
             if time.time() - last_status >= 0.5:
                 last_status = time.time()
+                if full:
+                    full = out_of_room()  # room made since: recording carries on
                 write_status(mode=mode_name, level=round(level_db(chunk), 1), recording=bool(out),
-                             file=os.path.basename(path) if out else None, since=since if out else None)
+                             file=os.path.basename(path) if out else None, since=since if out else None,
+                             **({"error": full, "full": True} if full else {}))
     finally:
         if out:
             try:

@@ -1966,6 +1966,26 @@ def write_json(path, data, private=False):
     os.replace(path + ".tmp", path)
 
 
+# The disk recordings (and everything else) live on: a warning at DISK_WARN % used; at
+# emcomm-recorder's DISK_STOP the recorder pauses. Nothing is deleted to make room.
+DISK_WARN, DISK_STOP = 85, 95
+
+
+def disk_room(path=RECORDINGS):
+    """(percent used, bytes free) of the disk holding `path` (or its nearest folder), or None."""
+    while not os.path.exists(path) and os.path.dirname(path) != path:
+        path = os.path.dirname(path)
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+    return (100 * usage.used / usage.total if usage.total else 0), usage.free
+
+
+def size_text(size):
+    return f"{size / 1024 ** 3:.1f} GB" if size >= 1024 ** 3 else f"{size / 1024 ** 2:.0f} MB"
+
+
 def recordings(limit=200):
     """(path, size in bytes, seconds) of finished recordings, newest first."""
     paths = sorted(glob.glob(os.path.join(RECORDINGS, "*", "*.wav")), reverse=True)[:limit]
@@ -2873,6 +2893,8 @@ class Launcher(Gtk.Window):
         rec_box.add(self.rec_status)
         rec_box.connect("button-press-event", lambda *_: self.stack.set_visible_child_name("recorder"))
         bar.pack_end(rec_box, False, False, 0)
+        # The disk filling up shows on Rec (the top bar has no room for more), from DISK_WARN.
+        self.disk_used, self.disk_warned, self.disk_checked = 0, 0, 0
         self.alert_status = Gtk.Label()
         alert_box = Gtk.EventBox()
         alert_box.add(self.alert_status)
@@ -2887,6 +2909,9 @@ class Launcher(Gtk.Window):
 
     def _tick_clock(self):
         now = time.time()
+        if now - self.disk_checked >= 30:
+            self.disk_checked = now
+            self._check_disk()
         self.clock.set_markup(clock_markup(now))
         rec = self._rec_markup()
         self.rec_status.set_markup(rec)
@@ -2900,11 +2925,46 @@ class Launcher(Gtk.Window):
         self.bands_hour_shown = hour
         return True
 
+    def _check_disk(self):
+        """Show the disk filling up in the top bar, and say so once in a window as it passes
+        DISK_WARN and again at DISK_STOP, since nobody may be looking at the top bar."""
+        room = disk_room()
+        used = self.disk_used = room[0] if room else 0
+        self.rec_status.set_markup(self._rec_markup())
+        if used < DISK_WARN:
+            self.disk_warned = 0  # room made: warn again if it fills up again
+            return
+        level = DISK_STOP if used >= DISK_STOP else DISK_WARN
+        if level <= self.disk_warned:
+            return
+        self.disk_warned = level
+        if level == DISK_STOP:
+            text = f"The disk is {used:.0f}% full"
+            detail = ("Recording has paused so the station keeps room to run. Delete recordings on the "
+                      "Recorder page (Select, then Delete) and it carries on by itself.")
+        else:
+            text = f"The disk is {used:.0f}% full"
+            detail = (f"{size_text(room[1])} is left. Recordings are never deleted for you; at {DISK_STOP}% the "
+                      "recorder pauses. Delete old recordings on the Recorder page, or copy them off with "
+                      "Settings > Backup first.")
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                                   text=text, secondary_text=detail)
+        dialog.add_buttons("Show recordings", 1, "OK", Gtk.ResponseType.OK)
+        if dialog.run() == 1:
+            self.stack.set_visible_child_name("recorder")
+        dialog.destroy()
+
     def _rec_markup(self):
         """● Rec in red while recording, ○ Rec when not; ● Live while streaming to Broadcastify."""
         red, muted = self.colours["danger"], self.colours["muted"]
-        text = (f"<span foreground='{red}'>●</span>  Rec" if recorder_status()
-                else f"<span foreground='{muted}'>○  Rec</span>")
+        recording = recorder_status()
+        if self.disk_used >= DISK_WARN:  # the disk filling up: "▲ 90%" in place of "Rec"
+            colour = red if self.disk_used >= DISK_STOP else self.colours["accent"]
+            mark = f"<span foreground='{red}'>●</span> " if recording else "▲ "  # no wider than "○  Rec"
+            text = f"<span foreground='{colour}'>{mark}{self.disk_used:.0f}%</span>"
+        else:
+            text = (f"<span foreground='{red}'>●</span>  Rec" if recording
+                    else f"<span foreground='{muted}'>○  Rec</span>")
         stream = stream_status()
         if stream and stream.get("live"):
             text += f"   <span foreground='{red}'>●</span>  Live"
@@ -7984,6 +8044,10 @@ class Launcher(Gtk.Window):
         for name in (Gtk.LEVEL_BAR_OFFSET_LOW, Gtk.LEVEL_BAR_OFFSET_HIGH, Gtk.LEVEL_BAR_OFFSET_FULL):
             self.rec_level.remove_offset_value(name)
         meter.pack_start(self.rec_level, True, True, 0)
+        # How much room is left: recordings are never deleted for you.
+        self.rec_disk = Gtk.Label(xalign=1)
+        self.rec_disk.get_style_context().add_class("muted")
+        meter.pack_start(self.rec_disk, False, False, 0)
         page.pack_start(meter, False, False, 0)
 
         settings = read_json(RECORDER_SETTINGS, {})
@@ -8071,6 +8135,15 @@ class Launcher(Gtk.Window):
             self.rec_page_status.set_text(text)
         self._stream_show()
         found = recordings()
+        room = disk_room() if time.time() - getattr(self, "rec_disk_at", 0) >= 10 else None
+        if room:  # every 10 s: adding up every recording's size isn't for twice a second
+            self.rec_disk_at = time.time()
+            kept = sum(size for _p, size, _l in recordings(limit=None))
+            text = f"Recordings {size_text(kept)} · disk {room[0]:.0f}% used, {size_text(room[1])} free"
+            colour = (self.colours["danger"] if room[0] >= DISK_STOP else
+                      self.colours["accent"] if room[0] >= DISK_WARN else None)
+            text = GLib.markup_escape_text(text)
+            self.rec_disk.set_markup(f"<span foreground='{colour}'>{text}</span>" if colour else text)
         stamp = [(p, s) for p, s, _l in found[:50]]
         if stamp != self.rec_listed:
             self.rec_listed = stamp

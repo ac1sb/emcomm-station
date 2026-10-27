@@ -891,8 +891,12 @@ time, frequency and mode. Open it with **Rec** in the top bar.
 
 **Rec** turns red while recording. Recordings play on the Listening speaker, never
 through the radio. **Select**, then tap recordings (or **Select all**), then
-**Delete** removes several at once. When `~/Recordings` passes about 2 GB, the oldest
-recordings are deleted to make room.
+**Delete** removes several at once. Recordings are never deleted for you. The line
+beside the level meter shows how much they take and how full the disk is. At 85% full,
+the top bar's **Rec** turns into **▲ 85%** (the percentage used; **● 85%** while
+recording) and a window says so once. At 95% the recorder pauses,
+keeping what it has, so the station keeps room to run. It carries on by itself once
+you delete recordings (copy them off with Settings > Backup first if you need them).
 
 ### Broadcastify
 

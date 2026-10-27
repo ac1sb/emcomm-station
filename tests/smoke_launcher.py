@@ -794,6 +794,34 @@ def main():
     pump(0.3)
     check(not drop.get_visible() and not win.audio_watchers, "Home bar: tapped again, it goes away")
 
+    # ---- the disk filling up: ▲ Disk in the top bar from 85%, a window once at 85% and at 95% ----
+    seen = []
+    room = [(90.0, 5 * 1024 ** 3)]
+    L.disk_room = lambda path=None: room[0]
+    answer_dialog(lambda d: seen.append(d.get_property("text")) or Gtk.ResponseType.OK)
+    win._check_disk()
+    pump(0.5)
+    check("▲ 90%" in win.rec_status.get_text() and seen == ["The disk is 90% full"],
+          f"85%: {win.rec_status.get_text()} {seen}")
+    fits("top bar with the disk warning")
+    win._check_disk()
+    pump(0.5)
+    check(len(seen) == 1, "warned once, not every check")
+    room[0] = (97.0, 2 * 1024 ** 3)
+    answer_dialog(lambda d: seen.append(d.get_property("text")) or Gtk.ResponseType.OK)
+    win._check_disk()
+    pump(0.5)
+    check(seen[-1:] == ["The disk is 97% full"], f"95%: {seen}")
+    room[0] = (60.0, 40 * 1024 ** 3)
+    win._check_disk()
+    check(win.rec_status.get_text().endswith("Rec"), f"room made: warning gone ({win.rec_status.get_text()})")
+    win.stack.set_visible_child_name("recorder")
+    pump(1)
+    check(win.rec_disk.get_text().startswith("Recordings ") and "60% used" in win.rec_disk.get_text(),
+          f"recorder disk line: {win.rec_disk.get_text()}")
+    win.stack.set_visible_child_name("home")
+    pump(0.3)
+
     # ---- tapping a tile: a flash, then "Opening…" until the app's window appears ----
     win.stack.set_visible_child_name("home")
     pump(0.5)

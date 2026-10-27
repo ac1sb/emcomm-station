@@ -203,7 +203,9 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   cut. **Rec** turns red while it records, in the launcher's top bar and in the
   Home bar above every app. Recordings play on headphones or a speaker, never
   through the radio, so they can't key it by VOX. To delete several at once, tap
-  **Select**, tap the recordings (or **Select all**), then **Delete**.
+  **Select**, tap the recordings (or **Select all**), then **Delete**. Nothing is
+  deleted for you: at 85% disk full **Rec** in the top bar turns into **▲ 85%**
+  (and once in a window), and at 95% recording pauses until there's room.
 - **Broadcastify** (on the Recorder page): streams the same receive audio to a
   Broadcastify feed. Apply for a feed at broadcastify.com; once it's approved,
   type its server, port, mount and password into **Feed settings** and tap **Go
