@@ -973,6 +973,29 @@ def main():
     win._show_gps("absent", L.mesh_fix())
     check(win.gps_status.get_text() == "", "unplugged: nothing shown")
 
+    # ---- Home tile shape: 6x3 on the station's screen; a bigger window fits more, never stretched ----
+    win.stack.set_visible_child_name("home")
+    pump(1)
+    r = win.home_page.get_allocation()
+    check(win.page_shape == (6, 3), f"1024x600: 6 x 3 tiles a page ({win.page_shape}, page {r.width}x{r.height}, window {win.get_allocated_width()}x{win.get_allocated_height()})")
+    tile = next(t for t in win.slots if not isinstance(t, str) and t.kind == "app")
+    a = tile.get_allocation()
+    check(1.0 <= a.width / a.height <= 1.25, f"tile keeps its shape: {a.width}x{a.height}")
+    for size, shape in (((1880, 916), (8, 4)), ((1240, 866), (7, 6)), ((940, 916), (5, 6)),
+                        ((984, 436), (6, 3)), ((700, 400), (4, 2))):
+        check(L.page_shape(*size) == shape, f"page {size}: {shape} ({L.page_shape(*size)})")
+    for size in ((1880, 916), (940, 916), (984, 436), (1240, 400)):
+        w, h = L.tile_size(*size, *L.page_shape(*size))
+        check(1.05 <= w / h <= 1.25 and w >= 150, f"tiles on {size}: {w}x{h}")
+    folder = win.folder_tiles[0]
+    win._open_folder(folder)
+    pump(0.5)
+    a, b = folder.members[0].get_allocation(), tile.get_allocation()
+    check(win.folder_grid.columns == 6 and abs(a.width - b.width) <= 2,
+          f"a folder's tiles are Home's size: {a.width} vs {b.width}")
+    win.stack.set_visible_child_name("home")
+    pump(0.3)
+
     win.destroy()
     pump(0.2)
     tmp.cleanup()

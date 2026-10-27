@@ -205,14 +205,16 @@ save their settings. Turn the radio off after the station.
 
 ### The screen
 
-- **Top bar:** callsign, grid square (from the GPS when one is plugged in, or
+- **Top bar:** grid square (from the GPS when one is plugged in, or
   **Mesh** from a Meshtastic radio's GPS, see [Position from a Meshtastic
-  radio](#position-from-a-meshtastic-radio)), local time and UTC, network status,
+  radio](#position-from-a-meshtastic-radio)), local time and UTC in large type, network status,
   weather alerts in force, **Rec**, the speaker and microphone icons (sound levels,
   see [Levels](#levels)), ⌨ (on-screen keyboard) and **⏻** (Settings, Diagnostics,
   Power).
-- **Home:** the app tiles, 18 to a page. Swipe sideways, tap ◀ ▶ or press Page
-  Up/Down for the next page.
+- **Home:** the app tiles, 18 to a page on the station's 1024x600 screen (six
+  across, three down). Tiles keep the same shape on any screen: a bigger screen or
+  window fits more of them on each page, starting at the top. Swipe sideways, tap
+  ◀ ▶ or press Page Up/Down for the next page.
 - **Folders** group related apps under one tile. Standard folders:
   - **Email:** Winlink mail (Pat), VARA HF, VARA FM, ARDOP, Packet.
   - **Mesh & APRS:** Meshtastic, MeshCore, Mesh text, MC text, APRS.
