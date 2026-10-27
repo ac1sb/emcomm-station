@@ -9,8 +9,10 @@ import importlib.machinery
 import importlib.util
 import math
 import os
+import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HELPER = os.path.join(REPO, "roles/radio/files/emcomm-recorder")
@@ -60,20 +62,17 @@ class Recorder(unittest.TestCase):
         actions = [seg.feed(QUIET)[0] for _ in range(rec.MAX_CHUNKS - 1)]
         self.assertEqual(actions[-1], "stop")
 
-    def test_prune_keeps_the_newest(self):
-        with tempfile.TemporaryDirectory() as folder:
-            names = ["2026-10-18/220000Z.wav", "2026-10-18/230000Z.wav", "2026-10-19/010000Z.wav",
-                     "2026-10-19/020000Z.wav.part"]
-            for name in names:
-                os.makedirs(os.path.join(folder, os.path.dirname(name)), exist_ok=True)
-                with open(os.path.join(folder, name), "wb") as f:
-                    f.write(b"\0" * 1000)
-            self.assertEqual(rec.prune(folder, limit=4000), 0)
-            self.assertEqual(rec.prune(folder, limit=2500), 2)
-            self.assertEqual(sorted(os.listdir(folder)), ["2026-10-19"])
-            self.assertEqual(sorted(os.listdir(os.path.join(folder, "2026-10-19"))),
-                             ["010000Z.wav", "020000Z.wav.part"])
-            self.assertEqual(rec.prune(os.path.join(folder, "missing")), 0)
+    def test_pauses_when_the_disk_is_nearly_full(self):
+        usage = shutil._ntuple_diskusage if hasattr(shutil, "_ntuple_diskusage") else None
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(rec.shutil, "disk_usage") as du:
+            gb = 1024 ** 3
+            du.return_value = (100 * gb, 80 * gb, 20 * gb) if usage is None else usage(100 * gb, 80 * gb, 20 * gb)
+            self.assertIsNone(rec.out_of_room(os.path.join(folder, "Recordings")))  # not made yet: its parent
+            du.return_value = (100 * gb, 96 * gb, 4 * gb) if usage is None else usage(100 * gb, 96 * gb, 4 * gb)
+            self.assertIn("96% full", rec.out_of_room(folder))
+            small = (8 * gb, 7 * gb, gb // 4)  # under 95%, but only 256 MB free
+            du.return_value = small if usage is None else usage(*small)
+            self.assertIn("Paused", rec.out_of_room(folder))
 
     def test_file_name(self):
         name = rec.file_name(1792447200, "14074000", "USB")
