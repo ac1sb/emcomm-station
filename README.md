@@ -91,8 +91,9 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   `~/.config/emcomm/tile-names.json`. To put the tiles in your own order, pick **Arrange tiles** from
   that same menu (or **Home tiles** in Settings), tap a tile, then tap where it
   should go; **Add a gap** leaves an empty space to group tiles into rows, and
-  **Standard order** puts them back. Home holds 18 tiles a page (six across,
-  three down) and tiles stay that size: with more apps, or after **New page**,
+  **Standard order** puts them back. Home holds 18 tiles a page on the
+  1024x600 station screen (six across, three down); tiles keep their shape at any
+  size, and a bigger screen or window fits more on a page. With more apps, or after **New page**,
   swipe sideways, tap ◀ ▶ under the tiles or press Page Up/Down to change page.
   While arranging, pick a tile, go to another page and tap a tile or an empty
   place to move it there; **Remove page** folds the page shown into the one

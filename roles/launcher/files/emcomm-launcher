@@ -190,7 +190,7 @@ ICON_COLOUR = "#F2A33A"  # the stroke colour in the standard tile icons
 CSS = string.Template("""
 window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', sans-serif; }
 .topbar { background: $bar; border-bottom: 2px solid alpha($accent_fill, 0.55); padding: 0 20px; min-height: 60px; }
-.callsign { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 600; color: $accent; }
+.clock { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: $text; }
 .muted { color: $muted; }
 .mono { font-family: 'IBM Plex Mono', monospace; }
 .tile, .navbtn, .tile label, .navbtn label { background-image: none; box-shadow: none; text-shadow: none; }
@@ -202,6 +202,11 @@ window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', san
 .tile { transition: background-color 180ms ease-out, border-color 180ms ease-out; }
 .tile.tapped { background-color: alpha($accent_fill, 0.22); border-color: $accent_fill; transition: none; }
 .tile.opening { border-color: $accent_fill; }
+/* An app that's open: its tile says so, and the strip under the tiles has a button for it. */
+.tile.running { border-color: alpha($accent_fill, 0.75); }
+.tile.running .tile-detail { color: $accent; }
+.open-apps .navbtn { min-height: 30px; padding: 0 10px; font-size: 14px; }
+.open-apps-label { font-size: 13px; color: $muted; }
 .tile.opening .tile-detail { color: $accent; }
 .tile spinner { color: $accent; min-width: 20px; min-height: 20px; }
 .tile-icon { background: alpha($accent_fill, 0.12); border-radius: 10px; padding: 7px; }
@@ -298,7 +303,7 @@ radiobutton radio:checked { background-color: $accent_fill; border-color: $accen
 .level-name, popover .level-name { color: $text; }
 .navbtn.mute { min-height: 40px; padding: 0 10px; }
 .navbtn.mute:checked { background: alpha($accent_fill, 0.22); border-color: $accent_fill; }
-.homebar-clock { font-family: 'IBM Plex Mono', monospace; font-size: 16px; color: $muted; }
+.homebar-clock { font-family: 'IBM Plex Mono', monospace; font-size: 18px; font-weight: 600; color: $text; }
 .bands-summary { font-size: 17px; font-weight: 600; }
 spinbutton { background: $bg; color: $text; border: 1px solid $input_line; border-radius: 8px; font-size: 16px;
              background-image: none; box-shadow: none; }
@@ -363,6 +368,13 @@ def clock_text(now=None, utc_seconds=False):
     if local.tm_gmtoff == 0 and local.tm_zone in ("UTC", "GMT"):
         return utc
     return f"{time.strftime('%H:%M', local)} {local.tm_zone}   {utc}"
+
+
+def clock_markup(now=None, utc_seconds=False):
+    """clock_text with the times large and the zone names small, so it fits the top bar."""
+    parts = clock_text(now, utc_seconds).split("   ")
+    return "  ".join(f"{t}<span size='65%' weight='normal'> {zone}</span>"
+                       for t, zone in (p.rsplit(" ", 1) for p in parts))
 
 
 def load_theme():
@@ -1048,9 +1060,36 @@ TILE_ORDER = os.path.expanduser("~/.config/emcomm/tiles.json")
 TILE_NAMES = os.path.expanduser("~/.config/emcomm/tile-names.json")
 GAP = ""
 PAGE = "|"  # in the saved order: the next tile starts a new Home page
-TILE_COLUMNS, TILE_ROWS = 6, 3  # a Home page: the same tile size however many apps there are
+TILE_COLUMNS, TILE_ROWS = 6, 3  # a Home page on the station's 1024x600 screen
 PER_PAGE = TILE_COLUMNS * TILE_ROWS
 FOLDER_MAX = PER_PAGE  # a folder opens as one page of tiles
+# Tiles keep one shape at any screen size; a bigger screen fits more of them on a page.
+TILE_GAP = 12
+TILE_RATIO = 1.1  # width / height
+TILE_WIDEST = 1.22  # a page a little short of room squashes tiles to this, rather than drop a row
+TILE_MIN_WIDTH = 150
+TILE_MAX_COLUMNS = 8  # past this the tiles grow instead
+
+
+def tile_size(width, height, columns, rows):
+    """(width, height) of each tile filling columns x rows of width x height, kept to the tile shape."""
+    fit_w = (width - (columns - 1) * TILE_GAP) / columns
+    fit_h = (height - (rows - 1) * TILE_GAP) / rows
+    tile_w = min(fit_w, fit_h * TILE_WIDEST)
+    return int(tile_w), int(min(fit_h, tile_w / TILE_RATIO))
+
+
+def page_shape(width, height, scale=1.0):
+    """(columns, rows) of tiles for a Home page width x height pixels; larger text, larger tiles.
+    As many columns as fit, then as many rows as fit with the tiles squashed no wider than TILE_WIDEST
+    and narrowed by no more than 5%."""
+    least = TILE_MIN_WIDTH * scale
+    columns = max(3, min(TILE_MAX_COLUMNS, int((width + TILE_GAP) // (least + TILE_GAP))))
+    full = (width - (columns - 1) * TILE_GAP) / columns
+    rows = 2
+    while tile_size(width, height, columns, rows + 1)[0] >= max(least, full * 0.95):
+        rows += 1
+    return columns, rows
 
 
 def is_folder(entry):
@@ -2176,6 +2215,45 @@ def lookup_search(text, limit=30, db=None, dmr_db=None):
     return [(c, *callsign_summary(c, db, dmr_db)) for c in calls]
 
 
+class TilePage(Gtk.Grid):
+    """A page of tiles, columns x rows, each the tile shape: from the top, centred across, so
+    the page never stretches the tiles into tall or wide bars."""
+
+    def __init__(self, columns, rows):
+        super().__init__(column_spacing=TILE_GAP, row_spacing=TILE_GAP, column_homogeneous=True,
+                         row_homogeneous=True)
+        self.columns, self.rows = columns, rows
+        self.tile = None  # (width, height) as last laid out
+        self.like = None  # a page whose tile size this one keeps to (a folder keeps to Home's)
+
+    def place(self, tile, n):
+        self.attach(tile, n % self.columns, n // self.columns, 1, 1)
+
+    # Ask only for the smallest page (3 x 2), so a window made smaller can shrink and the
+    # page then takes fewer tiles; asking for every row would hold the window at its old size.
+    def do_get_preferred_width(self):
+        least, natural = Gtk.Grid.do_get_preferred_width(self)
+        fewest = min(3, self.columns)
+        return least * fewest // self.columns, natural * fewest // self.columns
+
+    def do_get_preferred_height(self):
+        least, natural = Gtk.Grid.do_get_preferred_height(self)
+        fewest = min(2, self.rows)
+        return least * fewest // self.rows, natural * fewest // self.rows
+
+    def do_size_allocate(self, rect):
+        tile_w, tile_h = tile_size(rect.width, rect.height, self.columns, self.rows)
+        if self.like is not None and self.like.tile:
+            tile_w, tile_h = min(tile_w, self.like.tile[0]), min(tile_h, self.like.tile[1])
+        self.tile = tile_w, tile_h
+        used = Gdk.Rectangle()
+        used.width = tile_w * self.columns + TILE_GAP * (self.columns - 1)
+        used.height = tile_h * self.rows + TILE_GAP * (self.rows - 1)
+        used.x = rect.x + max(0, (rect.width - used.width) // 2)
+        used.y = rect.y
+        Gtk.Grid.do_size_allocate(self, used)
+
+
 class PickList(Gtk.Button):
     """A drop-down list that can be searched by typing, standing in for Gtk.ComboBoxText
     (append, set_active_id, get_active_id, get_active_text, set_active, get_active,
@@ -2488,6 +2566,7 @@ class HomeBar(Gtk.Window):
 
 
 class Launcher(Gtk.Window):
+    open_codes = frozenset()  # the codes of the apps with a window open (see _refresh_open_apps)
     def __init__(self, config):
         super().__init__(title="Emcomm-CNC")
         self.config = config
@@ -2731,9 +2810,6 @@ class Launcher(Gtk.Window):
     def _topbar(self):
         bar = Gtk.Box(spacing=20)
         bar.get_style_context().add_class("topbar")
-        self.call_label = Gtk.Label()
-        self.call_label.get_style_context().add_class("callsign")
-        bar.pack_start(self.call_label, False, False, 0)
         self.grid_label = Gtk.Label()
         self.grid_label.get_style_context().add_class("muted")
         bar.pack_start(self.grid_label, False, False, 0)
@@ -2761,7 +2837,7 @@ class Launcher(Gtk.Window):
             bar.pack_end(minimize, False, False, 0)
         bar.pack_end(keyboard, False, False, 0)
         self.clock = Gtk.Label()
-        self.clock.get_style_context().add_class("mono")
+        self.clock.get_style_context().add_class("clock")
         bar.pack_end(self.clock, False, False, 0)
         # The speaker and microphone: tap for their levels, without going to Settings > Audio.
         audio = Gtk.Box(spacing=6)
@@ -2807,17 +2883,16 @@ class Launcher(Gtk.Window):
         return bar
 
     def _show_station(self):
-        self.call_label.set_text(self.station.get("callsign", ""))
         self.grid_label.set_text(f"Grid {self.station.get('grid', '')}")
 
     def _tick_clock(self):
         now = time.time()
-        self.clock.set_text(clock_text(now))
+        self.clock.set_markup(clock_markup(now))
         rec = self._rec_markup()
         self.rec_status.set_markup(rec)
         if getattr(self, "home_bar", None):
             # UTC to the second there, for setting a clock or checking FT8 timing by eye.
-            self.home_bar.clock.set_text(f"{self.station.get('callsign', '')}   {clock_text(now, utc_seconds=True)}")
+            self.home_bar.clock.set_markup(clock_markup(now, utc_seconds=True))
             self.home_bar.rec.get_child().set_markup(rec)
         hour = int(now // 3600)
         if hour != getattr(self, "bands_hour_shown", hour) and getattr(self, "bands_result", None):
@@ -3021,6 +3096,7 @@ class Launcher(Gtk.Window):
         self.app_tiles = {app.get("code"): self._tile(app) for app in self.config.get("apps", [])}
         self.arranging, self.picked = False, None
         self.page_index, self.page_grids, self.last_swipe = 0, [], 0.0
+        self.page_shape = (TILE_COLUMNS, TILE_ROWS)  # until the page knows its size
         self.folder_tiles, self.open_folder = [], None
         saved = read_json(TILE_ORDER, {})
         order = saved.get("order") if isinstance(saved, dict) else None
@@ -3034,6 +3110,12 @@ class Launcher(Gtk.Window):
         swipe.connect("swipe", self._home_swiped)
         self.home_swipe = swipe  # the gesture lives as long as this reference
         page.pack_start(self.home_pages, True, True, 0)
+        # Under the tiles: the open apps on the left (tap to show one, ✕ to close it), the page buttons centred.
+        footer = Gtk.Box(spacing=12)
+        self.open_apps = Gtk.Box(spacing=6, no_show_all=True)
+        self.open_apps.get_style_context().add_class("open-apps")
+        self.open_apps_shown = None
+        footer.pack_start(self.open_apps, False, False, 0)
         self.page_bar = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER, no_show_all=True)
         self.page_bar.get_style_context().add_class("page-bar")
         self.page_prev = self._navbtn("◀", lambda *_: self._show_home_page(self.page_index - 1))
@@ -3043,7 +3125,10 @@ class Launcher(Gtk.Window):
         self.page_bar.pack_start(self.page_prev, False, False, 0)
         self.page_bar.pack_start(self.page_dots, False, False, 0)
         self.page_bar.pack_start(self.page_next, False, False, 0)
-        page.pack_start(self.page_bar, False, False, 0)
+        footer.set_center_widget(self.page_bar)
+        page.pack_start(footer, False, False, 0)
+        GLib.timeout_add(2000, self._refresh_open_apps)
+        page.connect("size-allocate", self._home_resized)
         self._lay_out_tiles()
 
         # Settings and Diagnostics are in the top bar's ⏻ menu; Logs and Reference are tiles.
@@ -3079,18 +3164,18 @@ class Launcher(Gtk.Window):
             for child in grid.get_children():
                 grid.remove(child)  # the tiles live on; only the page grids are rebuilt
             self.home_pages.remove(grid)
-        self.pages = paginate(self.slots, keep_empty_last=self.arranging)
+        columns, rows = self.page_shape
+        self.pages = paginate(self.slots, columns * rows, keep_empty_last=self.arranging)
         self.page_grids = []
         for number, (indices, end) in enumerate(self.pages):
-            grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True, row_homogeneous=True)
+            grid = TilePage(columns, rows)
             for n, i in enumerate(indices):
                 unparent(self.slots[i])
-                grid.attach(self.slots[i], n % TILE_COLUMNS, n // TILE_COLUMNS, 1, 1)
+                grid.place(self.slots[i], n)
             # Keep every tile the same size on a page that isn't full; while arranging,
             # the spare places take a tile to the end of this page.
-            for n in range(len(indices), PER_PAGE):
-                spare = self._spare_place(end) if self.arranging else Gtk.Box()
-                grid.attach(spare, n % TILE_COLUMNS, n // TILE_COLUMNS, 1, 1)
+            for n in range(len(indices), columns * rows):
+                grid.place(self._spare_place(end) if self.arranging else Gtk.Box(), n)
             self.page_grids.append(grid)
             self.home_pages.add_named(grid, str(number))
         self.folder_tiles = [t for t in self.slots if not isinstance(t, str) and t.kind == "folder"]
@@ -3101,6 +3186,72 @@ class Launcher(Gtk.Window):
         self._show_home_page(min(self.page_index, len(self.pages) - 1), animate=False)
         if self.arranging:  # saved as it changes, so leaving the page any way keeps it
             self._save_tiles()
+
+    def _refresh_open_apps(self):
+        """Which station apps have a window open: marked on their tiles, listed under the tiles."""
+        if not self.get_visible() or self.stack.get_visible_child_name() not in ("home", "folder"):
+            return True
+        apps = self.config.get("apps", [])
+        found = []
+        for win in open_windows():
+            app = window_app(win, apps, self.started)
+            if app is not None and app.get("code") not in [a.get("code") for _w, a in found]:
+                found.append((win["id"], app))
+        codes = frozenset(a.get("code") for _w, a in found)
+        if codes != self.open_codes:
+            self.open_codes = codes
+            for tile in self.tiles:
+                self._update_tile(tile)
+            for folder in self.folder_tiles:
+                self._update_folder_tile(folder)
+        shown = [(wid, app.get("code")) for wid, app in found]
+        if shown == self.open_apps_shown:
+            return True
+        self.open_apps_shown = shown
+        for child in self.open_apps.get_children():
+            self.open_apps.remove(child)
+        if found:
+            label = Gtk.Label(label="Open")
+            label.get_style_context().add_class("open-apps-label")
+            self.open_apps.pack_start(label, False, False, 0)
+        for wid, app in found[:4]:  # more than that: the tiles say which
+            pair = Gtk.Box()
+            pair.get_style_context().add_class("linked")
+            show = Gtk.Button(label=app.get("name", ""), tooltip_text=f"Show {app.get('name', '')}")
+            show.get_child().set_ellipsize(Pango.EllipsizeMode.END)
+            show.get_child().set_max_width_chars(12)
+            close = Gtk.Button(label="✕", tooltip_text=f"Close {app.get('name', '')}")
+            for btn in (show, close):
+                btn.get_style_context().add_class("navbtn")
+                btn.set_can_focus(False)
+            show.connect("clicked", lambda _b, w=wid: wmctrl("-i", "-a", hex(w)))
+            # The polite close, as the window's own ✕: an app can still ask to save first.
+            close.connect("clicked", lambda _b, w=wid: (wmctrl("-i", "-c", hex(w)),
+                                                         GLib.timeout_add(800, lambda: self._refresh_open_apps()
+                                                                          and False)))
+            pair.pack_start(show, False, False, 0)
+            pair.pack_start(close, False, False, 0)
+            self.open_apps.pack_start(pair, False, False, 0)
+        self.open_apps.set_no_show_all(not found)
+        if found:
+            self.open_apps.show_all()
+        else:
+            self.open_apps.hide()
+        return True
+
+    def _home_resized(self, _page, rect):
+        """Fit as many tiles on a page as the window has room for. The page buttons' room is
+        always left, so the shape doesn't change when they show or hide."""
+        shape = page_shape(rect.width, rect.height - 62, self.text_scale)
+        if shape != self.page_shape:
+            self.page_shape = shape
+            GLib.idle_add(self._reshape_pages)
+
+    def _reshape_pages(self):
+        self._lay_out_tiles()
+        if self.open_folder is not None:
+            self._lay_out_folder()
+        return False
 
     def _save_tiles(self):
         def entry(tile):
@@ -3350,7 +3501,11 @@ class Launcher(Gtk.Window):
     def _update_folder_tile(self, btn):
         btn.name_label.set_text(btn.name)
         names = [t.app.get("name", "") for t in btn.members]
-        btn.detail.set_text(" · ".join(names) if names else "Empty folder")
+        running = [n for t, n in zip(btn.members, names) if t.app.get("code") in self.open_codes]
+        btn.detail.set_text("● Open: " + " · ".join(running) if running
+                            else " · ".join(names) if names else "Empty folder")
+        ctx = btn.get_style_context()
+        (ctx.add_class if running else ctx.remove_class)("running")
         self._set_tile_icon(btn)
 
     def _folder_clicked(self, btn):
@@ -3439,11 +3594,8 @@ class Launcher(Gtk.Window):
         self.folder_hint = Gtk.Label(xalign=0, wrap=True)
         self.folder_hint.get_style_context().add_class("muted")
         page.pack_start(self.folder_hint, False, False, 0)
-        self.folder_grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True,
-                                    row_homogeneous=True)
+        self.folder_grid = TilePage(TILE_COLUMNS, TILE_ROWS)
         page.pack_start(self.folder_grid, True, True, 0)
-        # Room for the page buttons Home has, so the tiles are the same size here.
-        page.pack_end(Gtk.Box(height_request=52), False, False, 0)
         page.connect("unmap", lambda *_: self._folder_closed())
         return page
 
@@ -3465,14 +3617,19 @@ class Launcher(Gtk.Window):
 
     def _lay_out_folder(self):
         folder = self.open_folder
-        for child in self.folder_grid.get_children():
-            self.folder_grid.remove(child)
+        grid = self.folder_grid
+        for child in grid.get_children():
+            grid.remove(child)
+        # Home's columns and tile size, and only the rows the folder's tiles need.
+        columns = self.page_shape[0]
+        grid.columns, grid.rows = columns, max(1, -(-len(folder.members) // columns))
+        grid.like = self.page_grids[self.page_index] if self.page_grids else None
         for n, tile in enumerate(folder.members):
             unparent(tile)
             tile.key_hint.set_text(str(n + 1) if n < 9 else "")
-            self.folder_grid.attach(tile, n % TILE_COLUMNS, n // TILE_COLUMNS, 1, 1)
-        for n in range(len(folder.members), PER_PAGE):
-            self.folder_grid.attach(Gtk.Box(), n % TILE_COLUMNS, n // TILE_COLUMNS, 1, 1)
+            grid.place(tile, n)
+        for n in range(len(folder.members), grid.columns * grid.rows):
+            grid.place(Gtk.Box(), n)
         self.folder_title.set_text(folder.name)
         self.folder_grid.show_all()
 
@@ -3869,7 +4026,7 @@ class Launcher(Gtk.Window):
                     image.get_style_context().add_class("key-hint")
                 image.set_size_request(20, 20)
                 grid.attach(image, n % 2, n // 2, 1, 1)
-            badge = Gtk.Box(halign=Gtk.Align.START)
+            badge = Gtk.Box(halign=Gtk.Align.START, valign=Gtk.Align.START)
             badge.get_style_context().add_class("tile-icon")
             badge.pack_start(grid, False, False, 0)
             btn.icon_slot.pack_start(badge, False, False, 0)
@@ -3892,6 +4049,7 @@ class Launcher(Gtk.Window):
             badge.pack_start(widget, False, False, 0)
             widget = badge
         widget.set_halign(Gtk.Align.START)
+        widget.set_valign(Gtk.Align.START)  # a tall tile mustn't stretch the icon's square
         btn.icon_slot.pack_start(widget, False, False, 0)
         btn.icon_slot.show_all()
 
@@ -4010,12 +4168,15 @@ class Launcher(Gtk.Window):
     def _update_tile(self, btn):
         btn.app_state = self._app_state(btn.app)
         installable = bool(btn.app.get("app"))
-        btn.detail.set_text("Opening…" if btn.opening else {"ready": btn.app.get("detail", ""),
+        running = btn.app.get("code") in self.open_codes and not btn.opening
+        btn.detail.set_text("Opening…" if btn.opening else "● Open" if running else {
+                             "ready": btn.app.get("detail", ""),
                              "setup": "Tap to set up",
                              "missing": "Tap to install" if installable else "Not installed",
                              }[btn.app_state])
         btn.set_sensitive(btn.app_state != "missing" or installable)
         ctx = btn.get_style_context()
+        (ctx.add_class if running else ctx.remove_class)("running")
         if btn.app_state == "ready":
             ctx.remove_class("not-ready")
         else:
@@ -4036,7 +4197,8 @@ class Launcher(Gtk.Window):
             return  # still starting from the last tap: not a second copy
         app = btn.app
         if app.get("page"):  # a part of the launcher, not a separate app
-            {"nwr": self._edit_nwr}.get(app["page"], lambda: self.stack.set_visible_child_name(app["page"]))()
+            {"nwr": self._edit_nwr, "lookup": lambda: self._lookup_dialog(from_home=True)}.get(
+                app["page"], lambda: self.stack.set_visible_child_name(app["page"]))()
             return
         if btn.app_state != "missing":
             # Already open: bring it to the front rather than start a second copy.
@@ -6248,9 +6410,10 @@ class Launcher(Gtk.Window):
         page.connect("map", lambda *_: self._show_log())
         return page
 
-    def _lookup_dialog(self, text=""):
+    def _lookup_dialog(self, text="", from_home=False):
         """Look up a callsign or DMR ID in the offline FCC and RadioID lists; matches
-        show as it's typed. Tapping one puts the call in the contact note."""
+        show as it's typed. Tapping one puts the call in the contact note (from the
+        Callsign lookup tile, on the Logs page)."""
         dialog = Gtk.Dialog(title="Look up a callsign or DMR ID", transient_for=self, modal=True)
         dialog.set_default_size(860, 440)
         dialog.add_buttons("Close", Gtk.ResponseType.CLOSE)
@@ -6266,7 +6429,8 @@ class Launcher(Gtk.Window):
         note.set_text(" · ".join(filter(None, [
             f"FCC list from {listed}" if listed else "No FCC list yet",
             "DMR IDs from RadioID.net" if dmr_listed else "No DMR ID list yet",
-            "" if listed and dmr_listed else "run Update station once with internet"])))
+            "" if listed and dmr_listed else "run Update station once with internet",
+            "tap a match to start a contact note in Logs" if from_home else ""])))
         box.pack_start(note, False, False, 0)
         results = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -6275,6 +6439,8 @@ class Launcher(Gtk.Window):
 
         def pick(_listbox, row):
             self.note_call.set_text(row.call)
+            if from_home:
+                self.stack.set_visible_child_name("logs")
             dialog.response(Gtk.ResponseType.CLOSE)
 
         def refresh(*_):
