@@ -40,11 +40,11 @@ STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
 ACCOUNTS_PATH = os.environ.get("EMCOMM_ACCOUNTS", os.path.expanduser("~/.config/emcomm/accounts.json"))
 CACHE_DIR = os.environ.get("EMCOMM_ONLINE_CACHE", os.path.expanduser("~/.cache/emcomm/online"))
 
-SOURCES = ["alerts", "space", "bands", "heard", "alertmap"]
-DEFAULT_SOURCES = ["alerts", "space", "bands", "alertmap"]
+SOURCES = ["alerts", "space", "bands", "heard", "alertmap", "cycle"]
+DEFAULT_SOURCES = ["alerts", "space", "bands", "alertmap", "cycle"]
 # Seconds before a source is fetched again; a forced refresh (the Refresh button)
 # still waits FORCED_MIN_AGE.
-MIN_AGE = {"alerts": 300, "space": 900, "bands": 3600, "heard": 300, "alertmap": 600}
+MIN_AGE = {"alerts": 300, "space": 900, "bands": 3600, "heard": 300, "alertmap": 600, "cycle": 7 * 86400}
 FORCED_MIN_AGE = {"heard": 300}
 FORCED_DEFAULT = 30
 HEARD_WINDOW = 6 * 3600  # PSKReporter reports from the last six hours
@@ -72,6 +72,8 @@ NEIGHBOURS = {
 SWPC_KP = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
 SWPC_FLUX = "https://services.swpc.noaa.gov/products/summary/10cm-flux.json"
 SWPC_SCALES = "https://services.swpc.noaa.gov/products/noaa-scales.json"
+# NOAA's monthly forecast of the smoothed sunspot number, for the band planner (emcomm-voacap).
+SWPC_CYCLE = "https://services.swpc.noaa.gov/json/solar-cycle/predicted-solar-cycle.json"
 HAMQSL = "https://www.hamqsl.com/solarxml.php"
 PSKREPORTER = "https://retrieve.pskreporter.info/query"
 QRZ = "https://xmldata.qrz.com/xml/current/"
@@ -291,6 +293,20 @@ def parse_scales(doc):
     return out
 
 
+def parse_cycle(doc):
+    """SWPC's solar cycle forecast ([{"time-tag": "2026-11", "predicted_ssn": 104.2, ...}, ...])
+    as [{"month": "2026-11", "ssn": 104.2}, ...]."""
+    months = []
+    for row in doc if isinstance(doc, list) else []:
+        month = str((row or {}).get("time-tag", ""))[:7]
+        ssn = to_float((row or {}).get("predicted_ssn"))
+        if re.fullmatch(r"\d{4}-\d\d", month) and ssn is not None:
+            months.append({"month": month, "ssn": round(ssn, 1)})
+    if not months:
+        raise OnlineError("the sunspot forecast was empty")
+    return months
+
+
 def parse_hamqsl(root):
     """N0NBH's solar summary and calculated HF band conditions."""
     data = find(root, "solardata")
@@ -484,6 +500,10 @@ def fetch_space():
     return data
 
 
+def fetch_cycle():
+    return parse_cycle(get_json(SWPC_CYCLE))
+
+
 def fetch_bands():
     return parse_hamqsl(get_xml(HAMQSL))
 
@@ -497,7 +517,7 @@ def fetch_heard():
 
 
 FETCHERS = {"alerts": fetch_alerts, "space": fetch_space, "bands": fetch_bands,
-            "heard": fetch_heard, "alertmap": fetch_alertmap}
+            "heard": fetch_heard, "alertmap": fetch_alertmap, "cycle": fetch_cycle}
 
 
 def cache_path(name):

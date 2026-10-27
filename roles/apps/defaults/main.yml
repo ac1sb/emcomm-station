@@ -66,3 +66,7 @@ apps_browser_bookmarks:
 # a branch, a tag or a commit. "master" is what CHIRP's daily "next" builds are
 # made from, and is fetched again each time the station is updated.
 apps_chirp_version: master
+
+# VOACAP for the Band planner (voacapl, built from source): release 0.7.7.
+apps_voacap_repo: https://github.com/jawatson/voacapl.git
+apps_voacap_commit: c12a98b348c39f36f2659b8b3aa97b86284c8a1d

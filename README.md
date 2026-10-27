@@ -128,6 +128,12 @@ the **Guide** tile shows it, with a **Print** button for the go-kit.
   Downloads and received SSTV pictures, with PDFs, pictures and text shown on the
   page and Word, Excel and PowerPoint files shown through LibreOffice (installed
   the first time one is opened); Print, and Edit in LibreOffice.
+- **Band planner** (tile): VOACAP (voacapl, built on the station from its source
+  the first time the page is opened) predicts, for each HF band and UTC hour, how
+  often it gets through from the station's grid to a nearby distance (NVIS), a US
+  state, a DX city or any grid square, for a mode, antenna, power, noise level and
+  month. The sunspot number is NOAA's forecast (saved by the Online page) or a
+  built-in estimate.
 - **Library** (tile): offline books from Kiwix, readable with no internet. With
   internet, tap **Download** next to a suggested book: WikEM (emergency medicine),
   post-disaster and water guides, Wikipedia's medical articles, Amateur Radio

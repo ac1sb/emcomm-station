@@ -1,0 +1,458 @@
+#!/usr/bin/env python3
+"""HF band planning with VOACAP (voacapl), with no internet: how likely each band is
+to get through from this station to a place, hour by hour (UTC), for a month.
+
+  emcomm-voacap choices                  the places, modes, antennas, powers and noise
+                                         levels a plan can use, as JSON
+  emcomm-voacap targets                  the places, one JSON line each
+  emcomm-voacap ssn [--month YYYY-MM]    the sunspot number used for a month, as JSON
+  emcomm-voacap plan --to PLACE [--month YYYY-MM] [--ssn N] [--mode MODE]
+                     [--antenna ANTENNA] [--power WATTS] [--noise NOISE]
+                                         the prediction, as JSON
+
+PLACE is a target's id (near:250, us:MA, dx:london...) or grid:FN42 for any grid
+square. The station's own position is its grid square (Settings > User). Each
+prediction runs VOACAP's point-to-point method 30 for the ten HF bands, 24 hours.
+
+The sunspot number is the smoothed one VOACAP is built on: NOAA's monthly forecast
+(the Online page saves it when the station is online) or, before that, a built-in
+estimate of solar cycle 25's decline.
+"""
+
+import argparse
+import datetime
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+STATION_PATH = os.environ.get("EMCOMM_STATION", "/etc/emcomm/station.json")
+SHARE = os.environ.get("EMCOMM_VOACAP_SHARE", "/usr/local/share/voacapl/itshfbc")
+VOACAPL = os.environ.get("EMCOMM_VOACAPL", "voacapl")
+WORK = os.environ.get("EMCOMM_VOACAP_WORK", os.path.expanduser("~/.cache/emcomm/voacap"))
+CYCLE = os.environ.get("EMCOMM_VOACAP_CYCLE", os.path.expanduser("~/.cache/emcomm/online/cycle.json"))
+
+# Where in each band the prediction is made (MHz); VOACAP takes up to 11.
+BANDS = [("160 m", 1.90), ("80 m", 3.60), ("60 m", 5.36), ("40 m", 7.10), ("30 m", 10.12),
+         ("20 m", 14.10), ("17 m", 18.10), ("15 m", 21.20), ("12 m", 24.94), ("10 m", 28.30)]
+# The signal-to-noise ratio each mode needs, in a 1 Hz bandwidth (dB-Hz), as VOACAP wants it.
+MODES = {"ssb": ("Voice (SSB)", 44), "winlink": ("Winlink (VARA HF, ARDOP)", 32),
+         "cw": ("CW", 24), "ft8": ("FT8 and JS8Call", 13)}
+# Man-made noise at 3 MHz, dBW in 1 Hz (ITU-R P.372).
+NOISES = {"quiet": ("Quiet rural", 153), "rural": ("Rural", 150), "residential": ("Residential", 145),
+          "city": ("Noisy city", 140)}
+# The same antenna is assumed at both ends. Dipoles are cut for each band (half a
+# wavelength long, negative sizes are in wavelengths) at a height in metres.
+ANTENNAS = {"dipole10": ("Dipole, 10 m high", "dipole", 10.0),
+            "dipole5": ("Low dipole, 5 m (NVIS)", "dipole", 5.0),
+            "dipole15": ("Dipole, 15 m high", "dipole", 15.0),
+            "vertical": ("Vertical, quarter-wave", "vertical", 0.0),
+            "isotropic": ("Isotropic (0 dBi)", "isotropic", 0.0)}
+POWERS = [5, 10, 25, 50, 100, 200, 500, 1000]
+DEFAULTS = {"mode": "ssb", "antenna": "dipole10", "power": 100, "noise": "residential"}
+
+# Smoothed sunspot number, roughly as NOAA forecast cycle 25's decline in 2026; used
+# until the Online page has saved NOAA's own forecast. Months in between are interpolated.
+SSN_ESTIMATE = [("2025-01", 150), ("2025-07", 135), ("2026-01", 118), ("2026-07", 100), ("2027-01", 84),
+                ("2027-07", 70), ("2028-01", 57), ("2028-07", 46), ("2029-01", 37), ("2029-07", 29),
+                ("2030-01", 22), ("2030-07", 17), ("2031-01", 13), ("2031-07", 11)]
+
+NEARBY_KM = [100, 250, 500, 1000]
+US = [("AL", "Montgomery, Alabama", 32.38, -86.30), ("AK", "Juneau, Alaska", 58.30, -134.42),
+      ("AZ", "Phoenix, Arizona", 33.45, -112.07), ("AR", "Little Rock, Arkansas", 34.75, -92.29),
+      ("CA", "Sacramento, California", 38.58, -121.49), ("CO", "Denver, Colorado", 39.74, -104.99),
+      ("CT", "Hartford, Connecticut", 41.76, -72.68), ("DE", "Dover, Delaware", 39.16, -75.52),
+      ("DC", "Washington, D.C.", 38.90, -77.04), ("FL", "Tallahassee, Florida", 30.44, -84.28),
+      ("GA", "Atlanta, Georgia", 33.75, -84.39), ("HI", "Honolulu, Hawaii", 21.31, -157.86),
+      ("ID", "Boise, Idaho", 43.62, -116.20), ("IL", "Springfield, Illinois", 39.80, -89.65),
+      ("IN", "Indianapolis, Indiana", 39.77, -86.16), ("IA", "Des Moines, Iowa", 41.59, -93.62),
+      ("KS", "Topeka, Kansas", 39.05, -95.68), ("KY", "Frankfort, Kentucky", 38.20, -84.87),
+      ("LA", "Baton Rouge, Louisiana", 30.45, -91.19), ("ME", "Augusta, Maine", 44.31, -69.78),
+      ("MD", "Annapolis, Maryland", 38.98, -76.49), ("MA", "Boston, Massachusetts", 42.36, -71.06),
+      ("MI", "Lansing, Michigan", 42.73, -84.56), ("MN", "Saint Paul, Minnesota", 44.95, -93.09),
+      ("MS", "Jackson, Mississippi", 32.30, -90.18), ("MO", "Jefferson City, Missouri", 38.58, -92.17),
+      ("MT", "Helena, Montana", 46.59, -112.04), ("NE", "Lincoln, Nebraska", 40.81, -96.70),
+      ("NV", "Carson City, Nevada", 39.16, -119.77), ("NH", "Concord, New Hampshire", 43.21, -71.54),
+      ("NJ", "Trenton, New Jersey", 40.22, -74.76), ("NM", "Santa Fe, New Mexico", 35.69, -105.94),
+      ("NY", "Albany, New York", 42.65, -73.76), ("NC", "Raleigh, North Carolina", 35.78, -78.64),
+      ("ND", "Bismarck, North Dakota", 46.81, -100.78), ("OH", "Columbus, Ohio", 39.96, -83.00),
+      ("OK", "Oklahoma City, Oklahoma", 35.47, -97.52), ("OR", "Salem, Oregon", 44.94, -123.04),
+      ("PA", "Harrisburg, Pennsylvania", 40.27, -76.88), ("RI", "Providence, Rhode Island", 41.82, -71.41),
+      ("SC", "Columbia, South Carolina", 34.00, -81.03), ("SD", "Pierre, South Dakota", 44.37, -100.35),
+      ("TN", "Nashville, Tennessee", 36.16, -86.78), ("TX", "Austin, Texas", 30.27, -97.74),
+      ("UT", "Salt Lake City, Utah", 40.76, -111.89), ("VT", "Montpelier, Vermont", 44.26, -72.58),
+      ("VA", "Richmond, Virginia", 37.54, -77.44), ("WA", "Olympia, Washington", 47.04, -122.90),
+      ("WV", "Charleston, West Virginia", 38.35, -81.63), ("WI", "Madison, Wisconsin", 43.07, -89.40),
+      ("WY", "Cheyenne, Wyoming", 41.14, -104.82), ("PR", "San Juan, Puerto Rico", 18.47, -66.11),
+      ("VI", "St. Thomas, U.S. Virgin Islands", 18.34, -64.93), ("GU", "Hagåtña, Guam", 13.47, 144.75)]
+DX = [("anchorage", "Anchorage, Alaska", 61.22, -149.90), ("ottawa", "Ottawa, Canada", 45.42, -75.70),
+      ("halifax", "Halifax, Canada", 44.65, -63.57), ("winnipeg", "Winnipeg, Canada", 49.90, -97.14),
+      ("vancouver", "Vancouver, Canada", 49.28, -123.12), ("mexico", "Mexico City, Mexico", 19.43, -99.13),
+      ("havana", "Havana, Cuba", 23.11, -82.37), ("caracas", "Caracas, Venezuela", 10.48, -66.90),
+      ("bogota", "Bogotá, Colombia", 4.71, -74.07), ("lima", "Lima, Peru", -12.05, -77.04),
+      ("santiago", "Santiago, Chile", -33.45, -70.67), ("buenosaires", "Buenos Aires, Argentina", -34.60, -58.38),
+      ("rio", "Rio de Janeiro, Brazil", -22.91, -43.17), ("reykjavik", "Reykjavík, Iceland", 64.15, -21.94),
+      ("london", "London, England", 51.51, -0.13), ("paris", "Paris, France", 48.86, 2.35),
+      ("madrid", "Madrid, Spain", 40.42, -3.70), ("berlin", "Berlin, Germany", 52.52, 13.40),
+      ("rome", "Rome, Italy", 41.90, 12.50), ("moscow", "Moscow, Russia", 55.76, 37.62),
+      ("telaviv", "Tel Aviv, Israel", 32.09, 34.78), ("cairo", "Cairo, Egypt", 30.04, 31.24),
+      ("lagos", "Lagos, Nigeria", 6.52, 3.38), ("nairobi", "Nairobi, Kenya", -1.29, 36.82),
+      ("johannesburg", "Johannesburg, South Africa", -26.20, 28.05), ("dubai", "Dubai, UAE", 25.20, 55.27),
+      ("delhi", "New Delhi, India", 28.61, 77.21), ("bangkok", "Bangkok, Thailand", 13.76, 100.50),
+      ("singapore", "Singapore", 1.35, 103.82), ("beijing", "Beijing, China", 39.90, 116.41),
+      ("tokyo", "Tokyo, Japan", 35.68, 139.69), ("manila", "Manila, Philippines", 14.60, 120.98),
+      ("perth", "Perth, Australia", -31.95, 115.86), ("sydney", "Sydney, Australia", -33.87, 151.21),
+      ("auckland", "Auckland, New Zealand", -36.85, 174.76)]
+
+
+class PlanError(Exception):
+    pass
+
+
+# ---- places -----------------------------------------------------------------
+
+def grid_to_latlon(grid):
+    """Centre of a Maidenhead square (4 or 6 characters), or None."""
+    grid = (grid or "").strip()
+    if not re.fullmatch(r"[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?", grid):
+        return None
+    lon = (ord(grid[0].upper()) - 65) * 20 - 180 + int(grid[2]) * 2
+    lat = (ord(grid[1].upper()) - 65) * 10 - 90 + int(grid[3])
+    if len(grid) == 6:
+        lon += (ord(grid[4].lower()) - 97) * 5 / 60 + 2.5 / 60
+        lat += (ord(grid[5].lower()) - 97) * 2.5 / 60 + 1.25 / 60
+    else:
+        lon, lat = lon + 1, lat + 0.5
+    return lat, lon
+
+
+def station_position():
+    try:
+        with open(STATION_PATH, encoding="utf-8") as f:
+            grid = json.load(f).get("grid", "")
+    except (OSError, ValueError):
+        grid = ""
+    pos = grid_to_latlon(grid)
+    if not pos:
+        raise PlanError("Set the station's grid square in Settings > User first.")
+    return grid.strip(), pos
+
+
+def path(lat1, lon1, lat2, lon2):
+    """Great-circle distance (km) and the beam heading from the first place (degrees)."""
+    p1, p2, dl = math.radians(lat1), math.radians(lat2), math.radians(lon2 - lon1)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    km = 6371.0 * 2 * math.asin(min(1.0, math.sqrt(a)))
+    heading = math.degrees(math.atan2(math.sin(dl) * math.cos(p2),
+                                      math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)))
+    return km, heading % 360
+
+
+def offset(lat, lon, km, heading=0.0):
+    """The place km away from lat, lon on a heading."""
+    d, h, p1, l1 = km / 6371.0, math.radians(heading), math.radians(lat), math.radians(lon)
+    p2 = math.asin(math.sin(p1) * math.cos(d) + math.cos(p1) * math.sin(d) * math.cos(h))
+    l2 = l1 + math.atan2(math.sin(h) * math.sin(d) * math.cos(p1), math.cos(d) - math.sin(p1) * math.sin(p2))
+    return math.degrees(p2), (math.degrees(l2) + 540) % 360 - 180
+
+
+def targets(home=None):
+    """Every place to plan for: nearby distances (for NVIS), US states, and DX."""
+    rows = []
+    for km in NEARBY_KM:
+        lat, lon = offset(*home, km) if home else (None, None)
+        rows.append({"id": f"near:{km}", "name": f"Nearby, {km} km" + (" (NVIS)" if km <= 500 else ""),
+                     "group": "Nearby", "lat": lat, "lon": lon})
+    rows += [{"id": f"us:{code}", "name": f"{name} ({code})", "group": "United States", "lat": lat, "lon": lon}
+             for code, name, lat, lon in US]
+    rows += [{"id": f"dx:{key}", "name": name, "group": "DX", "lat": lat, "lon": lon} for key, name, lat, lon in DX]
+    return rows
+
+
+def choices(home=None):
+    """What the Band planner page offers, with the defaults."""
+    return {"targets": targets(home), "modes": [[k, v[0]] for k, v in MODES.items()],
+            "antennas": [[k, v[0]] for k, v in ANTENNAS.items()], "powers": POWERS,
+            "noises": [[k, v[0]] for k, v in NOISES.items()], "bands": [b for b, _f in BANDS],
+            "defaults": DEFAULTS}
+
+
+def find_target(place, home):
+    place = (place or "").strip()
+    if place.lower().startswith("grid:"):
+        grid = place[5:].strip()
+        pos = grid_to_latlon(grid)
+        if not pos:
+            raise PlanError(f"{grid or 'That'} isn't a grid square (like FN42 or FN42ab).")
+        return {"id": place, "name": f"Grid {grid[:2].upper()}{grid[2:4]}{grid[4:].lower()}",
+                "group": "Grid square", "lat": pos[0], "lon": pos[1]}
+    for row in targets(home):
+        if row["id"].lower() == place.lower():
+            return row
+    raise PlanError(f"There's no place called {place}.")
+
+
+# ---- the sunspot number ------------------------------------------------------
+
+def month_index(month):
+    year, mon = (int(x) for x in month.split("-"))
+    return year * 12 + mon - 1
+
+
+def estimate_ssn(month):
+    when = month_index(month)
+    points = [(month_index(m), v) for m, v in SSN_ESTIMATE]
+    if when <= points[0][0]:
+        return float(points[0][1])
+    for (m1, v1), (m2, v2) in zip(points, points[1:]):
+        if when <= m2:
+            return v1 + (v2 - v1) * (when - m1) / (m2 - m1)
+    return float(points[-1][1])
+
+
+def forecast():
+    """NOAA's monthly forecast as the Online page saved it: {"2026-10": 104.2, ...}, and its date."""
+    try:
+        with open(CYCLE, encoding="utf-8") as f:
+            record = json.load(f)
+        months = {row["month"]: float(row["ssn"]) for row in record.get("data") or []}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}, None
+    return months, record.get("updated")
+
+
+def sunspots(month):
+    months, updated = forecast()
+    if month in months:
+        when = datetime.datetime.fromtimestamp(updated, datetime.timezone.utc).strftime("%Y-%m-%d") \
+            if isinstance(updated, (int, float)) else ""
+        return round(months[month]), f"NOAA forecast{' from ' + when if when else ''}"
+    return round(estimate_ssn(month)), "built-in estimate; the Online page brings NOAA's forecast"
+
+
+# ---- VOACAP ----------------------------------------------------------------
+
+def antenna_file(root, kind, height):
+    """An antenna file in this user's VOACAP folder; its name as an ANTENNA card wants it."""
+    if kind == "isotropic":
+        return "samples/sample.00"
+    name = f"emcomm/{kind}{int(height)}.ant"
+    if kind == "dipole":
+        text = (f"HD/.5/{height:.0f}m       :Half-wave dipole, cut for each band, {height:.0f} m high\n"
+                " 8     8 parameters\n"
+                "  0.00  [ 1] Max Gain dBi..:\n"
+                "  23    [ 2] Antenna Type..:\n"
+                "  15    [ 3] Dielectric....:\n"
+                ".00500  [ 4] Conductivity..:\n"
+                "10.000  [ 5] Operating Freq:\n"
+                "  -.50  [ 6] Antenna Length:\n"
+                f"{height:6.2f}  [ 7] Antenna Height:\n"
+                "   0.0  [ 8] Gain ab dipole:\n")
+    else:
+        text = ("VM/.25          :Quarter-wave vertical, cut for each band\n"
+                " 7     7 parameters\n"
+                "  0.00  [ 1] Max Gain dBi..:\n"
+                "  22    [ 2] Antenna Type..:\n"
+                "  15    [ 3] Dielectric....:\n"
+                ".00500  [ 4] Conductivity..:\n"
+                "10.000  [ 5] Operating Freq:\n"
+                "  -.25  [ 6] Antenna Height:\n"
+                "   0.0  [ 7] Gain ab dipole:\n")
+    full = os.path.join(root, "antennas", name)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    try:
+        with open(full, encoding="ascii") as f:
+            same = f.read() == text
+    except OSError:
+        same = False
+    if not same:
+        with open(full, "w", encoding="ascii") as f:
+            f.write(text)
+    return name
+
+
+def prepare_root(share=SHARE, work=WORK):
+    """This user's VOACAP folder: links to the installed data, and the few files and
+    folders VOACAP writes in (as voacapl's makeitshfbc sets up, but not in ~/itshfbc)."""
+    if not os.path.isdir(share):
+        raise PlanError("VOACAP isn't installed yet.")
+    root = os.path.join(work, "itshfbc")
+    os.makedirs(root, exist_ok=True)
+    for name in os.listdir(share):
+        source, dest = os.path.join(share, name), os.path.join(root, name)
+        if name in ("antennas", "database") and os.path.isdir(source):
+            os.makedirs(dest, exist_ok=True)
+            for item in os.listdir(source):
+                inner, target = os.path.join(source, item), os.path.join(dest, item)
+                if name == "database" and item in ("north_pole.txt", "version.w32", "voacap.def"):
+                    if not os.path.exists(target):
+                        shutil.copyfile(inner, target)
+                elif not os.path.lexists(target):
+                    os.symlink(inner, target)
+        elif name in ("run", "areadata", "area_inv"):
+            os.makedirs(dest, exist_ok=True)
+        elif not os.path.lexists(dest):
+            os.symlink(source, dest)
+    return root
+
+
+def latlon_card(lat, lon, first):
+    ns, ew = ("N" if lat >= 0 else "S"), ("E" if lon >= 0 else "W")
+    return f"{abs(lat):{5 if first else 9}.2f}{ns}{abs(lon):9.2f}{ew}"
+
+
+def deck(tx, rx, month, ssn, mode, noise, power_w, antenna):
+    """VOACAP's input (its fixed-column cards), point to point, 24 hours, the ten bands."""
+    year, mon = (int(x) for x in month.split("-"))
+    freqs = [f for _band, f in BANDS] + [0.0] * (11 - len(BANDS))
+    return "\n".join([
+        "COMMENT    Emcomm-CNC band planner",
+        "LINEMAX     999       number of lines-per-page",
+        "COEFFS    CCIR",
+        "TIME          1   24    1    1",
+        f"MONTH     {year:5d}{mon:5.2f}",
+        f"SUNSPOT   {max(0, min(300, ssn)):4.0f}.",
+        f"LABEL     {'STATION':<20}{'TARGET':<20}",
+        f"CIRCUIT   {latlon_card(*tx, True)}{latlon_card(*rx, False)}  S     0",
+        f"SYSTEM    {1:4d}.{NOISES[noise][1]:4d}.{0.1:5.2f}{90:4d}.{MODES[mode][1]:5.1f}{3.0:5.2f}{0.1:5.2f}",
+        "FPROB      1.00 1.00 1.00 0.00",
+        f"ANTENNA   {1:5d}{1:5d}{2:5d}{30:5d}{0:10.3f}[{antenna:<21}]{0:5.1f}{power_w / 1000:10.4f}",
+        f"ANTENNA   {2:5d}{2:5d}{2:5d}{30:5d}{0:10.3f}[{antenna:<21}]{0:5.1f}{0:10.4f}",
+        "FREQUENCY " + "".join(f"{f:5.2f}" for f in freqs),
+        "METHOD       30    0",
+        "EXECUTE",
+        "QUIT",
+        ""])
+
+
+def numbers(line, label):
+    """The values of an output row ending in label: at the MUF, then one per frequency
+    (None where the column is empty), or None if the line isn't that row."""
+    text = line.rstrip()
+    if not text.endswith(" " + label):
+        return None
+    values = text[:-len(label)].split()
+    if len(values) != 12:
+        return None
+    try:
+        return [None if v == "-" else float(v) for v in values]
+    except ValueError:
+        return None
+
+
+def parse(text, nbands=len(BANDS)):
+    """Method 30 output: for each UTC hour, the MUF, and REL and SNR for each band."""
+    hours, block = {}, None
+    for line in text.splitlines():
+        fields = line.split()
+        if fields and fields[-1] == "FREQ" and len(fields) == 14:
+            try:
+                utc, muf = int(round(float(fields[0]))) % 24, float(fields[1])
+            except ValueError:
+                continue
+            block = hours[utc] = {"utc": utc, "muf": muf, "rel": [None] * nbands, "snr": [None] * nbands}
+        elif block is not None:
+            for label, key in (("REL", "rel"), ("SNR", "snr")):
+                row = numbers(line, label)
+                if row:
+                    block[key] = row[1:1 + nbands]
+    return [hours[h] for h in sorted(hours)]
+
+
+def run(tx, rx, month, ssn, mode, noise, power_w, antenna_id, voacapl=VOACAPL, share=SHARE, work=WORK):
+    exe = shutil.which(voacapl) or (voacapl if os.access(voacapl, os.X_OK) else None)
+    if not exe:
+        raise PlanError("VOACAP isn't installed yet.")
+    root = prepare_root(share, work)
+    _label, kind, height = ANTENNAS[antenna_id]
+    antenna = antenna_file(root, kind, height)
+    os.makedirs(work, exist_ok=True)
+    run_dir = tempfile.mkdtemp(prefix="run", dir=work)  # its own, so two plans at once don't mix
+    try:
+        with open(os.path.join(run_dir, "plan.dat"), "w", encoding="ascii") as f:
+            f.write(deck(tx, rx, month, ssn, mode, noise, power_w, antenna))
+        try:
+            result = subprocess.run([exe, "-s", f"--run-dir={run_dir}", root, "plan.dat", "plan.out"],
+                                    capture_output=True, text=True, timeout=120, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise PlanError("VOACAP took too long.") from exc
+        try:
+            with open(os.path.join(run_dir, "plan.out"), encoding="ascii", errors="replace") as f:
+                hours = parse(f.read())
+        except OSError:
+            hours = []
+        if len(hours) != 24:
+            said = (result.stderr or result.stdout or "").strip().splitlines()
+            raise PlanError("VOACAP didn't finish" + (f": {said[-1][:200]}" if said else "."))
+        return hours
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def plan(place, month=None, ssn=None, mode=None, antenna=None, power=None, noise=None, **kw):
+    grid, home = station_position()
+    target = find_target(place, home)
+    month = month or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+        raise PlanError(f"{month} isn't a month (YYYY-MM).")
+    mode, antenna = mode or DEFAULTS["mode"], antenna or DEFAULTS["antenna"]
+    noise, power = noise or DEFAULTS["noise"], int(power or DEFAULTS["power"])
+    for value, known, what in ((mode, MODES, "mode"), (antenna, ANTENNAS, "antenna"), (noise, NOISES, "noise")):
+        if value not in known:
+            raise PlanError(f"There's no {what} called {value}.")
+    if ssn is None:
+        ssn, source = sunspots(month)
+    else:
+        source = "typed in"
+    km, heading = path(*home, target["lat"], target["lon"])
+    hours = run(home, (target["lat"], target["lon"]), month, ssn, mode, noise, power, antenna, **kw)
+    return {"from": {"grid": grid, "lat": home[0], "lon": home[1]}, "to": target, "km": round(km),
+            "heading": round(heading), "month": month, "ssn": ssn, "ssn_source": source, "mode": mode,
+            "antenna": antenna, "power": power, "noise": noise, "bands": [b for b, _f in BANDS], "hours": hours}
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="emcomm-voacap", description=__doc__.split("\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("choices")
+    sub.add_parser("targets")
+    p_ssn = sub.add_parser("ssn")
+    p_ssn.add_argument("--month")
+    p_plan = sub.add_parser("plan")
+    p_plan.add_argument("--to", required=True)
+    p_plan.add_argument("--month")
+    p_plan.add_argument("--ssn", type=float)
+    p_plan.add_argument("--mode", choices=list(MODES))
+    p_plan.add_argument("--antenna", choices=list(ANTENNAS))
+    p_plan.add_argument("--power", type=int)
+    p_plan.add_argument("--noise", choices=list(NOISES))
+    args = parser.parse_args(argv)
+    try:
+        if args.command in ("targets", "choices"):
+            try:
+                home = station_position()[1]
+            except PlanError:
+                home = None
+            if args.command == "targets":
+                for row in targets(home):
+                    print(json.dumps(row))
+            else:
+                print(json.dumps(choices(home)))
+        elif args.command == "ssn":
+            month = args.month or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
+            ssn, source = sunspots(month)
+            print(json.dumps({"month": month, "ssn": ssn, "source": source}))
+        else:
+            print(json.dumps(plan(args.to, args.month, args.ssn, args.mode, args.antenna, args.power, args.noise)))
+    except (PlanError, OSError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

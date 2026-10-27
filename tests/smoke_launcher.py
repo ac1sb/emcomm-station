@@ -91,6 +91,22 @@ def make_station(root):
         "EMCOMM_FILES": os.path.join(FILES, "emcomm-files"),
         "EMCOMM_PAT_MAILBOX": os.path.join(home, ".local/share/pat/mailbox"),
     })
+    # The Band planner, with a stand-in voacapl (tests/test_voacap.py's) and VOACAP's data folder.
+    sys.path.insert(0, os.path.join(REPO, "tests"))
+    import test_voacap
+    share = os.path.join(root, "voacap-share")
+    for folder in ("antennas/samples", "database", "coeffs"):
+        os.makedirs(os.path.join(share, folder))
+    for name in ("antennas/samples/sample.00", "database/voacap.def", "coeffs/ccir.asc"):
+        with open(os.path.join(share, name), "w") as f:
+            f.write("data\n")
+    os.makedirs(os.path.join(root, "voacap-bin"))
+    fake = os.path.join(root, "voacap-bin", "voacapl")
+    with open(fake, "w") as f:
+        f.write(test_voacap.FAKE.format(tests=os.path.join(REPO, "tests")))
+    os.chmod(fake, 0o755)
+    os.environ.update({"EMCOMM_VOACAP": os.path.join(FILES, "emcomm-voacap"), "EMCOMM_VOACAPL": fake,
+                       "EMCOMM_VOACAP_SHARE": share})
     return home
 
 
@@ -910,6 +926,46 @@ def main():
     shown = [r.item["name"] for r in win.files_list.get_children() if hasattr(r, "item")]
     check(sorted(shown) == ["blank 213.pdf", "damage.png"], f"search finds by subject: {shown}")
     win.files_search.set_text("")
+
+    # Band planner: VOACAP's prediction from the station's grid, a row per band, a column per UTC hour
+    win.stack.set_visible_child_name("bands")
+    end = time.time() + 10
+    while time.time() < end and not win.bands_result:
+        pump(0.2)
+    plan = win.bands_result
+    check(plan and plan["from"]["grid"] == "FN31" and plan["to"]["id"] == "near:250" and len(plan["hours"]) == 24,
+          f"Band planner: a plan from the station's grid ({plan and plan['to']['name']})")
+    check(win.bands_view.get_visible_child_name() == "grid" and win.bands_cells[9][1].get_text() == "100"
+          and win.bands_cells[9][2].get_text() == "·", "Band planner: each band's % by hour")
+    check(win.bands_summary.get_text().startswith(("Now (", L.datetime.date.today().strftime("%B"))),
+          f"Band planner: says what's best now: {win.bands_summary.get_text()}")
+    check(win.bands_ssn.get_value() == plan["ssn"] and "built-in estimate" in win.bands_footer.get_text(),
+          "Band planner: the month's sunspot number, and where it came from")
+    fits("Band planner")
+    room = 600 - (win.get_allocated_height() - win.stack.get_allocated_height())
+    height = win.stack.get_child_by_name("bands").get_preferred_height()[0]
+    check(height <= room, f"Band planner: fits 1024x600 (needs {height} px of {room})")
+    win.bands_result = None
+    win.bands_to.set_active_id("dx:london")
+    win.bands_mode.set_active_id("ft8")
+    end = time.time() + 10
+    while time.time() < end and not (win.bands_result and win.bands_result["mode"] == "ft8"):
+        pump(0.2)
+    check(win.bands_result and win.bands_result["to"]["name"] == "London, England"
+          and L.read_json(L.BANDS_PATH, {}).get("to") == "dx:london", "Band planner: another place and mode, kept")
+    win.bands_ssn.set_value(150)
+    end = time.time() + 10
+    while time.time() < end and win.bands_result["ssn"] != 150:
+        pump(0.2)
+    check(win.bands_result["ssn"] == 150 and win.bands_result["ssn_source"] == "typed in",
+          "Band planner: a sunspot number typed in is used")
+    os.environ["EMCOMM_VOACAPL"] = os.path.join(tmp.name, "nothing")
+    L.VOACAPL = os.environ["EMCOMM_VOACAPL"]
+    win.stack.set_visible_child_name("home")
+    win.stack.set_visible_child_name("bands")
+    pump(0.3)
+    check(win.bands_view.get_visible_child_name() == "note" and win.bands_install_btn.get_visible(),
+          "Band planner: offers to install VOACAP when it isn't there")
 
     # a tile added after the operator arranged Home joins its standard folder
     apps = [{"code": c} for c in ("MSH", "MSD", "APR", "WEB")]

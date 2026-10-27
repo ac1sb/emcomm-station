@@ -102,6 +102,13 @@ class Parsers(unittest.TestCase):
         self.assertEqual(scales["R"], {"level": 1, "text": "minor"})
         self.assertNotIn("G", scales)
 
+    def test_sunspot_forecast(self):
+        doc = [{"time-tag": "2026-11", "predicted_ssn": 96.24, "high_ssn": 110.1},
+               {"time-tag": "2026-12", "predicted_ssn": None}, {"time-tag": "junk", "predicted_ssn": 5}]
+        self.assertEqual(online.parse_cycle(doc), [{"month": "2026-11", "ssn": 96.2}])
+        with self.assertRaises(online.OnlineError):
+            online.parse_cycle({"error": "x"})
+
     def test_hamqsl_bands(self):
         data = online.parse_hamqsl(ET.fromstring(HAMQSL.encode("latin-1")))
         self.assertEqual(data["sfi"], "145")

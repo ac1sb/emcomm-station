@@ -1,0 +1,19 @@
+#!/bin/bash
+# Build voacapl (VOACAP for Linux) from its source and install it. The playbook runs
+# this on the station (roles/apps, tag voacap); CI runs it to test the band planner.
+#
+#   emcomm-build-voacap SOURCE_DIR [PREFIX]   (PREFIX: /usr/local)
+#
+# It installs the program and VOACAP's data in PREFIX/share/voacapl/itshfbc, which
+# emcomm-voacap links each user's own VOACAP folder to.
+set -euo pipefail
+
+src=${1:?usage: emcomm-build-voacap SOURCE_DIR [PREFIX]}
+prefix=${2:-/usr/local}
+cd "$src"
+# The autotools files in the source are from an older automake than Debian's.
+autoreconf --force --install
+./configure --prefix="$prefix"
+make -j"$(nproc)"
+make install
+"$prefix/bin/voacapl" --version

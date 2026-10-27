@@ -56,6 +56,10 @@ PRESETS_DIR = os.environ.get("EMCOMM_PRESETS", "/usr/share/emcomm/radios")
 FAKE_DEVICES = os.environ.get("EMCOMM_FAKE_DEVICES")  # JSON file of devices, for testing without hardware
 BACKUP_CMD = os.environ.get("EMCOMM_BACKUP", "emcomm-backup")
 FILES_CMD = os.environ.get("EMCOMM_FILES", "emcomm-files")
+# The Band planner: emcomm-voacap plans with voacapl; the page remembers its last choices.
+VOACAP_CMD = os.environ.get("EMCOMM_VOACAP", "emcomm-voacap")
+VOACAPL = os.environ.get("EMCOMM_VOACAPL", "voacapl")
+BANDS_PATH = os.path.expanduser("~/.config/emcomm/bands.json")
 APPLY_CMD = os.environ.get("EMCOMM_APPLY", "sudo -n /usr/local/sbin/emcomm-apply-settings").split()
 FIND_CMD = os.environ.get("EMCOMM_FIND", "sudo -n /usr/local/sbin/emcomm-find-radio").split()
 UPDATE_CMD = os.environ.get("EMCOMM_UPDATE", "sudo -n /usr/local/sbin/emcomm-update").split()
@@ -300,6 +304,22 @@ radiobutton radio:checked { background-color: $accent_fill; border-color: $accen
 .navbtn.mute { min-height: 40px; padding: 0 10px; }
 .navbtn.mute:checked { background: alpha($accent_fill, 0.22); border-color: $accent_fill; }
 .homebar-clock { font-family: 'IBM Plex Mono', monospace; font-size: 18px; font-weight: 600; color: $text; }
+.bands-summary { font-size: 17px; font-weight: 600; }
+spinbutton { background: $bg; color: $text; border: 1px solid $input_line; border-radius: 8px; font-size: 16px;
+             background-image: none; box-shadow: none; }
+spinbutton entry, spinbutton text { background: transparent; color: $text; min-height: 44px; }
+spinbutton button { background: $bar; color: $text; border: none; border-left: 1px solid $line;
+                    background-image: none; box-shadow: none; min-width: 30px; padding: 0 4px; }
+.bands-hour { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: $muted; }
+.bands-hour.now { color: $accent; font-weight: 600; }
+.bands-name { font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: $label; }
+.bands-cell { font-family: 'IBM Plex Mono', monospace; font-size: 12px; border-radius: 4px;
+              border: 1px solid transparent; }
+.bands-cell.rel-good { background: alpha($ok, 0.55); color: $text; font-weight: 600; }
+.bands-cell.rel-fair { background: alpha($accent_fill, 0.38); color: $text; }
+.bands-cell.rel-poor { background: alpha($muted, 0.16); color: $muted; }
+.bands-cell.rel-closed { background: transparent; color: alpha($muted, 0.6); }
+.bands-cell.now { border-color: $accent_fill; }
 textview, textview text { background: $surface; color: $text; font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
 """)
 
@@ -1701,7 +1721,8 @@ ACCOUNTS_PATH = os.environ.get("EMCOMM_ACCOUNTS", os.path.expanduser("~/.config/
 ONLINE_SECTIONS = {"alerts": "Weather alerts", "space": "Propagation", "heard": "Who heard me",
                    "lookup": "Callsign lookup"}
 ONLINE_SOURCES = {"alerts": ["alerts"], "space": ["space", "bands"], "heard": ["heard"], "lookup": []}
-BACKGROUND_SOURCES = ["alerts", "space", "bands", "alertmap"]  # alertmap: warning areas for the map
+BACKGROUND_SOURCES = ["alerts", "space", "bands", "alertmap", "cycle"]  # alertmap: warning areas for the map;
+# cycle: the sunspot forecast for the band planner (weekly)
 BANDS = [("160 m", 1.8, 2), ("80 m", 3.5, 4), ("60 m", 5.3, 5.41), ("40 m", 7, 7.3), ("30 m", 10.1, 10.15),
          ("20 m", 14, 14.35), ("17 m", 18.068, 18.168), ("15 m", 21, 21.45), ("12 m", 24.89, 24.99),
          ("10 m", 28, 29.7), ("6 m", 50, 54), ("2 m", 144, 148), ("1.25 m", 222, 225), ("70 cm", 420, 450)]
@@ -2614,6 +2635,7 @@ class Launcher(Gtk.Window):
         if Vte is not None:
             self.stack.add_named(self._terminal_page(), "terminal")
         self.stack.add_named(self._files_page(), "files")
+        self.stack.add_named(self._bands_page(), "bands")
         root.pack_start(self.stack, True, True, 0)
 
         self._tick_clock()
@@ -2872,6 +2894,10 @@ class Launcher(Gtk.Window):
             # UTC to the second there, for setting a clock or checking FT8 timing by eye.
             self.home_bar.clock.set_markup(clock_markup(now, utc_seconds=True))
             self.home_bar.rec.get_child().set_markup(rec)
+        hour = int(now // 3600)
+        if hour != getattr(self, "bands_hour_shown", hour) and getattr(self, "bands_result", None):
+            self._bands_tick()  # the Band planner's "Now" moves on with the UTC hour
+        self.bands_hour_shown = hour
         return True
 
     def _rec_markup(self):
@@ -6774,6 +6800,285 @@ class Launcher(Gtk.Window):
             self.files_item = None
             self._run_in_terminal("Installing LibreOffice", UPDATE_CMD + ["--app", "libreoffice"],
                                   self._files_load)
+
+    # ---- Band planner: VOACAP's prediction, band by UTC hour --------------
+    # emcomm-voacap runs voacapl (installed from this page) from the station's grid
+    # square to the place picked, and says how often each band gets through.
+
+    def _bands_page(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=20)
+        header = Gtk.Box(spacing=12)
+        header.pack_start(self._navbtn("‹ Home  Esc", lambda *_: self.stack.set_visible_child_name("home")),
+                          False, False, 0)
+        title = Gtk.Label(label="Band planner", xalign=0)
+        title.get_style_context().add_class("title")
+        header.pack_start(title, False, False, 0)
+        self.bands_to = PickList()
+        self.bands_to.set_size_request(330, -1)
+        header.pack_start(self.bands_to, False, False, 0)
+        self.bands_status = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.bands_status.get_style_context().add_class("muted")
+        header.pack_start(self.bands_status, True, True, 0)
+        page.pack_start(header, False, False, 0)
+
+        options = Gtk.Box(spacing=8)
+        self.bands_mode, self.bands_antenna, self.bands_power = PickList(), PickList(), PickList()
+        self.bands_noise, self.bands_month = PickList(), PickList()
+        for widget, width in ((self.bands_mode, 156), (self.bands_antenna, 184), (self.bands_power, 0),
+                              (self.bands_noise, 168), (self.bands_month, 118)):
+            widget.set_size_request(width, -1)
+            options.pack_start(widget, False, False, 0)
+        ssn = Gtk.Label(label="SSN")
+        ssn.get_style_context().add_class("field-label")
+        options.pack_start(ssn, False, False, 0)
+        self.bands_ssn = Gtk.SpinButton.new_with_range(0, 300, 1)
+        self.bands_ssn.set_width_chars(3)
+        self.bands_ssn.set_tooltip_text("Smoothed sunspot number for the month (0 to 300)")
+        options.pack_start(self.bands_ssn, False, False, 0)
+        page.pack_start(options, False, False, 0)
+
+        self.bands_summary = Gtk.Label(xalign=0, wrap=True)
+        self.bands_summary.get_style_context().add_class("bands-summary")
+        page.pack_start(self.bands_summary, False, False, 0)
+
+        self.bands_view = Gtk.Stack()
+        self.bands_grid = Gtk.Grid(column_spacing=2, row_spacing=2)
+        self.bands_cells = []
+        self.bands_view.add_named(self.bands_grid, "grid")
+        note = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, valign=Gtk.Align.CENTER, margin=24)
+        self.bands_note = Gtk.Label(wrap=True, max_width_chars=60, justify=Gtk.Justification.CENTER)
+        self.bands_note.get_style_context().add_class("muted")
+        self.bands_install_btn = self._navbtn("Install VOACAP", lambda *_: self._bands_install(), "primary")
+        self.bands_install_btn.set_halign(Gtk.Align.CENTER)
+        self.bands_install_btn.set_no_show_all(True)
+        note.pack_start(self.bands_note, False, False, 0)
+        note.pack_start(self.bands_install_btn, False, False, 0)
+        self.bands_view.add_named(note, "note")
+        page.pack_start(self.bands_view, True, True, 0)
+        self.bands_footer = Gtk.Label(xalign=0, wrap=True)
+        self.bands_footer.get_style_context().add_class("muted")
+        page.pack_start(self.bands_footer, False, False, 0)
+
+        self.bands_choices, self.bands_result, self.bands_job = None, None, 0
+        page.connect("map", lambda *_: self._bands_open())
+        return page
+
+    def _bands_open(self):
+        if not shutil.which(VOACAPL):
+            self.bands_summary.set_text("")
+            self.bands_footer.set_text("")
+            self._bands_note("The band planner uses VOACAP, the HF prediction program the Voice of America "
+                             "built. It isn't installed yet: it's built on this station from its source, which "
+                             "takes a few minutes and needs the internet once.", install=True)
+            return
+        if self.bands_choices is None and not self._bands_fill_choices():
+            return
+        # NOAA's sunspot forecast, when it's due (weekly) and the station is online.
+        def fetch():
+            try:
+                subprocess.run([ONLINE_CMD, "refresh", "cycle"], capture_output=True, timeout=60, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+        if shutil.which(ONLINE_CMD):
+            threading.Thread(target=fetch, daemon=True).start()
+        self._bands_plan()
+
+    def _bands_fill_choices(self):
+        try:
+            out = subprocess.run([VOACAP_CMD, "choices"], capture_output=True, text=True, timeout=20,
+                                 check=True).stdout
+            choices = json.loads(out)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            self._bands_note("The band planner's helper (emcomm-voacap) is missing; run Update station.")
+            return False
+        self.bands_choices = choices
+        saved = read_json(BANDS_PATH, {})
+        saved = saved if isinstance(saved, dict) else {}
+        defaults = dict(choices.get("defaults", {}), **{k: v for k, v in saved.items() if v is not None})
+        for row in choices["targets"]:
+            group = {"United States": "US", "Nearby": "Nearby"}.get(row["group"], row["group"])
+            self.bands_to.append(row["id"], row["name"] if group == "Nearby" else f"{row['name']} · {group}")
+        if str(saved.get("to", "")).startswith("grid:"):
+            self.bands_to.append(saved["to"], f"Grid {saved['to'][5:]}")
+        self.bands_to.append("grid", "Another grid square…")
+        for widget, items, key in ((self.bands_mode, choices["modes"], "mode"),
+                                   (self.bands_antenna, choices["antennas"], "antenna"),
+                                   (self.bands_noise, [[k, f"{v} noise"] for k, v in choices["noises"]], "noise")):
+            for value, label in items:
+                widget.append(value, label)
+            widget.set_active_id(defaults.get(key)) or widget.set_active(0)
+        for watts in choices["powers"]:
+            self.bands_power.append(str(watts), f"{watts} W")
+        self.bands_power.set_active_id(str(defaults.get("power", 100))) or self.bands_power.set_active_id("100")
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for n in range(12):
+            year, month = divmod(now.year * 12 + now.month - 1 + n, 12)
+            when = datetime.date(year, month + 1, 1)
+            self.bands_month.append(when.strftime("%Y-%m"), when.strftime("%b %Y"))
+        self.bands_month.set_active(0)
+        self.bands_to.set_active_id(saved.get("to") or "near:250") or self.bands_to.set_active(0)
+        self._bands_build_grid(choices["bands"])
+        self.bands_last_to = self.bands_to.get_active_id()
+        self.bands_to.connect("changed", lambda *_: self._bands_to_changed())
+        for widget in (self.bands_mode, self.bands_antenna, self.bands_power, self.bands_noise):
+            widget.connect("changed", lambda *_: self._bands_plan())
+        # A new month uses that month's sunspot number again, unless one is typed in.
+        self.bands_month.connect("changed", lambda *_: self._bands_plan(typed_ssn=False))
+        self.bands_ssn.connect("value-changed", lambda *_: self._bands_ssn_typed())
+        self.bands_ssn_auto = True
+        return True
+
+    def _bands_build_grid(self, bands):
+        self.bands_hours = []
+        for hour in range(24):
+            label = Gtk.Label(label=f"{hour:02d}")
+            label.get_style_context().add_class("bands-hour")
+            label.set_size_request(34, -1)
+            self.bands_grid.attach(label, hour + 1, 0, 1, 1)
+            self.bands_hours.append(label)
+        utc = Gtk.Label(label="UTC", xalign=0)
+        utc.get_style_context().add_class("bands-hour")
+        self.bands_grid.attach(utc, 0, 0, 1, 1)
+        # Highest band at the top, as on a band chart.
+        for row, band in enumerate(reversed(bands)):
+            name = Gtk.Label(label=band, xalign=0)
+            name.get_style_context().add_class("bands-name")
+            name.set_size_request(58, -1)
+            self.bands_grid.attach(name, 0, row + 1, 1, 1)
+            cells = []
+            for hour in range(24):
+                cell = Gtk.Label(label="")
+                cell.get_style_context().add_class("bands-cell")
+                cell.set_size_request(34, 24)
+                self.bands_grid.attach(cell, hour + 1, row + 1, 1, 1)
+                cells.append(cell)
+            self.bands_cells.insert(0, cells)  # back in BANDS order
+        self.bands_grid.show_all()
+
+    def _bands_to_changed(self):
+        if self.bands_to.get_active_id() != "grid":
+            self.bands_last_to = self.bands_to.get_active_id()
+            self._bands_plan()
+            return
+        grid = self._ask_name("Grid square, like FN42 or FN42ab")
+        if grid and re.fullmatch(r"[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?", grid):
+            grid = grid[:2].upper() + grid[2:4] + grid[4:].lower()
+            if not self.bands_to.set_active_id(f"grid:{grid}"):
+                self.bands_to.items.insert(len(self.bands_to.items) - 1, (f"grid:{grid}", f"Grid {grid}"))
+                self.bands_to.set_active_id(f"grid:{grid}")
+            return
+        if grid:
+            self.bands_status.set_text(f"{grid} isn't a grid square.")
+        self.bands_to.set_active_id(self.bands_last_to)
+
+    def _bands_ssn_typed(self):
+        if not getattr(self, "bands_setting_ssn", False):
+            self.bands_ssn_auto = False
+            self._bands_plan()
+
+    def _bands_plan(self, typed_ssn=None):
+        if typed_ssn is False:
+            self.bands_ssn_auto = True
+        place = self.bands_to.get_active_id()
+        if not place or place == "grid":
+            return
+        settings = {"to": place, "mode": self.bands_mode.get_active_id(),
+                    "antenna": self.bands_antenna.get_active_id(), "power": int(self.bands_power.get_active_id()),
+                    "noise": self.bands_noise.get_active_id()}
+        write_json(BANDS_PATH, settings)
+        argv = [VOACAP_CMD, "plan", "--to", place, "--month", self.bands_month.get_active_id(),
+                "--mode", settings["mode"], "--antenna", settings["antenna"], "--power", str(settings["power"]),
+                "--noise", settings["noise"]]
+        if not self.bands_ssn_auto:
+            argv += ["--ssn", str(int(self.bands_ssn.get_value()))]
+        self.bands_job += 1
+        job = self.bands_job
+        self.bands_status.set_text("Working it out…")
+
+        def work():
+            try:
+                result = subprocess.run(argv, capture_output=True, text=True, timeout=150, check=False)
+                plan = json.loads(result.stdout) if result.returncode == 0 else None
+                error = None if plan else (result.stderr.strip() or "VOACAP didn't answer.")
+            except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                plan, error = None, str(exc)
+            GLib.idle_add(lambda: self._bands_show(job, plan, error) and False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _bands_show(self, job, plan, error):
+        if job != self.bands_job:
+            return  # a newer plan was asked for meanwhile
+        if error:
+            self.bands_status.set_text("")
+            self._bands_note(error)
+            return
+        self.bands_result = plan
+        if self.bands_ssn_auto:
+            self.bands_setting_ssn = True
+            self.bands_ssn.set_value(plan["ssn"])
+            self.bands_setting_ssn = False
+        self.bands_status.set_text(f"{plan['from']['grid']} to {plan['to']['name']} · {plan['km']:,} km, "
+                                   f"beam {plan['heading']}°")
+        for hour in plan["hours"]:
+            for n, cells in enumerate(self.bands_cells):
+                cell, rel = cells[hour["utc"]], hour["rel"][n]
+                style = cell.get_style_context()
+                for name in ("good", "fair", "poor", "closed"):
+                    style.remove_class(f"rel-{name}")
+                pct = 0 if rel is None else int(round(rel * 100))
+                cell.set_text(str(pct) if pct >= 10 else "·")
+                style.add_class("rel-good" if pct >= 75 else "rel-fair" if pct >= 40 else
+                                "rel-poor" if pct >= 10 else "rel-closed")
+                cell.set_tooltip_text(f"{plan['bands'][n]} at {hour['utc']:02d}00 UTC: gets through on {pct}% "
+                                      f"of days · MUF {hour['muf']:.1f} MHz")
+        self._bands_tick()
+        mode = self.bands_mode.get_active_text() or ""
+        month_name = datetime.date(*(int(x) for x in plan["month"].split("-")), 1).strftime("%B %Y")
+        self.bands_footer.set_text(
+            f"Numbers are the % of days in {month_name} the band gets through for "
+            f"{mode} at {plan['power']} W, the same antenna at both ends. Sunspot number {plan['ssn']} "
+            f"({plan['ssn_source']}). Solar flares and storms aren't predicted: check the Online page.")
+        self.bands_view.set_visible_child_name("grid")
+
+    def _bands_tick(self):
+        """Mark the current UTC hour and say which bands are best right now (called each minute too)."""
+        plan = getattr(self, "bands_result", None)
+        if not plan or not self.bands_cells:
+            return
+        utc = datetime.datetime.now(datetime.timezone.utc).hour
+        for hour, label in enumerate(self.bands_hours):
+            style = label.get_style_context()
+            (style.add_class if hour == utc else style.remove_class)("now")
+            for cells in self.bands_cells:
+                (cells[hour].get_style_context().add_class if hour == utc
+                 else cells[hour].get_style_context().remove_class)("now")
+        now = next((h for h in plan["hours"] if h["utc"] == utc), None)
+        if not now:
+            return
+        ranked = sorted(((rel or 0, n) for n, rel in enumerate(now["rel"])), reverse=True)
+        good = [f"{plan['bands'][n]} {round(rel * 100)}%" for rel, n in ranked if rel >= 0.4][:3]
+        lead = f"Now ({utc:02d}00 UTC): "
+        if good:
+            text = lead + "best " + ", then ".join(good) + "."
+        else:
+            text = lead + "no band gets through on most days; try later or another mode."
+        if plan["month"] != datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m"):
+            month_name = datetime.date(*(int(x) for x in plan["month"].split("-")), 1).strftime("%B %Y")
+            text = f"{month_name}, at {utc:02d}00 UTC: " + (
+                "best " + ", then ".join(good) + "." if good else "no band gets through on most days.")
+        self.bands_summary.set_text(f"{text}  MUF {now['muf']:.1f} MHz.")
+
+    def _bands_note(self, text, install=False):
+        self.bands_note.set_text(text)
+        self.bands_install_btn.set_visible(install)
+        self.bands_view.set_visible_child_name("note")
+
+    def _bands_install(self):
+        if self._confirm("Install VOACAP?", "It's downloaded from the internet and built on this station, "
+                         "which takes a few minutes. The band planner needs it."):
+            self._run_in_terminal("Installing VOACAP", UPDATE_CMD + ["--app", "voacap"], self._bands_open)
 
     def _show_callsign(self, entry, label):
         """Under a callsign field: name, town and licence class from the FCC list, or
