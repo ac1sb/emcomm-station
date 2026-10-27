@@ -198,6 +198,11 @@ window, .page { background: $bg; color: $text; font-family: 'IBM Plex Sans', san
 .tile { transition: background-color 180ms ease-out, border-color 180ms ease-out; }
 .tile.tapped { background-color: alpha($accent_fill, 0.22); border-color: $accent_fill; transition: none; }
 .tile.opening { border-color: $accent_fill; }
+/* An app that's open: its tile says so, and the strip under the tiles has a button for it. */
+.tile.running { border-color: alpha($accent_fill, 0.75); }
+.tile.running .tile-detail { color: $accent; }
+.open-apps .navbtn { min-height: 30px; padding: 0 10px; font-size: 14px; }
+.open-apps-label { font-size: 13px; color: $muted; }
 .tile.opening .tile-detail { color: $accent; }
 .tile spinner { color: $accent; min-width: 20px; min-height: 20px; }
 .tile-icon { background: alpha($accent_fill, 0.12); border-radius: 10px; padding: 7px; }
@@ -2540,6 +2545,7 @@ class HomeBar(Gtk.Window):
 
 
 class Launcher(Gtk.Window):
+    open_codes = frozenset()  # the codes of the apps with a window open (see _refresh_open_apps)
     def __init__(self, config):
         super().__init__(title="Emcomm-CNC")
         self.config = config
@@ -3078,6 +3084,12 @@ class Launcher(Gtk.Window):
         swipe.connect("swipe", self._home_swiped)
         self.home_swipe = swipe  # the gesture lives as long as this reference
         page.pack_start(self.home_pages, True, True, 0)
+        # Under the tiles: the open apps on the left (tap to show one, ✕ to close it), the page buttons centred.
+        footer = Gtk.Box(spacing=12)
+        self.open_apps = Gtk.Box(spacing=6, no_show_all=True)
+        self.open_apps.get_style_context().add_class("open-apps")
+        self.open_apps_shown = None
+        footer.pack_start(self.open_apps, False, False, 0)
         self.page_bar = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER, no_show_all=True)
         self.page_bar.get_style_context().add_class("page-bar")
         self.page_prev = self._navbtn("◀", lambda *_: self._show_home_page(self.page_index - 1))
@@ -3087,7 +3099,9 @@ class Launcher(Gtk.Window):
         self.page_bar.pack_start(self.page_prev, False, False, 0)
         self.page_bar.pack_start(self.page_dots, False, False, 0)
         self.page_bar.pack_start(self.page_next, False, False, 0)
-        page.pack_start(self.page_bar, False, False, 0)
+        footer.set_center_widget(self.page_bar)
+        page.pack_start(footer, False, False, 0)
+        GLib.timeout_add(2000, self._refresh_open_apps)
         page.connect("size-allocate", self._home_resized)
         self._lay_out_tiles()
 
@@ -3146,6 +3160,58 @@ class Launcher(Gtk.Window):
         self._show_home_page(min(self.page_index, len(self.pages) - 1), animate=False)
         if self.arranging:  # saved as it changes, so leaving the page any way keeps it
             self._save_tiles()
+
+    def _refresh_open_apps(self):
+        """Which station apps have a window open: marked on their tiles, listed under the tiles."""
+        if not self.get_visible() or self.stack.get_visible_child_name() not in ("home", "folder"):
+            return True
+        apps = self.config.get("apps", [])
+        found = []
+        for win in open_windows():
+            app = window_app(win, apps, self.started)
+            if app is not None and app.get("code") not in [a.get("code") for _w, a in found]:
+                found.append((win["id"], app))
+        codes = frozenset(a.get("code") for _w, a in found)
+        if codes != self.open_codes:
+            self.open_codes = codes
+            for tile in self.tiles:
+                self._update_tile(tile)
+            for folder in self.folder_tiles:
+                self._update_folder_tile(folder)
+        shown = [(wid, app.get("code")) for wid, app in found]
+        if shown == self.open_apps_shown:
+            return True
+        self.open_apps_shown = shown
+        for child in self.open_apps.get_children():
+            self.open_apps.remove(child)
+        if found:
+            label = Gtk.Label(label="Open")
+            label.get_style_context().add_class("open-apps-label")
+            self.open_apps.pack_start(label, False, False, 0)
+        for wid, app in found[:4]:  # more than that: the tiles say which
+            pair = Gtk.Box()
+            pair.get_style_context().add_class("linked")
+            show = Gtk.Button(label=app.get("name", ""), tooltip_text=f"Show {app.get('name', '')}")
+            show.get_child().set_ellipsize(Pango.EllipsizeMode.END)
+            show.get_child().set_max_width_chars(12)
+            close = Gtk.Button(label="✕", tooltip_text=f"Close {app.get('name', '')}")
+            for btn in (show, close):
+                btn.get_style_context().add_class("navbtn")
+                btn.set_can_focus(False)
+            show.connect("clicked", lambda _b, w=wid: wmctrl("-i", "-a", hex(w)))
+            # The polite close, as the window's own ✕: an app can still ask to save first.
+            close.connect("clicked", lambda _b, w=wid: (wmctrl("-i", "-c", hex(w)),
+                                                         GLib.timeout_add(800, lambda: self._refresh_open_apps()
+                                                                          and False)))
+            pair.pack_start(show, False, False, 0)
+            pair.pack_start(close, False, False, 0)
+            self.open_apps.pack_start(pair, False, False, 0)
+        self.open_apps.set_no_show_all(not found)
+        if found:
+            self.open_apps.show_all()
+        else:
+            self.open_apps.hide()
+        return True
 
     def _home_resized(self, _page, rect):
         """Fit as many tiles on a page as the window has room for. The page buttons' room is
@@ -3409,7 +3475,11 @@ class Launcher(Gtk.Window):
     def _update_folder_tile(self, btn):
         btn.name_label.set_text(btn.name)
         names = [t.app.get("name", "") for t in btn.members]
-        btn.detail.set_text(" · ".join(names) if names else "Empty folder")
+        running = [n for t, n in zip(btn.members, names) if t.app.get("code") in self.open_codes]
+        btn.detail.set_text("● Open: " + " · ".join(running) if running
+                            else " · ".join(names) if names else "Empty folder")
+        ctx = btn.get_style_context()
+        (ctx.add_class if running else ctx.remove_class)("running")
         self._set_tile_icon(btn)
 
     def _folder_clicked(self, btn):
@@ -4072,12 +4142,15 @@ class Launcher(Gtk.Window):
     def _update_tile(self, btn):
         btn.app_state = self._app_state(btn.app)
         installable = bool(btn.app.get("app"))
-        btn.detail.set_text("Opening…" if btn.opening else {"ready": btn.app.get("detail", ""),
+        running = btn.app.get("code") in self.open_codes and not btn.opening
+        btn.detail.set_text("Opening…" if btn.opening else "● Open" if running else {
+                             "ready": btn.app.get("detail", ""),
                              "setup": "Tap to set up",
                              "missing": "Tap to install" if installable else "Not installed",
                              }[btn.app_state])
         btn.set_sensitive(btn.app_state != "missing" or installable)
         ctx = btn.get_style_context()
+        (ctx.add_class if running else ctx.remove_class)("running")
         if btn.app_state == "ready":
             ctx.remove_class("not-ready")
         else:
@@ -4098,7 +4171,8 @@ class Launcher(Gtk.Window):
             return  # still starting from the last tap: not a second copy
         app = btn.app
         if app.get("page"):  # a part of the launcher, not a separate app
-            {"nwr": self._edit_nwr}.get(app["page"], lambda: self.stack.set_visible_child_name(app["page"]))()
+            {"nwr": self._edit_nwr, "lookup": lambda: self._lookup_dialog(from_home=True)}.get(
+                app["page"], lambda: self.stack.set_visible_child_name(app["page"]))()
             return
         if btn.app_state != "missing":
             # Already open: bring it to the front rather than start a second copy.
@@ -6310,9 +6384,10 @@ class Launcher(Gtk.Window):
         page.connect("map", lambda *_: self._show_log())
         return page
 
-    def _lookup_dialog(self, text=""):
+    def _lookup_dialog(self, text="", from_home=False):
         """Look up a callsign or DMR ID in the offline FCC and RadioID lists; matches
-        show as it's typed. Tapping one puts the call in the contact note."""
+        show as it's typed. Tapping one puts the call in the contact note (from the
+        Callsign lookup tile, on the Logs page)."""
         dialog = Gtk.Dialog(title="Look up a callsign or DMR ID", transient_for=self, modal=True)
         dialog.set_default_size(860, 440)
         dialog.add_buttons("Close", Gtk.ResponseType.CLOSE)
@@ -6328,7 +6403,8 @@ class Launcher(Gtk.Window):
         note.set_text(" · ".join(filter(None, [
             f"FCC list from {listed}" if listed else "No FCC list yet",
             "DMR IDs from RadioID.net" if dmr_listed else "No DMR ID list yet",
-            "" if listed and dmr_listed else "run Update station once with internet"])))
+            "" if listed and dmr_listed else "run Update station once with internet",
+            "tap a match to start a contact note in Logs" if from_home else ""])))
         box.pack_start(note, False, False, 0)
         results = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -6337,6 +6413,8 @@ class Launcher(Gtk.Window):
 
         def pick(_listbox, row):
             self.note_call.set_text(row.call)
+            if from_home:
+                self.stack.set_visible_child_name("logs")
             dialog.response(Gtk.ResponseType.CLOSE)
 
         def refresh(*_):

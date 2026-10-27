@@ -223,8 +223,10 @@ save their settings. Turn the radio off after the station.
   ✕ to close it), **Rec**, the speaker and microphone icons and the time. So levels
   can be changed while WSJT-X or VARA is on the screen.
 
-Tapping a tile whose app is already open brings it to the front; it does not start
-a second copy. While an app starts, its tile shows **Opening…**. If it shows
+An app that's open shows **● Open** on its tile (and on its folder's tile), and
+**Open** under the tiles lists it: tap its name to bring it to the front, or **✕** to
+close it as its own window's ✕ would (it can still ask to save first). Tapping a tile
+whose app is already open also brings it to the front; it does not start a second copy. While an app starts, its tile shows **Opening…**. If it shows
 **Didn't start** or **No window yet**, see [Troubleshooting](#troubleshooting).
 
 ### Keys (when a keyboard is plugged in)
@@ -860,9 +862,10 @@ The station keeps two lists, so lookups work with no internet:
   list until the new one is ready. Logs > **Callsign list downloads** shows how it
   went. Offline, the last lists are kept and keep working, and the next Update
   station with internet tries again.
-- **Look up** (Logs page): type a callsign or a DMR ID. Matches list as you type:
-  calls that start with what you typed, or IDs that start with the digits. Tap one to
-  put the call in the contact note. The line under the box says how old the FCC list
+- **Call lookup** tile on Home, or **Look up** on the Logs page: type a callsign or a
+  DMR ID. Matches list as you type: calls that start with what you typed, or IDs that
+  start with the digits. Tap one to put the call in a contact note (from the tile, it
+  opens Logs with the call filled in). The line under the box says how old the FCC list
   is.
 - **In Net control and contact notes**, the line under the callsign shows the same
   details. Calls outside the US show from the DMR list when the operator has a DMR ID.

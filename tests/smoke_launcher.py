@@ -996,6 +996,36 @@ def main():
     win.stack.set_visible_child_name("home")
     pump(0.3)
 
+    # ---- open apps: marked on their tiles and in folders, listed under the tiles to show or close ----
+    windows = [{"id": 0x3a00007, "pid": 999999, "cls": "wsjtx.wsjtx", "title": "WSJT-X   v2.7"},
+               {"id": 0x3c00004, "pid": 999998, "cls": "pat.Pat", "title": "Winlink"},
+               {"id": 0x3e00002, "pid": 999997, "cls": "firefox.Firefox", "title": "Not a station app"}]
+    real_windows, real_wmctrl, sent = L.open_windows, L.wmctrl, []
+    L.open_windows = lambda: list(windows)
+    L.wmctrl = lambda *args: sent.append(args)
+    win._refresh_open_apps()
+    pump(0.3)
+    ft8 = win.app_tiles["FT8"]
+    check("running" in ft8.get_style_context().list_classes() and ft8.detail.get_text().startswith("● Open"),
+          f"an open app's tile says so: {ft8.detail.get_text()}")
+    email = next(f for f in win.folder_tiles if any(t.app.get("code") == "WL" for t in f.members))
+    check(email.detail.get_text() == "● Open: Winlink mail", f"its folder too: {email.detail.get_text()}")
+    chips = [b.get_label() for pair in win.open_apps.get_children() if isinstance(pair, Gtk.Box)
+             for b in pair.get_children()]
+    check(win.open_apps.get_visible() and chips == ["WSJT-X", "✕", "Winlink mail", "✕"],
+          f"open apps under the tiles, not other windows: {chips}")
+    pair = [c for c in win.open_apps.get_children() if isinstance(c, Gtk.Box)][0]
+    pair.get_children()[0].clicked()
+    pair.get_children()[1].clicked()
+    check(sent == [("-i", "-a", "0x3a00007"), ("-i", "-c", "0x3a00007")], f"show and close: {sent}")
+    windows[:] = []
+    win._refresh_open_apps()
+    pump(0.3)
+    check("running" not in ft8.get_style_context().list_classes() and not win.open_apps.get_visible(),
+          "closed: the tile and the strip clear")
+    L.open_windows, L.wmctrl = real_windows, real_wmctrl
+    check("CAL" in win.app_tiles and win.app_tiles["CAL"].app.get("page") == "lookup", "a Callsign lookup tile")
+
     win.destroy()
     pump(0.2)
     tmp.cleanup()
