@@ -10,7 +10,7 @@
 # before is kept as .1), which the launcher's Logs page shows.
 set -euo pipefail
 
-APPS="js8call wsjtx fldigi qsstv flmsg pat ardop packet vara aprs meshtastic meshtastic-desktop meshcore meshy map browser chirp libreoffice library scanner sdr"
+APPS="js8call wsjtx fldigi qsstv flmsg pat ardop packet vara aprs meshtastic meshtastic-desktop meshcore meshy map browser chirp libreoffice voacap library scanner sdr"
 SOURCE_FILE=/etc/emcomm/playbook-dir
 
 usage() { echo "usage: $0 [--app ${APPS// /|}]" >&2; exit 2; }

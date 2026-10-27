@@ -50,6 +50,11 @@ for prog in ardopcf winetricks chirp contact meshcore-cli meshtastic-desktop mes
     rm -f "/usr/local/bin/$prog"
   fi
 done
+# VOACAP, built from source for the Band planner, unless it was installed before.
+if [ -f /usr/local/share/voacapl/emcomm-commit ] && ! grep -qx voacapl "$BEFORE/usr-local-bin" 2>/dev/null; then
+  rm -f /usr/local/bin/voacapl /usr/local/bin/makeitshfbc /usr/local/bin/dst2csv /usr/local/bin/dst2ascii
+  rm -rf /usr/local/share/voacapl /usr/local/share/doc/voacapl
+fi
 rm -f /usr/share/applications/emcomm-cnc.desktop /usr/share/xsessions/emcomm-cnc.desktop \
   /usr/share/icons/hicolor/scalable/apps/emcomm-cnc.svg
 gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null

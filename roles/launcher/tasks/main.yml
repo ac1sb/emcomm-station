@@ -56,7 +56,7 @@
     src: "{{ item }}"
     dest: "/usr/local/bin/{{ item }}"
     mode: "0755"
-  loop: [emcomm-launcher, emcomm-online, emcomm-ics, emcomm-backup, emcomm-callsign, emcomm-guide, emcomm-files]
+  loop: [emcomm-launcher, emcomm-online, emcomm-ics, emcomm-backup, emcomm-callsign, emcomm-guide, emcomm-files, emcomm-voacap]
 
 # The FCC licence list and RadioID.net's DMR ID list for offline lookup: each
 # downloaded when it's over a week old and the station is online. Offline, the
