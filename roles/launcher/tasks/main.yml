@@ -60,14 +60,37 @@
 
 # The FCC licence list and RadioID.net's DMR ID list for offline lookup: each
 # downloaded when it's over a week old and the station is online. Offline, the
-# last lists are kept.
-- name: Update the offline callsign list
+# last lists are kept. The download (about 170 MB) and the rebuild run in the
+# background at low priority, so Update station doesn't wait minutes for them;
+# Logs > Callsign list downloads shows how it went, and a failed one is tried
+# again at the next Update station.
+- name: Update the offline callsign lists
   tags: [callsign]
   block:
-    - name: Download the FCC licence and DMR ID lists and rebuild their databases
-      ansible.builtin.command: emcomm-callsign update --max-age 7
+    - name: Check whether the callsign or DMR ID list is over a week old
+      ansible.builtin.command: emcomm-callsign due --max-age 7
+      register: launcher_callsign_due
+      changed_when: false
+      failed_when: launcher_callsign_due.rc > 1
+
+    - name: Download the callsign lists in the background
+      ansible.builtin.command: >-
+        systemd-run --unit=emcomm-callsign-update --collect --no-block
+        --property=Nice=10 --property=IOSchedulingClass=idle
+        /bin/sh -c 'exec /usr/local/bin/emcomm-callsign update --max-age 7 >/var/log/emcomm-callsign.log 2>&1'
       register: launcher_callsign
-      changed_when: "'rebuilt' in launcher_callsign.stdout"
+      changed_when: launcher_callsign.rc == 0
+      # Already running from an update moments ago: that one carries on.
+      failed_when: launcher_callsign.rc != 0 and 'already' not in launcher_callsign.stderr
+      when: launcher_callsign_due.rc == 0
+
+    - name: Say the callsign lists are downloading
+      ansible.builtin.debug:
+        msg: >-
+          {{ launcher_callsign_due.stdout }} It's downloading in the background
+          (about 170 MB, a few minutes); lookups use the old list until it's done.
+          Logs > Callsign list downloads shows how it went.
+      when: launcher_callsign_due.rc == 0
   rescue:
     - name: Report that the callsign list didn't update
       ansible.builtin.debug:

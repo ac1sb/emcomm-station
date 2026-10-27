@@ -14,8 +14,12 @@
       - ca-certificates
       - bluez  # Meshtastic and MeshCore radios can connect by Bluetooth
     install_recommends: false
+    # Refresh the package lists only when they're over 12 hours old. Nothing here
+    # upgrades packages (the system's own updater does that), so a fresher list
+    # only matters for something new to install, and refreshing takes a minute or
+    # more on a computer with many sources or 32-bit packages turned on (VARA).
     update_cache: true
-    cache_valid_time: 3600
+    cache_valid_time: 43200
 
 - name: Start Bluetooth at boot
   ansible.builtin.systemd_service:

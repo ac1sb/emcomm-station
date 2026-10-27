@@ -6,13 +6,16 @@ notes fill in the name and town, and the Look up box finds either.
   emcomm-callsign update [--max-age DAYS]  download both lists and rebuild their
                                            databases, when older than DAYS
                                            (default 7; 0 always rebuilds)
+  emcomm-callsign due [--max-age DAYS]     say which lists are older than DAYS
+                                           (or missing); exit 1 when none are
   emcomm-callsign build ZIP [DB]           rebuild the FCC database from a
                                            downloaded l_amat.zip
   emcomm-callsign build-dmr CSV [DB]       rebuild the DMR ID database from a
                                            downloaded RadioID user.csv
   emcomm-callsign lookup CALL|ID...        print what the databases have, as JSON
 
-Update station runs `update` as root. The FCC list is its weekly full file of
+Update station runs `update` as root, in the background (when `due` says a list
+is over a week old), so the update doesn't wait for the downloads. The FCC list is its weekly full file of
 amateur licences (ULS l_amat.zip, roughly 150 MB). Only active licences and ones
 expired within the two-year grace period are kept, so a miscopied or lapsed call
 shows up as such. The DMR list is RadioID.net's user.csv (every registered DMR
@@ -283,14 +286,27 @@ def update(max_age_days=7, db_path=DB, url=URL, cache=CACHE):
     return 0
 
 
+def due(max_age_days=7, lists=None):
+    """The names of the lists that are missing or older than max_age_days."""
+    lists = lists or [("FCC callsign", DB), ("DMR ID", DMR_DB)]
+    now = time.time()
+    return [name for name, path in lists
+            if not (when := built(path)) or not max_age_days or now - when >= max_age_days * DAY]
+
+
 def main(argv):
-    if argv[:1] == ["update"]:
+    if argv[:1] in (["update"], ["due"]):
         days = 7
         if argv[1:2] == ["--max-age"] and len(argv) > 2 and argv[2].isdigit():
             days = int(argv[2])
         elif len(argv) > 1:
             print(__doc__, file=sys.stderr)
             return 2
+        if argv[0] == "due":
+            names = due(days)
+            print(f"Due for a download: {' and '.join(names)} list." if names else "Both lists are up to date.")
+            return 0 if names else 1
+        print(f"Started {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}", flush=True)
         # Each list on its own: one failing to download doesn't stop the other.
         return max(update(days), update_dmr(days))
     if argv[:1] == ["build"] and len(argv) in (2, 3):
