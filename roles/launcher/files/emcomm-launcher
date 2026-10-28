@@ -2191,6 +2191,47 @@ def callsign_summary(call, db=None, dmr_db=None):
     return f"{call} isn't in the FCC list from {listed}. Check the call.", False
 
 
+def online_lookup_lines(r, here=None):
+    """What emcomm-online lookup found (QRZ or HamQTH, and aprs.fi), as lines to show.
+    here: this station's (lat, lon), for distance and bearing."""
+    lines = []
+    if r.get("notfound"):
+        lines.append(f"{r['call']} isn't in the online callbook.")
+    elif r.get("source"):
+        lines += [f"{r['call']}   {r.get('name', '')}".rstrip(),
+                  ", ".join(filter(None, [r.get("city"), r.get("state"), r.get("country")]))]
+        where = f"Grid {r['grid']}" if r.get("grid") else ""
+        if r.get("miles") is not None:
+            where += f" · {r['miles']:,.0f} mi at {r['bearing']:03.0f}°"
+        lines.append(where.strip(" ·"))
+        if r.get("class"):
+            lines.append(f"Licence class {CALLSIGN_CLASSES.get(r['class'], r['class'])}"
+                         + (f", expires {r['expires']}" if r.get("expires") else ""))
+        if r.get("email"):
+            lines.append(r["email"])
+        source = f"From {r['source']}"
+        if r.get("cached"):
+            source += f", saved {ago(r.get('updated'))} (couldn't reach it now)"
+        lines.append(source)
+        if r.get("note"):
+            lines.append(r["note"])
+    aprs = r.get("aprs")
+    if aprs:
+        where = ""
+        if here and aprs.get("lat") is not None:
+            miles, bearing = distance_bearing(here, (aprs["lat"], aprs["lon"]))
+            where = f", {miles:,.0f} mi at {bearing:03.0f}°"
+        place = (f"  {aprs['lat']:.4f}, {aprs['lon']:.4f}" if aprs.get("lat") is not None
+                 and aprs.get("lon") is not None else "  (no position given)")
+        lines += ["", f"Last APRS position (aprs.fi): {aprs['name']} {ago(aprs.get('time'))}{where}",
+                  f"{place}  {aprs.get('comment', '')}".rstrip()]
+    elif "aprs" in r:
+        lines += ["", "No recent APRS position on aprs.fi."]
+    if r.get("errors"):
+        lines += [""] + r["errors"]
+    return [line for i, line in enumerate(lines) if line or (i and lines[i - 1])]
+
+
 def lookup_search(text, limit=30, db=None, dmr_db=None):
     """What the Look up box lists as it's typed: callsigns starting with the text (FCC and
     DMR lists), or DMR IDs starting with the digits typed. A list of
@@ -6482,13 +6523,15 @@ class Launcher(Gtk.Window):
         page.connect("map", lambda *_: self._show_log())
         return page
 
-    def _lookup_dialog(self, text="", from_home=False):
-        """Look up a callsign or DMR ID in the offline FCC and RadioID lists; matches
-        show as it's typed. Tapping one puts the call in the contact note (from the
-        Callsign lookup tile, on the Logs page)."""
-        dialog = Gtk.Dialog(title="Look up a callsign or DMR ID", transient_for=self, modal=True)
-        dialog.set_default_size(860, 440)
-        dialog.add_buttons("Close", Gtk.ResponseType.CLOSE)
+    def _lookup_dialog(self, text="", from_home=False, details=None):
+        """The one callsign lookup. Matches from the offline FCC and RadioID lists show as
+        it's typed; tapping one (or Enter) shows its details, and, when a QRZ, HamQTH or
+        aprs.fi login is set under Accounts, what they have too (saved answers show
+        offline). Contact note puts the call in a contact note on the Logs page."""
+        dialog = Gtk.Dialog(title="Call lookup", transient_for=self, modal=True)
+        dialog.set_default_size(900, 520)
+        note_btn = dialog.add_button("Contact note", Gtk.ResponseType.APPLY)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
         box = dialog.get_content_area()
         box.set_spacing(8)
         box.set_border_width(12)
@@ -6496,24 +6539,69 @@ class Launcher(Gtk.Window):
         box.pack_start(search, False, False, 0)
         listed = callsign_list_date()
         dmr_listed = os.path.exists(DMR_DB)
+        acc = read_json(ACCOUNTS_PATH, {})
+        services = [name for name, key in (("QRZ", "qrz_user"), ("HamQTH", "hamqth_user"), ("aprs.fi", "aprsfi_key"))
+                    if acc.get(key)]
+        online = bool(services) and bool(shutil.which(ONLINE_CMD))
         note = Gtk.Label(xalign=0, wrap=True)
         note.get_style_context().add_class("muted")
         note.set_text(" · ".join(filter(None, [
             f"FCC list from {listed}" if listed else "No FCC list yet",
             "DMR IDs from RadioID.net" if dmr_listed else "No DMR ID list yet",
             "" if listed and dmr_listed else "run Update station once with internet",
-            "tap a match to start a contact note in Logs" if from_home else ""])))
+            ("online: " + ", ".join(services)) if online else
+            "add a QRZ or HamQTH login under Settings > Accounts for more when online"])))
         box.pack_start(note, False, False, 0)
-        results = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        results = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
         scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.set_min_content_height(130)
         scroller.add(results)
         box.pack_start(scroller, True, True, 0)
+        info = Gtk.Label(xalign=0, yalign=0, wrap=True, selectable=True)
+        info_scroller = Gtk.ScrolledWindow(vexpand=True)
+        info_scroller.set_min_content_height(150)
+        info_scroller.add(info)
+        box.pack_start(info_scroller, True, True, 0)
+        state = {"call": "", "open": True}
+        note_btn.set_sensitive(False)
+
+        def show(call):
+            """Details for one call: offline first, then the online answer when it comes."""
+            state["call"] = call
+            note_btn.set_sensitive(bool(call))
+            if not call:
+                info.set_text("")
+                return
+            lines = [callsign_summary(call)[0]]
+            dmr = dmr_lookup(call)
+            if len(dmr) > 2:
+                lines.append("DMR IDs: " + ", ".join(str(d["id"]) for d in dmr))
+            if online:
+                lines += ["", f"Looking up {call} online…"]
+            info.set_text("\n".join(lines))
+            if not online:
+                return
+
+            def work():
+                try:
+                    out = subprocess.run([ONLINE_CMD, "lookup", call], capture_output=True, text=True,
+                                         timeout=60).stdout
+                    result = json.loads(out)
+                except (OSError, subprocess.TimeoutExpired, ValueError):
+                    result = {"call": call, "errors": ["The online lookup didn't finish."]}
+                GLib.idle_add(done, call, result)
+
+            def done(asked, result):
+                if state["open"] and state["call"] == asked:
+                    here = grid_to_latlon(self.station.get("grid", ""))
+                    info.set_text("\n".join(lines[:-1] + online_lookup_lines(result, here)))
+                return False
+
+            threading.Thread(target=work, daemon=True).start()
 
         def pick(_listbox, row):
-            self.note_call.set_text(row.call)
-            if from_home:
-                self.stack.set_visible_child_name("logs")
-            dialog.response(Gtk.ResponseType.CLOSE)
+            if row is not None and row.call:
+                show(row.call)
 
         def refresh(*_):
             for child in results.get_children():
@@ -6524,7 +6612,7 @@ class Launcher(Gtk.Window):
                 matches = [("", callsign_summary(typed)[0] if not typed.isdigit()
                             else f"DMR ID {typed} isn't in the list.", False)]
             for call, line, problem in matches:
-                row = Gtk.ListBoxRow(activatable=bool(call))
+                row = Gtk.ListBoxRow(activatable=bool(call), selectable=bool(call))
                 row.call = call
                 label = Gtk.Label(label=line, xalign=0, ellipsize=Pango.EllipsizeMode.END, margin=8)
                 if problem:
@@ -6533,12 +6621,32 @@ class Launcher(Gtk.Window):
                 results.add(row)
             results.show_all()
 
+        def enter(*_):
+            """Enter: the first match, or the call as typed (it may be online only)."""
+            rows = [r for r in results.get_children() if r.call]
+            typed = search.get_text().strip().upper()
+            if rows:
+                results.select_row(rows[0])
+                show(rows[0].call)
+            elif typed and not typed.isdigit():
+                show(typed)
+
         results.connect("row-activated", pick)
         search.connect("search-changed", refresh)
+        search.connect("activate", enter)
         search.set_text(text)
+        refresh()
+        if details:
+            show(details.strip().upper())
         dialog.show_all()
-        dialog.run()
+        response = dialog.run()
+        state["open"] = False
+        call = state["call"]
         dialog.destroy()
+        if response == Gtk.ResponseType.APPLY and call:
+            self.note_call.set_text(call)
+            self.stack.set_visible_child_name("logs")
+            self.note_text.grab_focus()
 
     # ---- Files: Winlink attachments, downloads and SSTV pictures -----------
     # emcomm-files lists them (attachments straight out of Pat's mailbox) and turns
@@ -8608,7 +8716,6 @@ class Launcher(Gtk.Window):
             scroller.add(child)
             self.online_stack.add_named(scroller, name)
         page.pack_start(self.online_stack, True, True, 0)
-        self.lookup_text = ""
         page.connect("map", lambda *_: self._show_online(fetch=True))
         return page
 
@@ -8807,76 +8914,14 @@ class Launcher(Gtk.Window):
         self._fill_online_list(rows)
 
     def _online_lookup(self):
-        acc = read_json(ACCOUNTS_PATH, {})
-        services = [name for name, key in (("QRZ", "qrz_user"), ("HamQTH", "hamqth_user"), ("aprs.fi", "aprsfi_key"))
-                    if acc.get(key)]
-        self.online_status.set_text(("Looks up with " + ", ".join(services) + ". Callsigns looked up before "
-                                     "still show when the station is offline.") if services else
-                                    "Add a QRZ or HamQTH login under Accounts to look up callsigns.")
-        self._show_text(self.lookup_text)
+        self.online_status.set_text("Type a callsign and tap Look up: it opens Call lookup, which shows the offline "
+                                    "FCC and DMR ID lists and, when online, QRZ, HamQTH and aprs.fi.")
+        self._show_text("")
         self.lookup_entry.grab_focus()
 
     def _lookup(self, *_):
         call = self.lookup_entry.get_text().strip().upper()
-        if not call:
-            return
-        if not shutil.which(ONLINE_CMD):
-            self.online_status.set_text("The online helper isn't installed; tap Update station in Settings.")
-            return
-        self.online_status.set_text(f"Looking up {call}…")
-
-        def work():
-            try:
-                out = subprocess.run([ONLINE_CMD, "lookup", call], capture_output=True, text=True, timeout=60).stdout
-                result = json.loads(out)
-            except (OSError, subprocess.TimeoutExpired, ValueError):
-                result = {"call": call, "errors": ["The lookup didn't finish."]}
-            GLib.idle_add(self._lookup_done, result)
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _lookup_done(self, r):
-        lines = []
-        if r.get("notfound"):
-            lines.append(f"{r['call']} isn't in the callbook.")
-        elif r.get("source"):
-            lines += [f"{r['call']}   {r.get('name', '')}".rstrip(),
-                      ", ".join(filter(None, [r.get("city"), r.get("state"), r.get("country")]))]
-            where = f"Grid {r['grid']}" if r.get("grid") else ""
-            if r.get("miles") is not None:
-                where += f" · {r['miles']:,.0f} mi at {r['bearing']:03.0f}°"
-            lines += [where.strip(" ·")]
-            if r.get("class"):
-                lines.append(f"Licence class {r['class']}" + (f", expires {r['expires']}" if r.get("expires") else ""))
-            if r.get("email"):
-                lines.append(r["email"])
-            source = f"From {r['source']}"
-            if r.get("cached"):
-                source += f", saved {ago(r.get('updated'))} (couldn't reach it now)"
-            lines += ["", source]
-            if r.get("note"):
-                lines.append(r["note"])
-        aprs = r.get("aprs")
-        if aprs:
-            here = grid_to_latlon(self.station.get("grid", ""))
-            where = ""
-            if here and aprs.get("lat") is not None:
-                miles, bearing = distance_bearing(here, (aprs["lat"], aprs["lon"]))
-                where = f", {miles:,.0f} mi at {bearing:03.0f}°"
-            if aprs.get("lat") is not None and aprs.get("lon") is not None:
-                place = f"  {aprs['lat']:.4f}, {aprs['lon']:.4f}"
-            else:
-                place = "  (no position given)"
-            lines += ["", f"Last APRS position (aprs.fi): {aprs['name']} {ago(aprs.get('time'))}{where}",
-                      f"{place}  {aprs.get('comment', '')}".rstrip()]
-        elif "aprs" in r:
-            lines += ["", "No recent APRS position on aprs.fi."]
-        if r.get("errors"):
-            lines += [""] + r["errors"]
-        self.lookup_text = "\n".join(lines).strip()
-        if self.online_combo.get_active_id() == "lookup":
-            self._online_lookup()
-        return False
+        self._lookup_dialog(text=call, details=call or None)
 
     def _nwr_row(self):
         """The weather radio's state, first in the alerts list, with its Set up button."""

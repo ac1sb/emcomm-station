@@ -541,40 +541,65 @@ def main():
         walk(dialog.get_content_area())
         return found
 
-    # ---- Logs > Look up: matches by callsign and by DMR ID as typed; a pick fills the note ----
+    # ---- Call lookup: offline matches by callsign and by DMR ID as typed; a pick shows its
+    # details with the online answer (a stand-in emcomm-online) added; Contact note fills the note ----
     win.stack.set_visible_child_name("logs")
     pump(0.5)
     fits("Logs with the Look up button")
+    accounts = os.path.join(home, ".config/emcomm/accounts.json")
+    os.makedirs(os.path.dirname(accounts), exist_ok=True)
+    with open(accounts, "w", encoding="utf-8") as f:
+        json.dump({"qrz_user": "AC1SB", "qrz_password": "x"}, f)
+    fake_online = os.path.join(tmp.name, "emcomm-online-lookup")
+    with open(fake_online, "w", encoding="utf-8") as f:
+        f.write("#!/bin/sh\n[ \"$1\" = lookup ] || exit 1\ncat <<'EOF'\n" + json.dumps(
+            {"source": "QRZ", "call": "KC1ABC", "name": "John Q Smith", "city": "Manchester Center", "state": "VT",
+             "country": "United States", "grid": "FN33ad", "miles": 41.2, "bearing": 12, "class": "E",
+             "expires": "2034-03-01", "email": "kc1abc@example.com", "errors": []}) + "\nEOF\n")
+    os.chmod(fake_online, 0o755)
+    real_online, L.ONLINE_CMD = L.ONLINE_CMD, fake_online
     seen = {}
 
     def look_up(dialog):
         search = dialog_widgets(dialog, Gtk.SearchEntry)[0]
         listbox = dialog_widgets(dialog, Gtk.ListBox)[0]
+        info = [w for w in dialog_widgets(dialog, Gtk.Label) if w.get_selectable()][0]
 
         def lines():
             return [r.get_child().get_text() for r in listbox.get_children()]
-        search.set_text("KC1")
-        search.emit("search-changed")
-        seen["call"] = lines()
         search.set_text("311234")
         search.emit("search-changed")
         seen["id"] = lines()
+        search.set_text("KC1")
+        search.emit("search-changed")
+        seen["call"] = lines()
+        listbox.emit("row-activated", listbox.get_children()[0])
+        seen["offline"] = info.get_text()
+        for _ in range(40):  # the online answer comes from a thread
+            pump(0.1)
+            if "From QRZ" in info.get_text():
+                break
+        seen["online"] = info.get_text()
         if os.environ.get("EMCOMM_SHOT"):
             from gi.repository import Gdk
-            pump(0.4)
             gdkwin = dialog.get_window()
             Gdk.pixbuf_get_from_window(gdkwin, 0, 0, gdkwin.get_width(), gdkwin.get_height()).savev(
                 os.environ["EMCOMM_SHOT"].replace(".png", "-lookup.png"), "png", [], [])
-        listbox.emit("row-activated", listbox.get_children()[0])
-        return Gtk.ResponseType.CLOSE
+        return Gtk.ResponseType.APPLY
     answer_dialog(look_up)
     win._lookup_dialog()
     pump(0.3)
+    L.ONLINE_CMD = real_online
+    os.unlink(accounts)
     check(seen.get("call") and seen["call"][0].startswith("KC1ABC · John Q Smith") and "DMR 3112345" in seen["call"][0],
           f"look up by call: {seen.get('call')}")
     check(seen.get("id") and seen["id"][0].startswith("DMR 3112345 · KC1ABC"), f"look up by DMR ID: {seen.get('id')}")
-    check(win.note_call.get_text() == "KC1ABC" and "DMR 3112345" in win.note_lookup.get_text(),
-          f"picked call fills the note: {win.note_lookup.get_text()}")
+    check(seen.get("offline", "").startswith("KC1ABC · John Q Smith") and "Looking up KC1ABC online" in seen["offline"],
+          f"details, offline first: {seen.get('offline')!r}")
+    check("Grid FN33ad · 41 mi at 012°" in seen.get("online", "") and "From QRZ" in seen.get("online", "")
+          and "Looking up" not in seen.get("online", ""), f"online details added: {seen.get('online')!r}")
+    check(win.stack.get_visible_child_name() == "logs" and win.note_call.get_text() == "KC1ABC"
+          and "DMR 3112345" in win.note_lookup.get_text(), f"Contact note fills the note: {win.note_lookup.get_text()}")
     win.note_call.set_text("")
 
     win.stack.set_visible_child_name("station-radio")
