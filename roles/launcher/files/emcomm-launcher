@@ -6166,6 +6166,7 @@ class Launcher(Gtk.Window):
                                fixed=[("", "Choose later")])
         self._fill_match_combo(self.gps_combo, self.serial_ports, current["gps_match"], fixed=GPS_FIXED)
         self._fill_mesh_gps(self.mesh_gps_combo.get_active_id() or "")
+        self._show_devices()  # the list of what's plugged in, as of this rescan
         found = len(self.serial_ports) + len(self.sound_cards)
         self._set_message(f"Found {len(self.serial_ports)} serial port(s) and {len(self.sound_cards)} USB sound card(s)."
                           if found else "No USB radio devices found. Plug in the radio and rescan.", found > 0)
@@ -6179,7 +6180,12 @@ class Launcher(Gtk.Window):
         for path, label in ports:
             self.mesh_gps_combo.append(path, label)
         if current and current not in dict(ports):
-            self.mesh_gps_combo.append(current, f"{os.path.basename(current)} (not plugged in)")
+            # Plugged in but taken as the USB GPS: gpsd holds it and a Meshtastic radio sends
+            # no NMEA, so neither works. Say so instead of "not plugged in".
+            as_gps = os.path.exists(current) and os.path.exists(GPS_DEV) and \
+                os.path.realpath(current) == os.path.realpath(GPS_DEV)
+            self.mesh_gps_combo.append(current, f"{os.path.basename(current)} " + (
+                "(picked as the GPS above: set GPS to Automatic and Save)" if as_gps else "(not plugged in)"))
         self.mesh_gps_combo.set_active_id(current)
 
     def _save_mesh_gps(self):
