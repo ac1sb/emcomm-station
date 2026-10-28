@@ -206,12 +206,14 @@ save their settings. Turn the radio off after the station.
 
 ### The screen
 
-- **Top bar:** grid square (from the GPS when one is plugged in, or
-  **Mesh** from a Meshtastic radio's GPS, see [Position from a Meshtastic
-  radio](#position-from-a-meshtastic-radio)), local time and UTC in large type, network status,
-  weather alerts in force, **Rec**, the speaker and microphone icons (sound levels,
-  see [Levels](#levels)), ⌨ (on-screen keyboard) and **⏻** (Settings, Diagnostics,
-  Power).
+- **Top bar,** left to right: on the left, the grid square (hidden while the GPS shows
+  the same grid), the GPS grid when one is plugged in (or **Mesh** from a Meshtastic
+  radio's GPS, see [Position from a Meshtastic radio](#position-from-a-meshtastic-radio)),
+  **Rig** and the frequency, **Radio audio**, **Rec** and any weather alerts in force.
+  In the middle, local time and UTC in large type. On the right, the network status,
+  the speaker and microphone icons (sound levels, see [Levels](#levels)), ⌨
+  (on-screen keyboard), **—** (minimize, desktop mode only) and **⏻** (Settings,
+  Diagnostics, Power).
 - **Home:** the app tiles, 18 to a page on the station's 1024x600 screen (six
   across, three down). Tiles keep the same shape on any screen: a bigger screen or
   window fits more of them on each page, starting at the top. Swipe sideways, tap
