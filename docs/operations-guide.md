@@ -865,11 +865,17 @@ The station keeps two lists, so lookups work with no internet:
   list until the new one is ready. Logs > **Callsign list downloads** shows how it
   went. Offline, the last lists are kept and keep working, and the next Update
   station with internet tries again.
-- **Call lookup** tile on Home, or **Look up** on the Logs page: type a callsign or a
-  DMR ID. Matches list as you type: calls that start with what you typed, or IDs that
-  start with the digits. Tap one to put the call in a contact note (from the tile, it
-  opens Logs with the call filled in). The line under the box says how old the FCC list
-  is.
+- **Call lookup** tile on Home, **Look up** on the Logs page, or Online > Callsign
+  lookup: all open the same box. Type a callsign or a DMR ID. Matches list as you
+  type: calls that start with what you typed, or IDs that start with the digits. Tap
+  one (or press Enter) to see its details below the list: first what the offline lists
+  have, then, when a QRZ, HamQTH or aprs.fi login is set under Settings > Accounts,
+  what they have too: name and address, grid with distance and beam heading from
+  your station, licence class and expiry, email, and the last APRS position. Online
+  answers are saved, so a call looked up before still shows offline. A free QRZ
+  account gets only part of the record; QRZ's XML subscription gets all of it.
+  **Contact note** puts the call in a contact note on the Logs page. The line under
+  the box says how old the FCC list is and which online services are set up.
 - **In Net control and contact notes**, the line under the callsign shows the same
   details. Calls outside the US show from the DMR list when the operator has a DMR ID.
 - From a terminal: `emcomm-callsign lookup W1AW 3112345` prints both lists' entries.
@@ -1203,7 +1209,8 @@ section says when it was last updated.
 - **Weather alerts** for your grid (NWS), most severe first.
 - **Propagation:** solar flux, K index, NOAA scales and band conditions.
 - **Who heard me:** PSKReporter reports of your signal in the last six hours.
-- **Callsign lookup:** QRZ (or HamQTH) and aprs.fi.
+- **Callsign lookup:** opens Call lookup (offline lists plus QRZ or HamQTH and
+  aprs.fi); see [Offline callsign and DMR ID lookup](#offline-callsign-and-dmr-id-lookup).
 
 ### Browser
 
