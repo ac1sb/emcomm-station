@@ -360,8 +360,12 @@ def apply(settings):
         subprocess.run(["systemctl", "restart", "rigctld"], check=False)
     else:
         subprocess.run(["systemctl", "stop", "rigctld"], check=False)
-    if shutil.which("gpsd") and os.path.exists("/dev/gps0"):
-        subprocess.run(["systemctl", "restart", "gpsd"], check=False)
+    if shutil.which("gpsd"):
+        # Stopped when nothing is /dev/gps0 any more: a gpsd left running keeps the
+        # port it had open, so a device just taken off GPS (a Meshtastic radio
+        # picked by mistake) stays busy for the apps that should have it.
+        action = "restart" if os.path.exists("/dev/gps0") else "stop"
+        subprocess.run(["systemctl", action, "gpsd"], check=False)
     if settings.get("timezone") and settings["timezone"] != current_zone():
         set_zone(settings["timezone"])
 
